@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# Local configuration and runtime state
+config.yaml
+security_vm.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Capture files and generated evidence
+*.pcap
+*.pcapng
+*.pcapng_*
+captures/
+incidents/
+logs/
+
+# OS/editor files
+.DS_Store
+*.swp
+*.swo

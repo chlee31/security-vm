@@ -1,0 +1,4 @@
+alert icmp any any -> any any (msg:"LOCAL ICMP Traffic Detected"; sid:1000001; rev:1;)
+alert tcp any any -> any any (msg:"LOCAL Possible TCP SYN Port Scan"; flags:S; threshold:type both, track by_src, count 20, seconds 60; classtype:attempted-recon; sid:1000002; rev:1;)
+alert dns any any -> any any (msg:"LOCAL Possible DNS Tunneling Long Query"; dns.query; pcre:"/[a-zA-Z0-9]{40,}\./"; classtype:bad-unknown; sid:1000003; rev:1;)
+alert tcp $HOME_NET any -> !$HOME_NET 4444 (msg:"LOCAL Suspicious Outbound C2-Like Port 4444"; sid:1000004; rev:1;)

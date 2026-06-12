@@ -1,0 +1,41 @@
+system:
+  mode: alert_only
+  retention_days: 7
+
+suricata:
+  eve_json_path: /var/log/suricata/eve.json
+  fast_log_path: /var/log/suricata/fast.log
+
+database:
+  path: security_vm.db
+
+pcap:
+  rolling_dir: /var/log/pcap
+  incident_dir: /var/log/incidents
+  incident_window_minutes: 5
+  rolling_retention_days: 2
+
+ollama:
+  host: http://100.99.223.100:11434
+  model: llama3.2:latest
+  timeout_seconds: 90
+
+firewall:
+  provider: firewalld
+  block_timeout_seconds: 3600
+
+thresholds:
+  safe_max: 29
+  human_review_min: 30
+  high_risk_min: 70
+  dangerous_min: 85
+
+threat_intel:
+  virustotal_enabled: false
+  otx_enabled: false
+
+assets: {}
+
+safelist:
+  - 127.0.0.1
+  - ::1
