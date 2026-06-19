@@ -46,6 +46,36 @@
 
       <section class="grid">
         <section class="streams">
+          <section class="panel" id="detection-detail-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Investigation</p>
+                <h2 id="detail-title">Detection Detail</h2>
+              </div>
+            </div>
+            <div id="detection-detail" class="detail-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Evidence</p>
+                <h2>Decision Evidence</h2>
+              </div>
+            </div>
+            <div id="decision-evidence" class="evidence-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Packet Capture</p>
+                <h2>Related PCAP Files</h2>
+              </div>
+            </div>
+            <div id="pcap-files" class="pcap-list"></div>
+          </section>
+
           <section class="panel">
             <div class="panel-head">
               <div>
@@ -116,6 +146,16 @@
               <button id="check-ollama" type="button" title="Check Ollama">O</button>
             </div>
             <div id="events" class="list log-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Enrichment</p>
+                <h2>Lookup Status</h2>
+              </div>
+            </div>
+            <div id="enrichment" class="list enrichment-list"></div>
           </section>
 
           <section class="panel">

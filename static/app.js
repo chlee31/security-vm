@@ -3,6 +3,10 @@ const els = {
   totalDetections: document.querySelector("#total-detections"),
   topDetection: document.querySelector("#top-detection"),
   systemMode: document.querySelector("#system-mode"),
+  detailTitle: document.querySelector("#detail-title"),
+  detectionDetail: document.querySelector("#detection-detail"),
+  decisionEvidence: document.querySelector("#decision-evidence"),
+  pcapFiles: document.querySelector("#pcap-files"),
   mode: document.querySelector("#mode"),
   updated: document.querySelector("#updated"),
   alerts: document.querySelector("#alerts"),
@@ -11,10 +15,17 @@ const els = {
   reviews: document.querySelector("#reviews"),
   allowlist: document.querySelector("#allowlist"),
   allowlistForm: document.querySelector("#allowlist-form"),
+  enrichment: document.querySelector("#enrichment"),
   events: document.querySelector("#events"),
   checkOllama: document.querySelector("#check-ollama"),
   refresh: document.querySelector("#refresh")
 };
+
+let selectedDetectionType = null;
+
+if (window.location.hash.startsWith("#type=")) {
+  selectedDetectionType = decodeURIComponent(window.location.hash.slice(6));
+}
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -40,6 +51,9 @@ function detectionLabel(value) {
 
 function renderMetrics(metrics) {
   const detections = metrics.detections_by_type || [];
+  if (!selectedDetectionType && detections[0]) {
+    selectedDetectionType = detections[0].detection_type;
+  }
   els.totalAlerts.textContent = metrics.total_alerts ?? 0;
   els.totalDetections.textContent = metrics.total_detections ?? 0;
   els.topDetection.textContent = detections[0] ? detectionLabel(detections[0].detection_type) : "None";
@@ -48,13 +62,20 @@ function renderMetrics(metrics) {
 
   const max = Math.max(1, ...detections.map((item) => item.count));
   els.detections.innerHTML = detections.map((item) => `
-    <div class="list-item">
+    <button
+      class="list-item detection-button ${item.detection_type === selectedDetectionType ? "selected" : ""}"
+      type="button"
+      data-detection-type="${item.detection_type}"
+      aria-pressed="${item.detection_type === selectedDetectionType ? "true" : "false"}"
+      title="Open ${detectionLabel(item.detection_type)} investigation"
+    >
       <div class="row">
         <strong>${detectionLabel(item.detection_type)}</strong>
         <span>${item.count}</span>
       </div>
       <div class="bar"><span style="--value:${(item.count / max) * 100}%"></span></div>
-    </div>
+      <small>Open investigation</small>
+    </button>
   `).join("") || `<div class="empty">No detections yet. Start ingest and generate test traffic.</div>`;
 }
 
@@ -115,6 +136,167 @@ function renderEvents(events) {
   `).join("") || `<div class="empty">No runtime logs yet. Start ingest or check Ollama.</div>`;
 }
 
+function renderDetectionDetail(detail) {
+  if (!detail || !detail.detection_type) {
+    els.detailTitle.textContent = "Detection Detail";
+    els.detectionDetail.innerHTML = `<div class="empty">Select a detection type to investigate.</div>`;
+    return;
+  }
+
+  const summary = detail.summary || {};
+  const timeline = detail.timeline || [];
+  const ips = detail.ips || [];
+  const recent = detail.recent || [];
+  const max = Math.max(1, ...timeline.map((item) => item.count));
+
+  els.detailTitle.textContent = detectionLabel(detail.detection_type);
+  els.detectionDetail.innerHTML = `
+    <div class="detail-card">
+      <span>Total</span>
+      <strong>${summary.total || 0}</strong>
+      <small>avg score ${Math.round(summary.avg_score || 0)} · max ${summary.max_score || 0}</small>
+    </div>
+    <div class="detail-card wide">
+      <span>Activity Over Time</span>
+      <div class="timeline">
+        ${timeline.map((item) => `
+          <div class="timeline-row">
+            <time>${item.bucket || "unknown"}</time>
+            <div class="bar"><span style="--value:${(item.count / max) * 100}%"></span></div>
+            <strong>${item.count}</strong>
+          </div>
+        `).join("") || `<div class="empty">No timeline data.</div>`}
+      </div>
+    </div>
+    <div class="detail-card">
+      <span>IP Addresses</span>
+      <div class="mini-list">
+        ${ips.map((item) => `
+          <div>
+            <strong>${item.ip_address}</strong>
+            <small>${item.location} · ${item.scope} · seen ${item.count}</small>
+          </div>
+        `).join("") || `<small>No IP data.</small>`}
+      </div>
+    </div>
+    <div class="detail-card wide">
+      <span>Recent ${detectionLabel(detail.detection_type)} Alerts</span>
+      <div class="mini-list">
+        ${recent.map((item) => `
+          <div>
+            <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
+            <small>${item.signature || "Detection"} · score ${item.python_initial_score || 0} · ${item.ollama_classification || "no Ollama"}</small>
+          </div>
+        `).join("") || `<small>No recent rows.</small>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderEnrichment(status) {
+  const sources = status.sources || [];
+  const topIps = status.top_ips || [];
+  els.enrichment.innerHTML = `
+    ${sources.map((source) => `
+      <div class="list-item enrichment-source ${source.status}">
+        <div class="row tight">
+          <strong>${source.name}</strong>
+          <span>${source.status}</span>
+        </div>
+        <p>${source.notes}</p>
+      </div>
+    `).join("")}
+    <div class="list-item">
+      <div class="row tight">
+        <strong>Threat intel lookups</strong>
+        <span>${status.lookup_count || 0}</span>
+      </div>
+      <p>External API lookups are tracked here when enabled.</p>
+    </div>
+    ${topIps.slice(0, 8).map((item) => `
+      <div class="list-item">
+        <div class="row tight">
+          <strong>${item.ip_address}</strong>
+          <span>${item.scope}</span>
+        </div>
+        <p>${item.location}</p>
+        <small>${item.source} · seen ${item.count}</small>
+      </div>
+    `).join("")}
+  `;
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function renderPcapFiles(inventory) {
+  const files = (inventory.files || []).filter((file) => file.related).slice(0, 20);
+  const allFiles = inventory.files || [];
+  els.pcapFiles.innerHTML = `
+    <div class="pcap-summary">
+      <strong>${files.length}</strong>
+      <span>related files · ${allFiles.length} total in ${inventory.directory || "pcap directory"}</span>
+    </div>
+    ${files.map((file) => `
+      <div class="pcap-item ${file.label}">
+        <div class="row tight">
+          <strong>${file.name}</strong>
+          <span>${file.label}</span>
+        </div>
+        <p>${file.path}</p>
+        <small>${formatBytes(file.size_bytes)} · modified ${file.modified_at}</small>
+      </div>
+    `).join("") || `<div class="empty">No PCAP files matched this detection time window.</div>`}
+  `;
+}
+
+function renderDecisionEvidence(rows) {
+  els.decisionEvidence.innerHTML = rows.map((row) => `
+    <article class="evidence-item">
+      <div class="row tight">
+        <strong>${row.final_classification || "Decision"}</strong>
+        <span>${row.final_action || "none"} · score ${row.final_score ?? 0}</span>
+      </div>
+      <div class="evidence-chain">
+        <div>
+          <span>Alert</span>
+          <strong>${row.signature || "Suricata alert"}</strong>
+          <small>${row.src_ip || "unknown"}:${row.src_port || ""} -> ${row.dest_ip || "unknown"}:${row.dest_port || ""} · priority ${row.priority || "unknown"}</small>
+        </div>
+        <div>
+          <span>Correlation</span>
+          <strong>${detectionLabel(row.detection_type)}</strong>
+          <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
+        </div>
+        <div>
+          <span>Scoring</span>
+          <strong>Python ${row.python_initial_score ?? 0} + Ollama ${row.ollama_risk_adjustment ?? 0}</strong>
+          <small>Final score ${row.final_score ?? 0}</small>
+        </div>
+        <div>
+          <span>Ollama</span>
+          <strong>${row.ollama_classification || "No opinion"} ${row.ollama_confidence ? `(${row.ollama_confidence})` : ""}</strong>
+          <small>${row.ollama_reason || "No Ollama reason stored."}</small>
+        </div>
+        <div>
+          <span>Analyst</span>
+          <strong>${row.review_status || "No review"}</strong>
+          <small>${row.analyst_action || "No analyst override"} ${row.analyst_name ? `by ${row.analyst_name}` : ""}</small>
+        </div>
+      </div>
+    </article>
+  `).join("") || `<div class="empty">No decision evidence rows for this selection yet.</div>`;
+}
+
 function formatRemaining(seconds) {
   if (seconds === null || seconds === undefined) return "No expiry";
   if (seconds <= 0) return "Expired";
@@ -168,19 +350,36 @@ function renderReviews(reviews) {
 
 async function refresh() {
   try {
-    const [metrics, alerts, ollamaReports, reviews, allowlist, events] = await Promise.all([
+    const detailPath = selectedDetectionType
+      ? `/api/detection-detail?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=50`
+      : null;
+    const pcapPath = selectedDetectionType
+      ? `/api/pcap-files?detection_type=${encodeURIComponent(selectedDetectionType)}`
+      : "/api/pcap-files";
+    const evidencePath = selectedDetectionType
+      ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20`
+      : "/api/decision-evidence?limit=20";
+    const [metrics, alerts, ollamaReports, reviews, allowlist, enrichment, events, detail, pcaps, evidence] = await Promise.all([
       getJson("/api/metrics"),
       getJson("/api/alerts?limit=50"),
       getJson("/api/ollama-reports?limit=50"),
       getJson("/api/reviews?limit=25"),
       getJson("/api/allowlist?limit=25"),
-      getJson("/api/events?limit=40")
+      getJson("/api/enrichment-status?limit=25"),
+      getJson("/api/events?limit=40"),
+      detailPath ? getJson(detailPath) : Promise.resolve(null),
+      getJson(pcapPath),
+      getJson(evidencePath)
     ]);
     renderMetrics(metrics);
     renderAlerts(alerts);
     renderOllamaReports(ollamaReports);
     renderReviews(reviews);
     renderAllowlist(allowlist);
+    renderEnrichment(enrichment);
+    renderDetectionDetail(detail);
+    renderPcapFiles(pcaps);
+    renderDecisionEvidence(evidence);
     renderEvents(events);
     els.updated.textContent = new Date().toLocaleTimeString();
   } catch (error) {
@@ -189,6 +388,9 @@ async function refresh() {
     els.ollamaReports.innerHTML = `<div class="empty">${error.message}</div>`;
     els.reviews.innerHTML = `<div class="empty">${error.message}</div>`;
     els.allowlist.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.enrichment.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.pcapFiles.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.decisionEvidence.innerHTML = `<div class="empty">${error.message}</div>`;
     els.events.innerHTML = `<div class="empty">${error.message}</div>`;
   }
 }
@@ -218,6 +420,17 @@ async function addAllowlistEntry(event) {
 }
 
 async function handleDashboardClick(event) {
+  const detectionButton = event.target.closest ? event.target.closest("[data-detection-type]") : null;
+  const detectionType = detectionButton ? detectionButton.dataset.detectionType : null;
+  if (detectionType) {
+    selectedDetectionType = detectionType;
+    window.location.hash = `type=${encodeURIComponent(detectionType)}`;
+    els.detailTitle.textContent = `Loading ${detectionLabel(detectionType)}`;
+    document.querySelector("#detection-detail-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    refresh();
+    return;
+  }
+
   const removeId = event.target.dataset.allowRemove;
   if (removeId) {
     await sendJson(`/api/allowlist/${removeId}`, "DELETE");

@@ -13,13 +13,18 @@ from app.database import (
     connect,
     init_db,
     insert_app_event,
+    detection_type_detail,
+    detection_time_window,
+    enrichment_status,
     latest_alerts,
     latest_app_events,
+    latest_decision_evidence,
     latest_ollama_reports,
     list_review_queue,
     submit_analyst_review,
 )
 from app.ollama_client import check_ollama
+from app.pcap_inventory import list_pcap_files
 
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
@@ -65,6 +70,42 @@ def create_app(config_path):
         conn = connect(db_path)
         try:
             return latest_ollama_reports(conn, limit)
+        finally:
+            conn.close()
+
+    @app.get("/api/detection-detail")
+    def api_detection_detail(detection_type: str, limit: int = 50):
+        conn = connect(db_path)
+        try:
+            return detection_type_detail(conn, detection_type, limit)
+        finally:
+            conn.close()
+
+    @app.get("/api/enrichment-status")
+    def api_enrichment_status(limit: int = 50):
+        conn = connect(db_path)
+        try:
+            return enrichment_status(conn, config, limit)
+        finally:
+            conn.close()
+
+    @app.get("/api/pcap-files")
+    def api_pcap_files(detection_type: str = None):
+        conn = connect(db_path)
+        try:
+            window = detection_time_window(conn, detection_type)
+        finally:
+            conn.close()
+        inventory = list_pcap_files(config, window.get("start_time"), window.get("end_time"))
+        inventory["detection_type"] = detection_type
+        inventory["time_window"] = window
+        return inventory
+
+    @app.get("/api/decision-evidence")
+    def api_decision_evidence(limit: int = 25, detection_type: str = None):
+        conn = connect(db_path)
+        try:
+            return latest_decision_evidence(conn, limit, detection_type)
         finally:
             conn.close()
 

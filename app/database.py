@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import ipaddress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -95,6 +96,17 @@ def insert_detection(conn, detection):
 
 
 def insert_ollama_report(conn, detection_id, report):
+    def sqlite_value(value):
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, sort_keys=True)
+        return value
+
+    def sqlite_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     conn.execute(
         """
         INSERT INTO ollama_reports (
@@ -105,12 +117,12 @@ def insert_ollama_report(conn, detection_id, report):
         """,
         (
             detection_id,
-            report.get("classification"),
-            report.get("confidence"),
-            report.get("risk_adjustment", 0),
-            report.get("reason"),
-            report.get("recommended_action"),
-            report.get("raw_response"),
+            sqlite_value(report.get("classification")),
+            sqlite_value(report.get("confidence")),
+            sqlite_int(report.get("risk_adjustment", 0)),
+            sqlite_value(report.get("reason")),
+            sqlite_value(report.get("recommended_action")),
+            sqlite_value(report.get("raw_response")),
         ),
     )
     conn.commit()
@@ -214,6 +226,279 @@ def latest_ollama_reports(conn, limit=50):
         (limit,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def ip_enrichment_profile(ip_address):
+    if not ip_address:
+        return {
+            "ip_address": "",
+            "scope": "unknown",
+            "location": "Unknown",
+            "source": "none",
+            "status": "missing_ip",
+        }
+
+    try:
+        parsed = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return {
+            "ip_address": ip_address,
+            "scope": "invalid",
+            "location": "Invalid IP",
+            "source": "local-ip-classification",
+            "status": "invalid_ip",
+        }
+
+    if parsed.is_private:
+        scope = "private"
+        location = "Internal/private network"
+    elif parsed.is_loopback:
+        scope = "loopback"
+        location = "Local host"
+    elif parsed.is_multicast:
+        scope = "multicast"
+        location = "Multicast"
+    elif parsed.is_reserved:
+        scope = "reserved"
+        location = "Reserved address space"
+    else:
+        scope = "public"
+        location = "Public IP - geo lookup not configured"
+
+    return {
+        "ip_address": ip_address,
+        "scope": scope,
+        "location": location,
+        "source": "local-ip-classification",
+        "status": "classified",
+    }
+
+
+def detection_type_detail(conn, detection_type, limit=50):
+    summary = conn.execute(
+        """
+        SELECT
+          COUNT(*) AS total,
+          MIN(first_seen) AS first_seen,
+          MAX(last_seen) AS last_seen,
+          AVG(python_initial_score) AS avg_score,
+          MAX(python_initial_score) AS max_score
+        FROM detections
+        WHERE detection_type = ?
+        """,
+        (detection_type,),
+    ).fetchone()
+
+    timeline = conn.execute(
+        """
+        SELECT substr(COALESCE(first_seen, created_at), 1, 13) AS bucket, COUNT(*) AS count
+        FROM detections
+        WHERE detection_type = ?
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        """,
+        (detection_type,),
+    ).fetchall()
+
+    ip_rows = conn.execute(
+        """
+        SELECT ip_address, SUM(count) AS count
+        FROM (
+          SELECT src_ip AS ip_address, COUNT(*) AS count
+          FROM detections
+          WHERE detection_type = ? AND src_ip IS NOT NULL
+          GROUP BY src_ip
+          UNION ALL
+          SELECT dest_ip AS ip_address, COUNT(*) AS count
+          FROM detections
+          WHERE detection_type = ? AND dest_ip IS NOT NULL
+          GROUP BY dest_ip
+        )
+        GROUP BY ip_address
+        ORDER BY count DESC
+        LIMIT ?
+        """,
+        (detection_type, detection_type, limit),
+    ).fetchall()
+
+    recent = conn.execute(
+        """
+        SELECT
+          detections.id AS detection_id,
+          detections.first_seen,
+          detections.src_ip,
+          detections.dest_ip,
+          detections.python_initial_score,
+          detections.mitre_id,
+          detections.mitre_name,
+          alerts.signature,
+          alerts.category,
+          ollama_reports.classification AS ollama_classification,
+          ollama_reports.confidence AS ollama_confidence
+        FROM detections
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        WHERE detections.detection_type = ?
+        ORDER BY detections.id DESC
+        LIMIT ?
+        """,
+        (detection_type, limit),
+    ).fetchall()
+
+    return {
+        "detection_type": detection_type,
+        "summary": dict(summary) if summary else {},
+        "timeline": [dict(row) for row in timeline],
+        "ips": [
+            {
+                **dict(row),
+                **ip_enrichment_profile(row["ip_address"]),
+            }
+            for row in ip_rows
+        ],
+        "recent": [dict(row) for row in recent],
+    }
+
+
+def detection_time_window(conn, detection_type=None):
+    if detection_type:
+        row = conn.execute(
+            """
+            SELECT MIN(first_seen) AS start_time, MAX(last_seen) AS end_time
+            FROM detections
+            WHERE detection_type = ?
+            """,
+            (detection_type,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT MIN(first_seen) AS start_time, MAX(last_seen) AS end_time
+            FROM detections
+            """
+        ).fetchone()
+    return dict(row) if row else {"start_time": None, "end_time": None}
+
+
+def latest_decision_evidence(conn, limit=25, detection_type=None):
+    params = []
+    filter_sql = ""
+    if detection_type:
+        filter_sql = "WHERE detections.detection_type = ?"
+        params.append(detection_type)
+    params.append(limit)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+          responses.id AS response_id,
+          responses.detection_id,
+          responses.final_score,
+          responses.final_classification,
+          responses.final_action,
+          responses.target_ip,
+          responses.response_status,
+          responses.created_at AS response_created_at,
+          detections.detection_type,
+          detections.alert_count,
+          detections.unique_dest_ports,
+          detections.unique_dest_hosts,
+          detections.time_window_seconds,
+          detections.mitre_id,
+          detections.mitre_name,
+          detections.python_initial_score,
+          alerts.timestamp,
+          alerts.src_ip,
+          alerts.dest_ip,
+          alerts.src_port,
+          alerts.dest_port,
+          alerts.protocol,
+          alerts.signature,
+          alerts.category,
+          alerts.priority,
+          ollama_reports.classification AS ollama_classification,
+          ollama_reports.confidence AS ollama_confidence,
+          ollama_reports.risk_adjustment AS ollama_risk_adjustment,
+          ollama_reports.reason AS ollama_reason,
+          ollama_reports.recommended_action AS ollama_recommended_action,
+          analyst_reviews.review_status,
+          analyst_reviews.analyst_name,
+          analyst_reviews.analyst_score,
+          analyst_reviews.analyst_action
+        FROM responses
+        LEFT JOIN detections ON detections.id = responses.detection_id
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        LEFT JOIN analyst_reviews ON analyst_reviews.detection_id = detections.id
+        {filter_sql}
+        ORDER BY responses.id DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def enrichment_status(conn, config, limit=50):
+    threat_intel = config.get("threat_intel", {})
+    recent_lookups = conn.execute(
+        """
+        SELECT indicator, indicator_type, source, reputation, malicious_count,
+               suspicious_count, lookup_time, cached
+        FROM threat_intel_lookups
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    lookup_count = conn.execute("SELECT COUNT(*) AS count FROM threat_intel_lookups").fetchone()["count"]
+
+    ip_rows = conn.execute(
+        """
+        SELECT ip_address, SUM(count) AS count
+        FROM (
+          SELECT src_ip AS ip_address, COUNT(*) AS count FROM alerts WHERE src_ip IS NOT NULL GROUP BY src_ip
+          UNION ALL
+          SELECT dest_ip AS ip_address, COUNT(*) AS count FROM alerts WHERE dest_ip IS NOT NULL GROUP BY dest_ip
+        )
+        GROUP BY ip_address
+        ORDER BY count DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    return {
+        "sources": [
+            {
+                "name": "local-ip-classification",
+                "enabled": True,
+                "status": "active",
+                "notes": "Classifies private, loopback, multicast, reserved, and public IPs without external API calls.",
+            },
+            {
+                "name": "virustotal",
+                "enabled": bool(threat_intel.get("virustotal_enabled", False)),
+                "status": "configured" if threat_intel.get("virustotal_enabled", False) else "disabled",
+                "notes": "External reputation lookups are disabled by default to avoid API quota use.",
+            },
+            {
+                "name": "otx",
+                "enabled": bool(threat_intel.get("otx_enabled", False)),
+                "status": "configured" if threat_intel.get("otx_enabled", False) else "disabled",
+                "notes": "AlienVault OTX lookups are disabled by default.",
+            },
+        ],
+        "lookup_count": lookup_count,
+        "recent_lookups": [dict(row) for row in recent_lookups],
+        "top_ips": [
+            {
+                **dict(row),
+                **ip_enrichment_profile(row["ip_address"]),
+            }
+            for row in ip_rows
+        ],
+    }
 
 
 def latest_app_events(conn, limit=100):

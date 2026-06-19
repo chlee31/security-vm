@@ -55,12 +55,20 @@ def normalize_risk_adjustment(value):
     return max(-20, min(20, adjustment))
 
 
+def normalize_text(value, fallback=""):
+    if value is None:
+        return fallback
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
 def normalize_report(parsed):
-    parsed["classification"] = parsed.get("classification") or "Human Review Required"
-    parsed["confidence"] = parsed.get("confidence") or "Low"
+    parsed["classification"] = normalize_text(parsed.get("classification"), "Human Review Required")
+    parsed["confidence"] = normalize_text(parsed.get("confidence"), "Low")
     parsed["risk_adjustment"] = normalize_risk_adjustment(parsed.get("risk_adjustment"))
-    parsed["reason"] = parsed.get("reason") or "Ollama did not provide a reason."
-    parsed["recommended_action"] = parsed.get("recommended_action") or "human_review"
+    parsed["reason"] = normalize_text(parsed.get("reason"), "Ollama did not provide a reason.")
+    parsed["recommended_action"] = normalize_text(parsed.get("recommended_action"), "human_review")
     return parsed
 
 
