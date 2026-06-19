@@ -7,12 +7,14 @@ from app.config import load_config
 from app.correlator import Correlator
 from app.dashboard import create_app
 from app.database import (
+    detections_without_ollama_reports,
     init_db,
     insert_alert,
     insert_app_event,
     insert_detection,
     insert_ollama_report,
     insert_response,
+    upsert_pending_review,
 )
 from app.decision_engine import decide
 from app.firewall import temporary_block_firewalld
@@ -93,6 +95,7 @@ def run_ingest(config_path):
             response["response_time_ms"] = elapsed_ms
 
         insert_response(conn, response)
+        upsert_pending_review(conn, response)
         insert_app_event(
             conn,
             "info",
@@ -111,6 +114,86 @@ def run_dashboard(config_path, host, port):
     uvicorn.run(app, host=host, port=port)
 
 
+def run_ollama_backfill(config_path, limit):
+    config = load_config(config_path)
+    conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
+    rows = detections_without_ollama_reports(conn, limit)
+    print(f"[+] Backfilling Ollama opinions for {len(rows)} detections")
+    insert_app_event(conn, "info", "ollama", f"Starting Ollama backfill for {len(rows)} detections")
+
+    try:
+        status = check_ollama(config)
+        insert_app_event(
+            conn,
+            "info",
+            "ollama",
+            f"Ollama reachable at {status['host']}",
+            {"elapsed_ms": status["elapsed_ms"], "models": status["models"]},
+        )
+    except requests.RequestException as exc:
+        insert_app_event(conn, "error", "ollama", f"Ollama unreachable before backfill: {exc}")
+        print(f"[!] Ollama unreachable: {exc}")
+        conn.close()
+        return
+
+    for row in rows:
+        alert = {
+            "suricata_event_id": row.get("suricata_event_id"),
+            "timestamp": row.get("timestamp"),
+            "src_ip": row.get("src_ip"),
+            "dest_ip": row.get("dest_ip"),
+            "src_port": row.get("src_port"),
+            "dest_port": row.get("dest_port"),
+            "protocol": row.get("protocol"),
+            "signature": row.get("signature"),
+            "category": row.get("category"),
+            "severity": row.get("severity"),
+            "priority": row.get("priority"),
+            "flow_id": row.get("flow_id"),
+            "pcap_point": row.get("pcap_point"),
+            "raw_json": row.get("raw_json"),
+        }
+        detection = {
+            "first_alert_id": row.get("first_alert_id"),
+            "first_seen": row.get("first_seen"),
+            "last_seen": row.get("last_seen"),
+            "src_ip": row.get("src_ip"),
+            "dest_ip": row.get("dest_ip"),
+            "detection_type": row.get("detection_type"),
+            "alert_count": row.get("alert_count"),
+            "unique_dest_ports": row.get("unique_dest_ports"),
+            "unique_dest_hosts": row.get("unique_dest_hosts"),
+            "time_window_seconds": row.get("time_window_seconds"),
+            "mitre_id": row.get("mitre_id"),
+            "mitre_name": row.get("mitre_name"),
+            "python_initial_score": row.get("python_initial_score"),
+            "status": row.get("status"),
+        }
+
+        try:
+            report = ask_ollama(config, alert, detection)
+            insert_ollama_report(conn, row["detection_id"], report)
+            insert_app_event(
+                conn,
+                "info",
+                "ollama",
+                f"Backfilled detection {row['detection_id']} as {report.get('classification', 'Unknown')}",
+                {"detection_id": row["detection_id"], "elapsed_ms": report.get("elapsed_ms")},
+            )
+            print(f"[+] detection {row['detection_id']} -> {report.get('classification', 'Unknown')}")
+        except requests.RequestException as exc:
+            insert_app_event(
+                conn,
+                "error",
+                "ollama",
+                f"Ollama unavailable while backfilling detection {row['detection_id']}: {exc}",
+                {"detection_id": row["detection_id"]},
+            )
+            print(f"[!] detection {row['detection_id']} failed: {exc}")
+
+    conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Security VM application")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -123,11 +206,17 @@ def main():
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", default=8000, type=int)
 
+    ollama_backfill = sub.add_parser("ollama-backfill", help="Ask Ollama for opinions on detections without reports")
+    ollama_backfill.add_argument("--config", default="config.yaml")
+    ollama_backfill.add_argument("--limit", default=50, type=int)
+
     args = parser.parse_args()
     if args.command == "ingest":
         run_ingest(args.config)
     elif args.command == "dashboard":
         run_dashboard(args.config, args.host, args.port)
+    elif args.command == "ollama-backfill":
+        run_ollama_backfill(args.config, args.limit)
 
 
 if __name__ == "__main__":

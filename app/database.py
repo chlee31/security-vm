@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -16,8 +17,18 @@ def init_db(db_path):
     conn = connect(db_path)
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(schema)
+    ensure_migrations(conn)
     conn.commit()
     return conn
+
+
+def ensure_migrations(conn):
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(allowlist)").fetchall()
+    }
+    if "name" not in columns:
+        conn.execute("ALTER TABLE allowlist ADD COLUMN name TEXT")
 
 
 def insert_alert(conn, alert):
@@ -128,6 +139,30 @@ def insert_response(conn, response):
     conn.commit()
 
 
+def upsert_pending_review(conn, response, review_days=3):
+    if response.get("final_action") != "human_review":
+        return
+
+    now = datetime.now(timezone.utc)
+    due_at = now + timedelta(days=review_days)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO analyst_reviews (
+          detection_id, original_score, original_classification, original_action, due_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            response.get("detection_id"),
+            response.get("final_score"),
+            response.get("final_classification"),
+            response.get("final_action"),
+            due_at.isoformat(),
+        ),
+    )
+    conn.commit()
+
+
 def insert_app_event(conn, level, component, message, details=None):
     conn.execute(
         """
@@ -187,6 +222,180 @@ def latest_app_events(conn, limit=100):
         SELECT id, level, component, message, details, created_at
         FROM app_events
         ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def expire_stale_reviews(conn):
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        UPDATE analyst_reviews
+        SET review_status = 'expired'
+        WHERE review_status = 'pending'
+          AND due_at <= ?
+        """,
+        (now,),
+    )
+    conn.commit()
+
+
+def seed_pending_reviews_from_responses(conn):
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO analyst_reviews (
+          detection_id,
+          original_score,
+          original_classification,
+          original_action,
+          due_at,
+          created_at
+        )
+        SELECT
+          responses.detection_id,
+          responses.final_score,
+          responses.final_classification,
+          responses.final_action,
+          datetime(responses.created_at, '+3 days'),
+          responses.created_at
+        FROM responses
+        WHERE responses.final_action = 'human_review'
+          AND responses.detection_id IS NOT NULL
+        """
+    )
+    conn.commit()
+
+
+def list_review_queue(conn, limit=50):
+    seed_pending_reviews_from_responses(conn)
+    expire_stale_reviews(conn)
+    rows = conn.execute(
+        """
+        SELECT
+          analyst_reviews.id,
+          analyst_reviews.detection_id,
+          analyst_reviews.original_score,
+          analyst_reviews.original_classification,
+          analyst_reviews.original_action,
+          analyst_reviews.review_status,
+          analyst_reviews.analyst_name,
+          analyst_reviews.analyst_score,
+          analyst_reviews.analyst_classification,
+          analyst_reviews.analyst_action,
+          analyst_reviews.analyst_notes,
+          analyst_reviews.due_at,
+          analyst_reviews.reviewed_at,
+          analyst_reviews.created_at,
+          detections.detection_type,
+          detections.src_ip,
+          detections.dest_ip,
+          alerts.signature,
+          alerts.timestamp,
+          ollama_reports.classification AS ollama_classification,
+          ollama_reports.confidence AS ollama_confidence,
+          ollama_reports.reason AS ollama_reason
+        FROM analyst_reviews
+        LEFT JOIN detections ON detections.id = analyst_reviews.detection_id
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        WHERE analyst_reviews.review_status IN ('pending', 'expired')
+        ORDER BY
+          CASE analyst_reviews.review_status WHEN 'pending' THEN 0 ELSE 1 END,
+          analyst_reviews.due_at ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def submit_analyst_review(conn, detection_id, action, analyst_name, notes="", score=None, classification=None):
+    now = datetime.now(timezone.utc).isoformat()
+    existing = conn.execute(
+        "SELECT id, original_score, original_classification, original_action FROM analyst_reviews WHERE detection_id = ?",
+        (detection_id,),
+    ).fetchone()
+    if not existing:
+        return False
+
+    if action == "confirm":
+        review_status = "confirmed"
+        analyst_score = existing["original_score"]
+        analyst_classification = existing["original_classification"]
+        analyst_action = existing["original_action"]
+    else:
+        review_status = "overridden"
+        analyst_score = score
+        analyst_classification = classification
+        analyst_action = action
+
+    conn.execute(
+        """
+        UPDATE analyst_reviews
+        SET review_status = ?,
+            analyst_name = ?,
+            analyst_score = ?,
+            analyst_classification = ?,
+            analyst_action = ?,
+            analyst_notes = ?,
+            reviewed_at = ?
+        WHERE detection_id = ?
+        """,
+        (
+            review_status,
+            analyst_name,
+            analyst_score,
+            analyst_classification,
+            analyst_action,
+            notes,
+            now,
+            detection_id,
+        ),
+    )
+    conn.commit()
+    return True
+
+
+def detections_without_ollama_reports(conn, limit=50):
+    rows = conn.execute(
+        """
+        SELECT
+          alerts.id AS alert_id,
+          alerts.suricata_event_id,
+          alerts.timestamp,
+          alerts.src_ip,
+          alerts.dest_ip,
+          alerts.src_port,
+          alerts.dest_port,
+          alerts.protocol,
+          alerts.signature,
+          alerts.category,
+          alerts.severity,
+          alerts.priority,
+          alerts.flow_id,
+          alerts.pcap_point,
+          alerts.raw_json,
+          detections.id AS detection_id,
+          detections.first_alert_id,
+          detections.first_seen,
+          detections.last_seen,
+          detections.detection_type,
+          detections.alert_count,
+          detections.unique_dest_ports,
+          detections.unique_dest_hosts,
+          detections.time_window_seconds,
+          detections.mitre_id,
+          detections.mitre_name,
+          detections.python_initial_score,
+          detections.status
+        FROM detections
+        JOIN alerts ON alerts.id = detections.first_alert_id
+        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        WHERE ollama_reports.id IS NULL
+        ORDER BY detections.id ASC
         LIMIT ?
         """,
         (limit,),

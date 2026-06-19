@@ -72,6 +72,34 @@
           <section class="panel">
             <div class="panel-head compact">
               <div>
+                <p class="eyebrow">Analyst Review</p>
+                <h2>Human Required</h2>
+              </div>
+            </div>
+            <div id="reviews" class="list review-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Allowlist</p>
+                <h2>Trusted IPs</h2>
+              </div>
+            </div>
+            <form id="allowlist-form" class="form-grid">
+              <input id="allowlist-ip" name="ip_address" type="text" placeholder="IP address" required>
+              <input id="allowlist-name" name="name" type="text" placeholder="Name">
+              <input id="allowlist-hours" name="duration_hours" type="number" min="1" max="8760" value="24" required>
+              <input id="allowlist-by" name="added_by" type="text" placeholder="Added by">
+              <textarea id="allowlist-reason" name="reason" placeholder="Reason" required></textarea>
+              <button class="wide-button" type="submit">Add</button>
+            </form>
+            <div id="allowlist" class="list allowlist-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
                 <p class="eyebrow">Correlation</p>
                 <h2>Detection Types</h2>
               </div>

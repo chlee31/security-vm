@@ -16,6 +16,14 @@ def confidence_adjustment(report):
     return 0
 
 
+def safe_risk_adjustment(report):
+    value = report.get("risk_adjustment")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return confidence_adjustment(report)
+
+
 def decide(conn, config, alert, detection, ollama_report=None):
     mode = config.get("system", {}).get("mode", "alert_only")
     thresholds = config.get("thresholds", {})
@@ -37,7 +45,7 @@ def decide(conn, config, alert, detection, ollama_report=None):
 
     score = detection.get("python_initial_score", 0)
     if ollama_report:
-        score += int(ollama_report.get("risk_adjustment") or confidence_adjustment(ollama_report))
+        score += safe_risk_adjustment(ollama_report)
     score = cap_score(score)
 
     ollama_class = str((ollama_report or {}).get("classification", "")).lower()

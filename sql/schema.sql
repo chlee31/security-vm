@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS detections (
 CREATE TABLE IF NOT EXISTS allowlist (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip_address TEXT NOT NULL,
+  name TEXT,
   reason TEXT,
   added_by TEXT,
   start_time TEXT,
@@ -115,5 +116,22 @@ CREATE TABLE IF NOT EXISTS app_events (
   component TEXT NOT NULL,
   message TEXT NOT NULL,
   details TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS analyst_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER NOT NULL UNIQUE,
+  original_score INTEGER NOT NULL,
+  original_classification TEXT,
+  original_action TEXT,
+  review_status TEXT DEFAULT 'pending' CHECK(review_status IN ('pending', 'confirmed', 'overridden', 'expired')),
+  analyst_name TEXT,
+  analyst_score INTEGER,
+  analyst_classification TEXT,
+  analyst_action TEXT,
+  analyst_notes TEXT,
+  due_at TEXT NOT NULL,
+  reviewed_at TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

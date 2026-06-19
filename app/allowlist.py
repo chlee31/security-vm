@@ -24,18 +24,19 @@ def is_allowlisted(conn, ip_address):
     return row is not None
 
 
-def add_allowlist_entry(conn, ip_address, duration_minutes, reason=None, added_by="dashboard"):
+def add_allowlist_entry(conn, ip_address, duration_minutes, name=None, reason=None, added_by="dashboard"):
     now = utc_now()
     expiry = now + timedelta(minutes=duration_minutes)
     cur = conn.execute(
         """
         INSERT INTO allowlist (
-          ip_address, reason, added_by, start_time, expiry_time, status, notes
+          ip_address, name, reason, added_by, start_time, expiry_time, status, notes
         )
-        VALUES (?, ?, ?, ?, ?, 'active', ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
         """,
         (
             ip_address,
+            name,
             reason,
             added_by,
             now.isoformat(),
@@ -60,7 +61,7 @@ def list_allowlist_entries(conn, limit=50):
     now = utc_now()
     rows = conn.execute(
         """
-        SELECT id, ip_address, reason, added_by, start_time, expiry_time, status, notes, created_at
+        SELECT id, ip_address, name, reason, added_by, start_time, expiry_time, status, notes, created_at
         FROM allowlist
         WHERE status = 'active'
         ORDER BY id DESC
