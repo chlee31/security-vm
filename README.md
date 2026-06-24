@@ -151,7 +151,7 @@ http://127.0.0.1:8000/
 From another machine, use:
 
 ```text
-http://<security-vm-ip>:8000/
+http://<security-vm-ip or Tailscale IP address>:8000/
 ```
 
 Terminal 4: start rolling PCAP capture
