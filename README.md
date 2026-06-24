@@ -1,136 +1,130 @@
 # Security VM
 
-Ubuntu security appliance prototype using Suricata, SQLite, rolling PCAP capture, tshark summaries, Ollama over Tailscale, and optional firewalld response.
+Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts, stores them in SQLite, asks Ollama for a second opinion, records rolling PCAP files, and shows analyst review information in a browser dashboard.
 
-The system is designed to start safely in `alert_only` mode. Python makes the final decision, Ollama only gives triage advice, and firewall blocking is disabled unless `auto_response` is explicitly configured.
+The system starts in safe `alert_only` mode. Ollama can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `auto_response` is explicitly enabled.
 
-## Current Status
+## What It Shows
 
-This project currently runs with a few terminal commands. The next goal is a one-command launcher that starts Suricata checks, rolling PCAP capture, alert ingest, and the dashboard together.
+- Latest Suricata alerts
+- Detection types and investigation drilldowns
+- Ollama opinions for alerts
+- Decision evidence: alert data, correlation, score, Ollama reason, and final action
+- Related PCAP files by detection time window
+- Human-review queue
+- Temporary allowlist entries
+- Runtime logs and enrichment status
 
-For now, use this README as the group runbook.
+## Prerequisites
 
-## Project Layout
+Recommended OS:
 
 ```text
-security-vm/
-  app/                         Python application code
-  rules/local.rules            Sample Suricata local rules
-  scripts/start_pcap_capture.sh Rolling PCAP capture helper
-  sql/schema.sql               SQLite schema
-  static/                      Dashboard frontend
-  config.yaml.example          Example config
-  requirements.txt             Python dependencies
+Ubuntu 20.04 or newer
 ```
 
-## Fresh Setup
+Required system tools:
 
-From a fresh clone or copied folder:
+```text
+python3
+python3-venv
+python3-pip
+suricata
+suricata-update
+sqlite3
+wireshark-common
+tshark
+dumpcap
+curl
+```
+
+Optional tools / work in progress:
+
+```text
+tailscale      needed if Ollama is reached over Tailscale
+firewalld      needed only for auto_response firewall blocking
+git            needed for cloning and branch workflow
+```
+
+These are not required for the basic dashboard, ingest, SQLite storage, and Suricata alert viewing flow. Treat optional integrations as work in progress unless the README section for that feature says otherwise.
+
+Install common Ubuntu dependencies:
 
 ```bash
-cd ~/Documents/security-vm
+sudo apt update
+sudo apt install python3 python3-venv python3-pip sqlite3 curl suricata suricata-update wireshark-common tshark
+```
+
+## Installed By Python
+
+These packages are installed by:
+
+```bash
+pip install -r requirements.txt
+```
+
+Current Python packages:
+
+```text
+fastapi     dashboard API framework
+uvicorn     web server for the dashboard
+PyYAML      config.yaml parsing
+requests    Ollama and HTTP API calls
+```
+
+FastAPI also installs supporting packages such as `pydantic` and `starlette`.
+
+Everything else imported by the app, such as `sqlite3`, `json`, `ipaddress`, `argparse`, `pathlib`, `datetime`, and `subprocess`, comes from the Python standard library.
+
+Python version:
+
+```text
+Python 3.8 or newer
+```
+
+Check:
+
+```bash
+python3 --version
+```
+
+## Quick Start
+
+Clone and enter the project:
+
+```bash
+git clone https://github.com/chlee31/security-vm.git
+cd security-vm
+```
+
+Create the Python environment:
+
+```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+```
+
+Run bootstrap:
+
+```bash
 python -m app.bootstrap
 ```
 
-The bootstrap checks tools, creates `config.yaml`, initializes `security_vm.db`, and tests the Ollama endpoint if configured.
+Bootstrap creates `config.yaml`, initializes `security_vm.db`, checks required tools, and tests the Ollama endpoint.
 
-If `config.yaml` is missing, the app falls back to defaults. For group work, commit or share a safe example config, not private machine-specific values.
-
-## Network Interfaces
-
-Check interface names:
-
-```bash
-ip -br link
-```
-
-On the current VM, the working interfaces are:
-
-```text
-ens33  external network
-ens37  internal network
-```
-
-If Suricata logs mention `eth0`, update `/etc/suricata/suricata.yaml`.
-
-Find the old interface references:
-
-```bash
-sudo grep -n "interface: eth0" /etc/suricata/suricata.yaml
-```
-
-For the system service, the important section is usually `af-packet:`:
-
-```yaml
-af-packet:
-  - interface: ens33
-  - interface: ens37
-```
-
-If using pcap/libpcap capture mode, the `pcap:` section can also include both:
-
-```yaml
-pcap:
-  - interface: ens33
-  - interface: ens37
-  - interface: default
-```
-
-## Suricata Rules
-
-Copy the sample local rules:
-
-```bash
-sudo cp rules/local.rules /etc/suricata/rules/local.rules
-```
-
-Make sure `/etc/suricata/suricata.yaml` includes:
-
-```yaml
-rule-files:
-  - local.rules
-```
-
-Test the Suricata config:
-
-```bash
-sudo suricata -T -c /etc/suricata/suricata.yaml
-```
-
-Restart Suricata:
-
-```bash
-sudo systemctl restart suricata
-sudo systemctl status suricata
-```
-
-Watch logs:
-
-```bash
-sudo journalctl -u suricata -f
-```
-
-Watch EVE JSON output:
-
-```bash
-sudo tail -f /var/log/suricata/eve.json
-```
-
-## Run Everything Manually
+## Run The System
 
 Use separate terminals for now.
 
-Terminal 1: Suricata
+Terminal 1: start or watch Suricata
 
 ```bash
 sudo systemctl restart suricata
 sudo journalctl -u suricata -f
 ```
 
-Terminal 2: alert ingest
+Terminal 2: start ingest
 
 ```bash
 cd ~/Documents/security-vm
@@ -138,11 +132,9 @@ source venv/bin/activate
 sudo ./venv/bin/python -m app.main ingest --config config.yaml
 ```
 
-Use `sudo ./venv/bin/python`, not `sudo python`, so the command keeps the virtualenv packages.
+Use `sudo ./venv/bin/python`, not `sudo python`, so sudo still uses the project virtual environment.
 
-Ingest asks Ollama for an opinion on every Suricata alert. If Ollama is down or unreachable, the alert is still stored and the dashboard will show an Ollama unavailable report.
-
-Terminal 3: dashboard
+Terminal 3: start dashboard
 
 ```bash
 cd ~/Documents/security-vm
@@ -156,13 +148,13 @@ Open:
 http://127.0.0.1:8000/
 ```
 
-Or from another machine:
+From another machine, use:
 
 ```text
 http://<security-vm-ip>:8000/
 ```
 
-Terminal 4: rolling PCAP capture
+Terminal 4: start rolling PCAP capture
 
 ```bash
 cd ~/Documents/security-vm
@@ -170,14 +162,14 @@ chmod +x scripts/start_pcap_capture.sh
 ./scripts/start_pcap_capture.sh ens33 ens37 /var/log/pcap
 ```
 
-This records both sides separately:
+This records:
 
 ```text
-/var/log/pcap/external-ens33...
-/var/log/pcap/internal-ens37...
+ens33 -> external capture
+ens37 -> internal capture
 ```
 
-## Quick Test
+## Test It
 
 Generate simple traffic:
 
@@ -185,18 +177,117 @@ Generate simple traffic:
 ping 8.8.8.8
 ```
 
-Then check:
+Watch Suricata output:
 
 ```bash
 sudo tail -f /var/log/suricata/eve.json
 ```
 
-If ingest is running, alerts should be stored in SQLite and appear on the dashboard.
-The dashboard has separate sections for raw Suricata alerts and Ollama opinions.
+If ingest is running, alerts should appear in SQLite and on the dashboard.
 
-## Common Issues
+## Suricata Setup
 
-### Suricata Keeps Restarting
+Check network interfaces:
+
+```bash
+ip -br link
+```
+
+Current lab interface convention:
+
+```text
+ens33  external network
+ens37  internal network
+```
+
+Check active Suricata rules:
+
+```bash
+sudo grep -n -A 20 -B 5 "rule-files:" /etc/suricata/suricata.yaml
+```
+
+Expected default-rule setup:
+
+```yaml
+default-rule-path: /var/lib/suricata/rules
+
+rule-files:
+  - suricata.rules
+```
+
+Update default rules:
+
+```bash
+sudo suricata-update
+```
+
+Test and restart Suricata:
+
+```bash
+sudo suricata -T -c /etc/suricata/suricata.yaml
+sudo systemctl restart suricata
+sudo systemctl status suricata
+```
+
+If Suricata complains about `eth0`, edit `/etc/suricata/suricata.yaml` and use the real interface names:
+
+```yaml
+af-packet:
+  - interface: ens33
+  - interface: ens37
+```
+
+## Ollama Setup
+
+Ollama should be reachable from the Security VM over Tailscale:
+
+```text
+http://<tailscale-ip>:11434
+```
+
+Test it:
+
+```bash
+curl http://<tailscale-ip>:11434/api/tags
+```
+
+The default model used during development:
+
+```text
+llama3.2:latest
+```
+
+Ingest asks Ollama for an opinion on every normalized Suricata alert. If Ollama is unavailable, the alert is still stored and the dashboard records the failure.
+
+## Useful Commands
+
+Initialize or repair the SQLite schema:
+
+```bash
+./venv/bin/python -c "from app.database import init_db; conn = init_db('security_vm.db'); conn.close()"
+```
+
+Backfill missing Ollama reports:
+
+```bash
+python -m app.main ollama-backfill --config config.yaml --limit 500
+```
+
+Check Python syntax:
+
+```bash
+./venv/bin/python -m compileall app
+```
+
+Check PCAP files:
+
+```bash
+sudo ls -lh /var/log/pcap
+```
+
+## Common Problems
+
+### Suricata keeps restarting
 
 Check logs:
 
@@ -204,25 +295,15 @@ Check logs:
 sudo journalctl -u suricata -n 80 --no-pager
 ```
 
-If you see:
-
-```text
-af-packet: eth0: failed to find interface: No such device
-```
-
-Suricata is configured for the wrong interface. Replace `eth0` with the real names from:
+If you see `eth0: No such device`, Suricata is listening on the wrong interface. Use:
 
 ```bash
 ip -br link
 ```
 
-### Permission Denied Reading eve.json
+Then update `/etc/suricata/suricata.yaml`.
 
-If ingest fails with:
-
-```text
-PermissionError: [Errno 13] Permission denied: '/var/log/suricata/eve.json'
-```
+### Ingest cannot read eve.json
 
 Run ingest with the virtualenv Python under sudo:
 
@@ -230,36 +311,9 @@ Run ingest with the virtualenv Python under sudo:
 sudo ./venv/bin/python -m app.main ingest --config config.yaml
 ```
 
-### Missing Python Packages With sudo
+### Dashboard shows no alerts
 
-Do not run:
-
-```bash
-sudo python -m app.main ingest --config config.yaml
-```
-
-That may use system Python and miss packages from `venv`.
-
-Use:
-
-```bash
-sudo ./venv/bin/python -m app.main ingest --config config.yaml
-```
-
-### Dashboard API Says no such table: alerts
-
-Initialize the database:
-
-```bash
-cd ~/Documents/security-vm
-sudo ./venv/bin/python -c "from app.database import init_db; conn = init_db('security_vm.db'); conn.close()"
-```
-
-Then restart the dashboard.
-
-### Dashboard Shows No Alerts
-
-Check:
+Check these:
 
 ```bash
 sudo systemctl status suricata
@@ -267,62 +321,55 @@ sudo tail -f /var/log/suricata/eve.json
 sudo ./venv/bin/python -m app.main ingest --config config.yaml
 ```
 
-Also confirm the dashboard and ingest are using the same database path in `config.yaml`.
+Also confirm dashboard and ingest use the same `database.path` in `config.yaml`.
 
-## Ollama Over Tailscale
+### Dashboard API says no such table
 
-The expected Ollama API shape is:
-
-```text
-http://<tailscale-ip>:11434
-```
-
-Test from the Security VM:
+Initialize the database:
 
 ```bash
-curl http://<tailscale-ip>:11434/api/tags
+./venv/bin/python -c "from app.database import init_db; conn = init_db('security_vm.db'); conn.close()"
 ```
 
-The ingest process calls Ollama on every normalized Suricata alert using:
+## Project Layout
 
 ```text
-POST /api/generate
-```
-
-Ollama returns an opinion with:
-
-```text
-classification, confidence, risk_adjustment, reason, recommended_action
-```
-
-These opinions are saved in SQLite and shown on the dashboard separately from the Suricata alert stream.
-
-The default model used during development was:
-
-```text
-llama3.2:latest
+security-vm/
+  app/                         Python backend
+  rules/local.rules            Optional local Suricata rules
+  scripts/start_pcap_capture.sh Rolling PCAP capture helper
+  sql/schema.sql               SQLite schema
+  static/                      Dashboard frontend
+  config.yaml.example          Example config
+  requirements.txt             Python dependencies
 ```
 
 ## Safety Notes
 
 - Default mode is `alert_only`.
+- Python makes final decisions.
 - Ollama does not execute firewall actions.
-- Python is the final controller.
-- Do not send raw PCAP binaries to Ollama.
-- Store alerts and evidence before acting.
-- Check allowlist and safelist before blocking.
+- Raw PCAP files are not sent to Ollama.
+- Alerts and evidence are stored before any action.
+- Allowlist and safelist checks happen before blocking.
 - Temporary firewall blocks should only happen in explicit `auto_response` mode.
 
-## Planned One-Command Launcher
+## Current Limitation
 
-The desired final flow is one command that:
+The system still runs as multiple terminal processes. A future launcher should start Suricata checks, PCAP capture, ingest, and dashboard with one command.
 
-- validates Suricata config and interface names
-- starts or verifies Suricata
-- initializes SQLite
-- starts rolling PCAP capture for `ens33` and `ens37`
-- starts alert ingest
-- starts the dashboard
-- prints useful log locations and dashboard URL
+Anything not listed in the main run flow should be treated as work in progress until it is documented here with setup and test steps.
 
-Until that launcher exists, use the manual run flow above.
+## README Rule
+
+When adding or pulling new features, update this README if the change affects:
+
+- setup steps
+- required packages
+- config values
+- run commands
+- dashboard behavior
+- troubleshooting
+- safety behavior
+
+This keeps the repo usable for teammates who clone it fresh.
