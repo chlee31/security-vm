@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security VM Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Security VM</p>
+          <h1>Suricata Threat Dashboard</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="mode">Loading</span>
+          <span class="divider"></span>
+          <span id="updated">Waiting for data</span>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <article class="metric">
+          <span>Total Alerts</span>
+          <strong id="total-alerts">0</strong>
+          <small>Stored in SQLite</small>
+        </article>
+        <article class="metric">
+          <span>Detections</span>
+          <strong id="total-detections">0</strong>
+          <small>Python correlation results</small>
+        </article>
+        <article class="metric">
+          <span>Top Detection</span>
+          <strong id="top-detection">None</strong>
+          <small>By count</small>
+        </article>
+        <article class="metric">
+          <span>System Mode</span>
+          <strong id="system-mode">alert_only</strong>
+          <small>Firewall guarded</small>
+        </article>
+      </section>
+
+      <section class="grid">
+        <section class="streams">
+          <section class="panel" id="detection-detail-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Investigation</p>
+                <h2 id="detail-title">Detection Detail</h2>
+              </div>
+            </div>
+            <div id="detection-detail" class="detail-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Evidence</p>
+                <h2>Decision Evidence</h2>
+              </div>
+            </div>
+            <div id="decision-evidence" class="evidence-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Packet Capture</p>
+                <h2>Related PCAP Files</h2>
+              </div>
+            </div>
+            <div id="pcap-files" class="pcap-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Event Stream</p>
+                <h2>Latest Suricata Alerts</h2>
+              </div>
+              <button id="refresh" type="button" title="Refresh">R</button>
+            </div>
+            <div id="alerts" class="alerts"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">AI Triage</p>
+                <h2>Ollama Opinions</h2>
+              </div>
+            </div>
+            <div id="ollama-reports" class="alerts compact-alerts"></div>
+          </section>
+        </section>
+
+        <aside class="side">
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Analyst Review</p>
+                <h2>Human Required</h2>
+              </div>
+            </div>
+            <div id="reviews" class="list review-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Allowlist</p>
+                <h2>Trusted IPs</h2>
+              </div>
+            </div>
+            <form id="allowlist-form" class="form-grid">
+              <input id="allowlist-ip" name="ip_address" type="text" placeholder="IP address" required>
+              <input id="allowlist-name" name="name" type="text" placeholder="Name">
+              <input id="allowlist-hours" name="duration_hours" type="number" min="1" max="8760" value="24" required>
+              <input id="allowlist-by" name="added_by" type="text" placeholder="Added by">
+              <textarea id="allowlist-reason" name="reason" placeholder="Reason" required></textarea>
+              <button class="wide-button" type="submit">Add</button>
+            </form>
+            <div id="allowlist" class="list allowlist-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Correlation</p>
+                <h2>Detection Types</h2>
+              </div>
+            </div>
+            <div id="detections" class="list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Network Design</p>
+                <h2>Traffic Direction</h2>
+              </div>
+            </div>
+            <div id="network-directions" class="list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Runtime</p>
+                <h2>System Logs</h2>
+              </div>
+              <button id="check-ollama" type="button" title="Check Ollama">O</button>
+            </div>
+            <div id="events" class="list log-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Enrichment</p>
+                <h2>Lookup Status</h2>
+              </div>
+            </div>
+            <div id="enrichment" class="list enrichment-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Project Flow</p>
+                <h2>Pipeline</h2>
+              </div>
+            </div>
+            <div class="pipeline">
+              <span>Suricata EVE JSON</span>
+              <span>SQLite storage</span>
+              <span>Python correlation</span>
+              <span>MITRE + risk score</span>
+              <span>Ollama opinion for every alert</span>
+              <span>Alert-only decision by default</span>
+            </div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+# =====================================================================
+# SPR888 Security VM - Custom Detection Rules
+# Local rule space: SID 1000000+ (do not collide with ET Open rules)
+# Each rule maps to a MITRE ATT&CK technique used by the project.
+# =====================================================================
+
+# ---------- PORT SCAN (T1046) ----------
+alert tcp any any -> $HOME_NET any (msg:"LOCAL T1046 TCP SYN Port Scan Detected"; flags:S,12; threshold:type both, track by_src, count 20, seconds 60; classtype:attempted-recon; sid:1000001; rev:1;)
+alert tcp any any -> $HOME_NET any (msg:"LOCAL T1046 TCP NULL Scan Detected"; flags:0; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-recon; sid:1000002; rev:1;)
+alert tcp any any -> $HOME_NET any (msg:"LOCAL T1046 TCP FIN Scan Detected"; flags:F,12; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-recon; sid:1000003; rev:1;)
+alert tcp any any -> $HOME_NET any (msg:"LOCAL T1046 TCP XMAS Scan Detected"; flags:FPU,12; threshold:type both, track by_src, count 5, seconds 60; classtype:attempted-recon; sid:1000004; rev:1;)
+alert udp any any -> $HOME_NET any (msg:"LOCAL T1046 UDP Port Scan Detected"; threshold:type both, track by_src, count 20, seconds 60; classtype:attempted-recon; sid:1000005; rev:1;)
+
+# ---------- BRUTE FORCE (T1110) ----------
+alert tcp any any -> $HOME_NET 22 (msg:"LOCAL T1110 SSH Brute Force Attempt"; flags:S; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-admin; sid:1000010; rev:1;)
+alert tcp any any -> $HOME_NET 21 (msg:"LOCAL T1110 FTP Brute Force Attempt"; flags:S; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-admin; sid:1000011; rev:1;)
+alert tcp any any -> $HOME_NET 3389 (msg:"LOCAL T1110 RDP Brute Force Attempt"; flags:S; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-admin; sid:1000012; rev:1;)
+alert http any any -> $HOME_NET any (msg:"LOCAL T1110 HTTP Auth Brute Force"; http.header; content:"Authorization|3a| Basic"; threshold:type both, track by_src, count 15, seconds 60; classtype:attempted-admin; sid:1000013; rev:1;)
+
+# ---------- DNS TUNNELING (T1071.004) ----------
+alert dns any any -> any any (msg:"LOCAL T1071.004 Long DNS Query Name - Possible Tunneling"; dns.query; pcre:"/^[a-zA-Z0-9\-\.]{50,}/"; classtype:bad-unknown; sid:1000020; rev:1;)
+alert udp any any -> any 53 (msg:"LOCAL T1071.004 High Volume DNS Queries - Possible Tunneling"; threshold:type both, track by_src, count 50, seconds 60; classtype:bad-unknown; sid:1000021; rev:1;)
+alert udp any any -> any 53 (msg:"LOCAL T1071.004 Excessive DNS Query Rate"; threshold:type both, track by_src, count 100, seconds 60; classtype:bad-unknown; sid:1000022; rev:1;)
+
+# ---------- BEACONING / C2 (T1071) ----------
+alert tcp $HOME_NET any -> any any (msg:"LOCAL T1071 Possible C2 Beaconing - Repeated Outbound"; flags:S; threshold:type both, track by_src, count 15, seconds 120; classtype:trojan-activity; sid:1000030; rev:1;)
+alert tcp $HOME_NET any -> any 4444 (msg:"LOCAL T1071 Outbound to Common C2 Port 4444"; flags:S; classtype:trojan-activity; sid:1000031; rev:1;)
+alert tcp $HOME_NET any -> any 1337 (msg:"LOCAL T1071 Outbound to Common C2 Port 1337"; flags:S; classtype:trojan-activity; sid:1000032; rev:1;)
