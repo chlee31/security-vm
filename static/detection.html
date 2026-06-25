@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Detection Workbook</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Detection Workbook</p>
+          <h1 id="workbook-title">Loading Detection</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="workbook-updated">Waiting for data</span>
+        </div>
+      </section>
+
+      <section class="workbook-metrics">
+        <article class="metric">
+          <span>Total</span>
+          <strong id="wb-total">0</strong>
+          <small>Correlated detections</small>
+        </article>
+        <article class="metric">
+          <span>Average Score</span>
+          <strong id="wb-avg-score">0</strong>
+          <small>Python risk score</small>
+        </article>
+        <article class="metric">
+          <span>Max Score</span>
+          <strong id="wb-max-score">0</strong>
+          <small>Highest observed risk</small>
+        </article>
+        <article class="metric">
+          <span>Public IPs</span>
+          <strong id="wb-public-ips">0</strong>
+          <small>Visible public indicators</small>
+        </article>
+      </section>
+
+      <section class="workbook-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Connectivity</p>
+              <h2>Top IP Share</h2>
+            </div>
+          </div>
+          <div id="wb-ip-pie" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">AI Triage</p>
+              <h2>Ollama Opinions</h2>
+            </div>
+          </div>
+          <div id="wb-ollama-chart" class="chart-panel"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Timeline</p>
+              <h2>Activity Over Time</h2>
+            </div>
+          </div>
+          <div id="wb-timeline" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Indicators</p>
+              <h2>Top IP Addresses</h2>
+            </div>
+          </div>
+          <div id="wb-ips" class="workbook-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Latest Alerts</p>
+              <h2>Recent Evidence</h2>
+            </div>
+          </div>
+          <div id="wb-recent" class="workbook-list"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Decision Flow</p>
+              <h2>Evidence Chain</h2>
+            </div>
+          </div>
+          <div id="wb-evidence" class="evidence-list"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Packet Capture</p>
+              <h2>Related PCAP Files</h2>
+            </div>
+          </div>
+          <div id="wb-pcaps" class="pcap-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/detection.js"></script>
+  </body>
+</html>

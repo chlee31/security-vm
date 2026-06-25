@@ -5,6 +5,7 @@ import requests
 
 
 def build_prompt(alert, detection, pcap_summary=""):
+    asset_context = detection.get("asset_context") or {}
     package = {
         "event_context": {
             "src_ip": alert.get("src_ip"),
@@ -25,12 +26,21 @@ def build_prompt(alert, detection, pcap_summary=""):
         },
         "risk_score": {
             "python_initial_score": detection.get("python_initial_score"),
+            "asset_score_applied": detection.get("asset_score_applied", 0),
+        },
+        "registered_asset_context": {
+            "match": asset_context.get("asset_match", "none"),
+            "asset_score": asset_context.get("asset_score", 0),
+            "src_asset": asset_context.get("src_asset"),
+            "dest_asset": asset_context.get("dest_asset"),
         },
         "pcap_summary": pcap_summary or "No PCAP summary generated for this alert.",
     }
 
     return (
         "You are assisting a cybersecurity lab system. "
+        "The registered_asset_context is analyst-defined inventory from SQLite; treat a higher asset_score "
+        "as higher business impact, especially for servers, laptops, routers, and security appliances. "
         "Return only valid JSON with keys: classification, confidence, risk_adjustment, "
         "reason, recommended_action. Classifications: Safe, Human Review Required, Dangerous. "
         "Confidence must be Low, Medium, or High. "

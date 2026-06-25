@@ -8,12 +8,53 @@ The system starts in safe `alert_only` mode. Ollama can recommend actions, but P
 
 - Latest Suricata alerts
 - Detection types and investigation drilldowns
+- Dedicated detection workbook tabs with IP share, Ollama opinion, timeline, evidence, and PCAP views
+- Dedicated outcome workbook tabs for Safe, Human Review, and Dangerous decisions
 - Ollama opinions for alerts
 - Decision evidence: alert data, correlation, score, Ollama reason, and final action
 - Related PCAP files by detection time window
 - Human-review queue
 - Temporary allowlist entries
+- Manual internal asset inventory for lab machines on `ens37`
 - Runtime logs and enrichment status
+
+## Work In Progress Features
+
+These sections are visible in the dashboard so the project direction can be demonstrated, but they are still being refined.
+
+Asset inventory:
+
+- Add internal machines manually by IP address, name, device type, function, and notes.
+- Device type applies a default asset score.
+- Current lab target is the internal `ens37` network.
+- Asset context is shown in detection detail and decision evidence.
+- When alert traffic matches a registered source or destination IP, the asset score is added to Python's initial risk score.
+- The matched asset details and applied score are sent to Ollama as analyst-defined context.
+
+Human review tuning:
+
+- Analysts can confirm or override human-review alerts.
+- Reviews can be labeled as true positive, false positive, authorized test, or unknown.
+- Labels are stored in SQLite for later tuning work.
+- The model does not automatically learn from those labels yet.
+
+Threat enrichment:
+
+- Local IP classification works now.
+- OTX can be configured from the dashboard and run manually against top public IPs.
+- The dashboard can test the OTX API key before running lookups.
+- OTX lookup scope can be top 5 public IPs, top 10 public IPs, or all visible public IPs in the current investigation view.
+- VirusTotal is still planned as an opt-in external lookup.
+- API keys must be entered locally in `config.yaml` and must not be committed to GitHub.
+- Lookups should be cached in SQLite so the project does not burn API quota.
+- Ollama should receive enrichment summaries from Python; Ollama should not call external APIs directly.
+- IP address drilldowns show cached OTX results when present, or `OTX no lookup yet` before live lookup support is enabled.
+
+Dashboard reset:
+
+- The Runtime panel has a reset control for clearing dashboard history during demos.
+- Reset clears alerts, detections, Ollama reports, responses, review queue, evidence, runtime logs, and cached threat-intel rows.
+- Reset keeps manual assets, allowlist entries, and local configuration.
 
 ## Prerequisites
 

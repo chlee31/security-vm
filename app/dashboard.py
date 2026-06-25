@@ -1,5 +1,6 @@
 from pathlib import Path
 import ipaddress
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -8,9 +9,13 @@ import requests
 from pydantic import BaseModel
 
 from app.allowlist import add_allowlist_entry, deactivate_allowlist_entry, list_allowlist_entries
-from app.config import load_config
+from app.config import load_config, save_config
 from app.database import (
+    asset_summary,
     connect,
+    deactivate_asset,
+    default_asset_score,
+    default_asset_types,
     init_db,
     insert_app_event,
     detection_type_detail,
@@ -20,9 +25,15 @@ from app.database import (
     latest_app_events,
     latest_decision_evidence,
     latest_ollama_reports,
+    list_assets,
     list_review_queue,
+    public_ips_for_enrichment,
+    reset_dashboard_logs,
     submit_analyst_review,
+    upsert_threat_intel_lookup,
+    upsert_asset,
 )
+from app.enrichment import lookup_otx_ip, test_otx_connection
 from app.ollama_client import check_ollama
 from app.pcap_inventory import list_pcap_files
 
@@ -44,6 +55,37 @@ class AnalystReviewRequest(BaseModel):
     notes: str = ""
     score: int = None
     classification: str = None
+    tuning_label: str = ""
+
+
+class AssetRequest(BaseModel):
+    ip_address: str
+    name: str
+    device_type: str
+    network_interface: str = ""
+    asset_score: int = None
+    function: str = ""
+    notes: str = ""
+
+
+class ResetLogsRequest(BaseModel):
+    confirm: str
+
+
+class ThreatIntelConfigRequest(BaseModel):
+    otx_enabled: bool = False
+    otx_api_key: str = ""
+    cache_ttl_hours: int = 24
+
+
+class OtxLookupRequest(BaseModel):
+    limit: int = 5
+    scope: str = "top5"
+    detection_type: Optional[str] = None
+
+
+class OtxStatusRequest(BaseModel):
+    otx_api_key: str = ""
 
 
 def create_app(config_path):
@@ -56,6 +98,14 @@ def create_app(config_path):
     @app.get("/")
     def index():
         return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/detection")
+    def detection_workbook():
+        return FileResponse(STATIC_DIR / "detection.html")
+
+    @app.get("/outcome")
+    def outcome_workbook():
+        return FileResponse(STATIC_DIR / "outcome.html")
 
     @app.get("/api/alerts")
     def api_alerts(limit: int = 50):
@@ -74,7 +124,7 @@ def create_app(config_path):
             conn.close()
 
     @app.get("/api/detection-detail")
-    def api_detection_detail(detection_type: str, limit: int = 50):
+    def api_detection_detail(detection_type: str = None, limit: int = 50):
         conn = connect(db_path)
         try:
             return detection_type_detail(conn, detection_type, limit)
@@ -86,6 +136,118 @@ def create_app(config_path):
         conn = connect(db_path)
         try:
             return enrichment_status(conn, config, limit)
+        finally:
+            conn.close()
+
+    @app.post("/api/threat-intel-config")
+    def api_threat_intel_config(payload: ThreatIntelConfigRequest):
+        if payload.cache_ttl_hours < 1 or payload.cache_ttl_hours > 168:
+            raise HTTPException(status_code=400, detail="Cache TTL must be between 1 and 168 hours")
+        config.setdefault("threat_intel", {})
+        config["threat_intel"]["cache_ttl_hours"] = payload.cache_ttl_hours
+        config["threat_intel"]["otx_enabled"] = payload.otx_enabled
+        if payload.otx_api_key.strip():
+            config["threat_intel"]["otx_api_key"] = payload.otx_api_key.strip()
+        elif not payload.otx_enabled:
+            config["threat_intel"]["otx_api_key"] = ""
+        save_config(config, config_path)
+
+        conn = connect(db_path)
+        try:
+            insert_app_event(
+                conn,
+                "info",
+                "enrichment",
+                "Updated OTX enrichment settings",
+                {
+                    "otx_enabled": payload.otx_enabled,
+                    "api_key_configured": bool(config["threat_intel"].get("otx_api_key")),
+                    "cache_ttl_hours": payload.cache_ttl_hours,
+                },
+            )
+            return {
+                "status": "saved",
+                "otx_enabled": payload.otx_enabled,
+                "api_key_configured": bool(config["threat_intel"].get("otx_api_key")),
+            }
+        finally:
+            conn.close()
+
+    @app.post("/api/otx-lookups")
+    def api_otx_lookups(payload: OtxLookupRequest):
+        if payload.scope not in {"top5", "top10", "visible"}:
+            raise HTTPException(status_code=400, detail="Unsupported OTX lookup scope")
+        if payload.scope == "top5":
+            lookup_limit = 5
+        elif payload.scope == "top10":
+            lookup_limit = 10
+        else:
+            lookup_limit = 50
+        if payload.limit:
+            lookup_limit = min(lookup_limit, max(1, int(payload.limit)))
+        if not config.get("threat_intel", {}).get("otx_enabled") or not config.get("threat_intel", {}).get("otx_api_key"):
+            raise HTTPException(status_code=400, detail="Configure and enable OTX first")
+
+        conn = connect(db_path)
+        results = []
+        try:
+            candidates = public_ips_for_enrichment(
+                conn,
+                lookup_limit,
+                detection_type=payload.detection_type if payload.scope == "visible" else None,
+            )
+            if not candidates:
+                insert_app_event(conn, "warning", "enrichment", "No public IPs available for OTX lookup", {"scope": payload.scope})
+                return {"status": "done", "results": [], "message": "No public IPs available for this OTX lookup scope"}
+            for candidate in candidates:
+                ip_address = candidate["ip_address"]
+                try:
+                    result = lookup_otx_ip(config, ip_address)
+                    upsert_threat_intel_lookup(
+                        conn,
+                        result["indicator"],
+                        "otx",
+                        result["reputation"],
+                        malicious_count=result["malicious_count"],
+                        suspicious_count=result["suspicious_count"],
+                        lookup_result=result["lookup_result"],
+                        raw_response=result["raw_response"],
+                    )
+                    results.append({"ip_address": ip_address, "status": "ok", "reputation": result["reputation"]})
+                except requests.RequestException as exc:
+                    insert_app_event(conn, "error", "enrichment", f"OTX lookup failed for {ip_address}: {exc}")
+                    results.append({"ip_address": ip_address, "status": "error", "error": str(exc)})
+                except Exception as exc:
+                    insert_app_event(conn, "error", "enrichment", f"OTX lookup failed for {ip_address}: {exc}")
+                    results.append({"ip_address": ip_address, "status": "error", "error": str(exc)})
+            insert_app_event(conn, "info", "enrichment", f"Completed OTX lookups for {len(results)} public IPs", results)
+            return {"status": "done", "results": results}
+        finally:
+            conn.close()
+
+    @app.post("/api/otx-status")
+    def api_otx_status(payload: OtxStatusRequest):
+        api_key = payload.otx_api_key.strip() or config.get("threat_intel", {}).get("otx_api_key", "")
+        if not api_key:
+            return {"ok": False, "status": "missing_key", "error": "OTX API key is missing"}
+
+        conn = connect(db_path)
+        try:
+            try:
+                status = test_otx_connection(api_key)
+                insert_app_event(
+                    conn,
+                    "info",
+                    "enrichment",
+                    "OTX API connection test succeeded",
+                    {"pulse_count": status.get("pulse_count", 0)},
+                )
+                return {"ok": True, **status}
+            except requests.RequestException as exc:
+                insert_app_event(conn, "error", "enrichment", f"OTX API connection test failed: {exc}")
+                return {"ok": False, "status": "failed", "error": str(exc)}
+            except ValueError as exc:
+                return {"ok": False, "status": "missing_key", "error": str(exc)}
         finally:
             conn.close()
 
@@ -102,10 +264,78 @@ def create_app(config_path):
         return inventory
 
     @app.get("/api/decision-evidence")
-    def api_decision_evidence(limit: int = 25, detection_type: str = None):
+    def api_decision_evidence(limit: int = 25, detection_type: str = None, outcome: str = None):
+        if outcome and outcome not in {"safe", "human_review", "dangerous"}:
+            raise HTTPException(status_code=400, detail="Unsupported outcome filter")
         conn = connect(db_path)
         try:
-            return latest_decision_evidence(conn, limit, detection_type)
+            return latest_decision_evidence(conn, limit, detection_type, outcome)
+        finally:
+            conn.close()
+
+    @app.get("/api/assets")
+    def api_assets(limit: int = 100):
+        conn = connect(db_path)
+        try:
+            return {
+                "types": default_asset_types(config),
+                "default_interface": config.get("assets", {}).get("internal_interface", "ens37"),
+                "summary": asset_summary(conn),
+                "assets": list_assets(conn, limit),
+            }
+        finally:
+            conn.close()
+
+    @app.post("/api/assets")
+    def api_upsert_asset(payload: AssetRequest):
+        try:
+            ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Enter a valid IPv4 or IPv6 address")
+
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Asset name is required")
+
+        allowed_types = {item["value"] for item in default_asset_types(config)}
+        device_type = payload.device_type.strip()
+        if device_type not in allowed_types:
+            raise HTTPException(status_code=400, detail="Unsupported device type")
+
+        score = payload.asset_score
+        if score is None:
+            score = default_asset_score(config, device_type)
+        if score < 0 or score > 10:
+            raise HTTPException(status_code=400, detail="Asset score must be between 0 and 10")
+
+        conn = connect(db_path)
+        try:
+            asset_id = upsert_asset(
+                conn,
+                {
+                    "ip_address": ip_address,
+                    "name": name,
+                    "device_type": device_type,
+                    "network_interface": payload.network_interface.strip()
+                    or config.get("assets", {}).get("internal_interface", "ens37"),
+                    "asset_score": score,
+                    "function": payload.function.strip(),
+                    "notes": payload.notes.strip(),
+                },
+            )
+            insert_app_event(conn, "info", "assets", f"Saved asset {name} ({ip_address})", {"asset_id": asset_id})
+            return {"id": asset_id, "status": "active"}
+        finally:
+            conn.close()
+
+    @app.delete("/api/assets/{asset_id}")
+    def api_deactivate_asset(asset_id: int):
+        conn = connect(db_path)
+        try:
+            if not deactivate_asset(conn, asset_id):
+                raise HTTPException(status_code=404, detail="Asset not found")
+            insert_app_event(conn, "info", "assets", f"Deactivated asset {asset_id}")
+            return {"status": "inactive"}
         finally:
             conn.close()
 
@@ -174,6 +404,9 @@ def create_app(config_path):
             raise HTTPException(status_code=400, detail="Override score is required")
         if payload.score is not None and (payload.score < 0 or payload.score > 100):
             raise HTTPException(status_code=400, detail="Score must be between 0 and 100")
+        tuning_label = payload.tuning_label.strip()
+        if tuning_label and tuning_label not in {"true_positive", "false_positive", "authorized_test", "unknown"}:
+            raise HTTPException(status_code=400, detail="Unsupported tuning label")
 
         conn = connect(db_path)
         try:
@@ -185,6 +418,7 @@ def create_app(config_path):
                 notes=payload.notes.strip(),
                 score=payload.score,
                 classification=payload.classification,
+                tuning_label=tuning_label or None,
             )
             if not ok:
                 raise HTTPException(status_code=404, detail="Review item not found")
@@ -198,6 +432,18 @@ def create_app(config_path):
         conn = connect(db_path)
         try:
             return latest_app_events(conn, limit)
+        finally:
+            conn.close()
+
+    @app.post("/api/reset-logs")
+    def api_reset_logs(payload: ResetLogsRequest):
+        if payload.confirm != "RESET":
+            raise HTTPException(status_code=400, detail="Type RESET to clear dashboard logs")
+        conn = connect(db_path)
+        try:
+            counts = reset_dashboard_logs(conn)
+            insert_app_event(conn, "warning", "reset", "Dashboard logs were reset", counts)
+            return {"status": "reset", "deleted": counts}
         finally:
             conn.close()
 
@@ -227,12 +473,37 @@ def create_app(config_path):
         try:
             total_alerts = conn.execute("SELECT COUNT(*) AS count FROM alerts").fetchone()["count"]
             total_detections = conn.execute("SELECT COUNT(*) AS count FROM detections").fetchone()["count"]
+            total_assets = conn.execute("SELECT COUNT(*) AS count FROM assets WHERE status = 'active'").fetchone()["count"]
             by_type = conn.execute(
                 "SELECT detection_type, COUNT(*) AS count FROM detections GROUP BY detection_type ORDER BY count DESC"
             ).fetchall()
+            by_classification = conn.execute(
+                """
+                SELECT final_classification, final_action, COUNT(*) AS count
+                FROM responses
+                GROUP BY final_classification, final_action
+                """
+            ).fetchall()
+            outcome_counts = {
+                "safe": 0,
+                "human_review": 0,
+                "dangerous": 0,
+            }
+            for row in by_classification:
+                classification = str(row["final_classification"] or "").lower()
+                action = str(row["final_action"] or "").lower()
+                count = row["count"]
+                if "dangerous" in classification or action in {"would_block", "temporary_block"}:
+                    outcome_counts["dangerous"] += count
+                elif "human" in classification or action == "human_review":
+                    outcome_counts["human_review"] += count
+                else:
+                    outcome_counts["safe"] += count
             return {
                 "total_alerts": total_alerts,
                 "total_detections": total_detections,
+                "total_assets": total_assets,
+                "outcome_counts": outcome_counts,
                 "detections_by_type": [dict(row) for row in by_type],
                 "mode": config.get("system", {}).get("mode"),
             }

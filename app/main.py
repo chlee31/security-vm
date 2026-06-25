@@ -7,6 +7,7 @@ from app.config import load_config
 from app.correlator import Correlator
 from app.dashboard import create_app
 from app.database import (
+    asset_context_for_alert,
     detections_without_ollama_reports,
     init_db,
     insert_alert,
@@ -20,7 +21,18 @@ from app.decision_engine import decide
 from app.firewall import temporary_block_firewalld
 from app.normalizer import normalize_suricata_event
 from app.ollama_client import ask_ollama, check_ollama
+from app.risk_score import cap_score
 from app.suricata_reader import follow_file
+
+
+def apply_asset_context(detection, asset_context):
+    detection["asset_context"] = asset_context
+    detection["asset_score_applied"] = asset_context.get("asset_score", 0)
+    if detection["asset_score_applied"]:
+        detection["python_initial_score"] = cap_score(
+            int(detection.get("python_initial_score") or 0) + detection["asset_score_applied"]
+        )
+    return detection
 
 
 def run_ingest(config_path):
@@ -51,6 +63,7 @@ def run_ingest(config_path):
 
         alert_id = insert_alert(conn, alert)
         detection = correlator.correlate(alert, alert_id)
+        detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
         detection_id = insert_detection(conn, detection)
 
         try:
@@ -169,6 +182,7 @@ def run_ollama_backfill(config_path, limit):
             "python_initial_score": row.get("python_initial_score"),
             "status": row.get("status"),
         }
+        detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
 
         try:
             report = ask_ollama(config, alert, detection)

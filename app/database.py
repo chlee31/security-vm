@@ -31,6 +31,154 @@ def ensure_migrations(conn):
     if "name" not in columns:
         conn.execute("ALTER TABLE allowlist ADD COLUMN name TEXT")
 
+    asset_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(assets)").fetchall()
+    }
+    if asset_columns:
+        if "network_interface" not in asset_columns:
+            conn.execute("ALTER TABLE assets ADD COLUMN network_interface TEXT DEFAULT 'ens37'")
+        if "status" not in asset_columns:
+            conn.execute("ALTER TABLE assets ADD COLUMN status TEXT DEFAULT 'active'")
+        if "updated_at" not in asset_columns:
+            conn.execute("ALTER TABLE assets ADD COLUMN updated_at TEXT")
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_ip(ip_address):
+    return str(ipaddress.ip_address(str(ip_address).strip()))
+
+
+def default_asset_types(config):
+    scores = config.get("assets", {}).get("default_scores", {})
+    labels = {
+        "laptop": "Laptop",
+        "desktop": "Desktop",
+        "server": "Server",
+        "firewall_router": "Firewall / Router",
+        "security_appliance": "Security Appliance",
+        "printer": "Printer",
+        "camera_iot": "Camera / IoT",
+        "unknown": "Unknown / Unclassified",
+        "other": "Other",
+    }
+    return [
+        {"value": key, "label": labels.get(key, key.replace("_", " ").title()), "default_score": int(value)}
+        for key, value in scores.items()
+    ]
+
+
+def default_asset_score(config, device_type):
+    scores = config.get("assets", {}).get("default_scores", {})
+    return int(scores.get(device_type, scores.get("unknown", 6)))
+
+
+def list_assets(conn, limit=100):
+    rows = conn.execute(
+        """
+        SELECT id, ip_address, name, device_type, network_interface, asset_score,
+               function, notes, status, created_at, updated_at
+        FROM assets
+        WHERE status = 'active'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def lookup_asset(conn, ip_address):
+    if not ip_address:
+        return None
+    row = conn.execute(
+        """
+        SELECT id, ip_address, name, device_type, network_interface, asset_score,
+               function, notes, status, created_at, updated_at
+        FROM assets
+        WHERE ip_address = ? AND status = 'active'
+        """,
+        (ip_address,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def asset_context_for_alert(conn, alert):
+    src_asset = lookup_asset(conn, alert.get("src_ip"))
+    dest_asset = lookup_asset(conn, alert.get("dest_ip"))
+    matched_asset = src_asset or dest_asset
+    return {
+        "src_asset": src_asset,
+        "dest_asset": dest_asset,
+        "matched_asset": matched_asset,
+        "asset_score": int(matched_asset["asset_score"]) if matched_asset else 0,
+        "asset_match": "src_ip" if src_asset else "dest_ip" if dest_asset else "none",
+    }
+
+
+def upsert_asset(conn, asset):
+    now = utc_now()
+    ip_address = normalize_ip(asset.get("ip_address"))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO assets (
+          ip_address, name, device_type, network_interface, asset_score,
+          function, notes, status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        ON CONFLICT(ip_address) DO UPDATE SET
+          name = excluded.name,
+          device_type = excluded.device_type,
+          network_interface = excluded.network_interface,
+          asset_score = excluded.asset_score,
+          function = excluded.function,
+          notes = excluded.notes,
+          status = 'active',
+          updated_at = excluded.updated_at
+        """,
+        (
+            ip_address,
+            asset.get("name"),
+            asset.get("device_type"),
+            asset.get("network_interface") or "ens37",
+            int(asset.get("asset_score")),
+            asset.get("function"),
+            asset.get("notes"),
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id FROM assets WHERE ip_address = ?", (ip_address,)).fetchone()
+    return row["id"] if row else cur.lastrowid
+
+
+def deactivate_asset(conn, asset_id):
+    cur = conn.execute(
+        "UPDATE assets SET status = 'inactive', updated_at = ? WHERE id = ?",
+        (utc_now(), asset_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def asset_summary(conn):
+    rows = conn.execute(
+        """
+        SELECT device_type, COUNT(*) AS count, AVG(asset_score) AS avg_score
+        FROM assets
+        WHERE status = 'active'
+        GROUP BY device_type
+        ORDER BY count DESC
+        """
+    ).fetchall()
+    total = conn.execute("SELECT COUNT(*) AS count FROM assets WHERE status = 'active'").fetchone()["count"]
+    return {"total": total, "by_type": [dict(row) for row in rows]}
+
 
 def insert_alert(conn, alert):
     cur = conn.cursor()
@@ -191,6 +339,26 @@ def insert_app_event(conn, level, component, message, details=None):
     conn.commit()
 
 
+def reset_dashboard_logs(conn):
+    tables = [
+        "alerts",
+        "detections",
+        "ollama_reports",
+        "responses",
+        "incident_evidence",
+        "analyst_reviews",
+        "tuning_labels",
+        "app_events",
+        "threat_intel_lookups",
+    ]
+    counts = {}
+    for table in tables:
+        counts[table] = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
+        conn.execute(f"DELETE FROM {table}")
+    conn.commit()
+    return counts
+
+
 def latest_alerts(conn, limit=50):
     rows = conn.execute(
         "SELECT * FROM alerts ORDER BY id DESC LIMIT ?",
@@ -274,9 +442,128 @@ def ip_enrichment_profile(ip_address):
     }
 
 
-def detection_type_detail(conn, detection_type, limit=50):
-    summary = conn.execute(
+def latest_threat_intel_for_ip(conn, ip_address, source=None):
+    if not ip_address:
+        return None
+    params = [ip_address]
+    source_filter = ""
+    if source:
+        source_filter = "AND lower(source) = ?"
+        params.append(source.lower())
+    row = conn.execute(
+        f"""
+        SELECT indicator, indicator_type, source, reputation, malicious_count,
+               suspicious_count, lookup_time, cached, lookup_result
+        FROM threat_intel_lookups
+        WHERE indicator = ?
+          {source_filter}
+        ORDER BY lookup_time DESC, id DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_threat_intel_lookup(
+    conn,
+    indicator,
+    source,
+    reputation,
+    malicious_count=0,
+    suspicious_count=0,
+    lookup_result="",
+    raw_response="",
+    indicator_type="ip",
+    cached=0,
+):
+    conn.execute(
         """
+        INSERT INTO threat_intel_lookups (
+          indicator, indicator_type, source, lookup_result, malicious_count,
+          suspicious_count, reputation, lookup_time, cached, raw_response
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            indicator,
+            indicator_type,
+            source,
+            lookup_result,
+            int(malicious_count or 0),
+            int(suspicious_count or 0),
+            reputation,
+            utc_now(),
+            int(cached or 0),
+            raw_response,
+        ),
+    )
+    conn.commit()
+
+
+def public_ips_for_enrichment(conn, limit=10, detection_type=None):
+    if detection_type:
+        rows = conn.execute(
+            """
+            SELECT ip_address, SUM(count) AS count
+            FROM (
+              SELECT src_ip AS ip_address, COUNT(*) AS count
+              FROM detections
+              WHERE detection_type = ? AND src_ip IS NOT NULL
+              GROUP BY src_ip
+              UNION ALL
+              SELECT dest_ip AS ip_address, COUNT(*) AS count
+              FROM detections
+              WHERE detection_type = ? AND dest_ip IS NOT NULL
+              GROUP BY dest_ip
+            )
+            GROUP BY ip_address
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (detection_type, detection_type, limit * 4),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT ip_address, SUM(count) AS count
+            FROM (
+              SELECT src_ip AS ip_address, COUNT(*) AS count FROM alerts WHERE src_ip IS NOT NULL GROUP BY src_ip
+              UNION ALL
+              SELECT dest_ip AS ip_address, COUNT(*) AS count FROM alerts WHERE dest_ip IS NOT NULL GROUP BY dest_ip
+              UNION ALL
+              SELECT src_ip AS ip_address, COUNT(*) AS count FROM detections WHERE src_ip IS NOT NULL GROUP BY src_ip
+              UNION ALL
+              SELECT dest_ip AS ip_address, COUNT(*) AS count FROM detections WHERE dest_ip IS NOT NULL GROUP BY dest_ip
+            )
+            GROUP BY ip_address
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (limit * 4,),
+        ).fetchall()
+
+    candidates = []
+    for row in rows:
+        ip_address = row["ip_address"]
+        try:
+            parsed = ipaddress.ip_address(ip_address)
+        except ValueError:
+            continue
+        if parsed.is_private or parsed.is_loopback or parsed.is_multicast or parsed.is_reserved:
+            continue
+        candidates.append({"ip_address": ip_address, "count": row["count"]})
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def detection_type_detail(conn, detection_type=None, limit=50):
+    filter_sql = "WHERE detection_type = ?" if detection_type else ""
+    params = [detection_type] if detection_type else []
+
+    summary = conn.execute(
+        f"""
         SELECT
           COUNT(*) AS total,
           MIN(first_seen) AS first_seen,
@@ -284,45 +571,50 @@ def detection_type_detail(conn, detection_type, limit=50):
           AVG(python_initial_score) AS avg_score,
           MAX(python_initial_score) AS max_score
         FROM detections
-        WHERE detection_type = ?
+        {filter_sql}
         """,
-        (detection_type,),
+        params,
     ).fetchone()
 
     timeline = conn.execute(
-        """
+        f"""
         SELECT substr(COALESCE(first_seen, created_at), 1, 13) AS bucket, COUNT(*) AS count
         FROM detections
-        WHERE detection_type = ?
+        {filter_sql}
         GROUP BY bucket
         ORDER BY bucket ASC
         """,
-        (detection_type,),
+        params,
     ).fetchall()
 
+    src_filter = "WHERE detection_type = ? AND src_ip IS NOT NULL" if detection_type else "WHERE src_ip IS NOT NULL"
+    dest_filter = "WHERE detection_type = ? AND dest_ip IS NOT NULL" if detection_type else "WHERE dest_ip IS NOT NULL"
+    ip_params = [detection_type, detection_type, limit] if detection_type else [limit]
     ip_rows = conn.execute(
-        """
+        f"""
         SELECT ip_address, SUM(count) AS count
         FROM (
           SELECT src_ip AS ip_address, COUNT(*) AS count
           FROM detections
-          WHERE detection_type = ? AND src_ip IS NOT NULL
+          {src_filter}
           GROUP BY src_ip
           UNION ALL
           SELECT dest_ip AS ip_address, COUNT(*) AS count
           FROM detections
-          WHERE detection_type = ? AND dest_ip IS NOT NULL
+          {dest_filter}
           GROUP BY dest_ip
         )
         GROUP BY ip_address
         ORDER BY count DESC
         LIMIT ?
         """,
-        (detection_type, detection_type, limit),
+        ip_params,
     ).fetchall()
 
+    recent_filter = "WHERE detections.detection_type = ?" if detection_type else ""
+    recent_params = [detection_type, limit] if detection_type else [limit]
     recent = conn.execute(
-        """
+        f"""
         SELECT
           detections.id AS detection_id,
           detections.first_seen,
@@ -338,25 +630,36 @@ def detection_type_detail(conn, detection_type, limit=50):
         FROM detections
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
         LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
-        WHERE detections.detection_type = ?
+        {recent_filter}
         ORDER BY detections.id DESC
         LIMIT ?
         """,
-        (detection_type, limit),
+        recent_params,
     ).fetchall()
 
+    enriched_ips = []
+    for row in ip_rows:
+        item = {
+            **dict(row),
+            **ip_enrichment_profile(row["ip_address"]),
+        }
+        item["asset"] = lookup_asset(conn, row["ip_address"])
+        item["otx"] = latest_threat_intel_for_ip(conn, row["ip_address"], "otx")
+        enriched_ips.append(item)
+
+    recent_rows = []
+    for row in recent:
+        item = dict(row)
+        item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
+        item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
+        recent_rows.append(item)
+
     return {
-        "detection_type": detection_type,
+        "detection_type": detection_type or "all_traffic",
         "summary": dict(summary) if summary else {},
         "timeline": [dict(row) for row in timeline],
-        "ips": [
-            {
-                **dict(row),
-                **ip_enrichment_profile(row["ip_address"]),
-            }
-            for row in ip_rows
-        ],
-        "recent": [dict(row) for row in recent],
+        "ips": enriched_ips,
+        "recent": recent_rows,
     }
 
 
@@ -380,12 +683,42 @@ def detection_time_window(conn, detection_type=None):
     return dict(row) if row else {"start_time": None, "end_time": None}
 
 
-def latest_decision_evidence(conn, limit=25, detection_type=None):
+def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
     params = []
-    filter_sql = ""
+    filters = []
     if detection_type:
-        filter_sql = "WHERE detections.detection_type = ?"
+        filters.append("detections.detection_type = ?")
         params.append(detection_type)
+    if outcome == "dangerous":
+        filters.append(
+            """
+            (
+              lower(COALESCE(responses.final_classification, '')) LIKE '%dangerous%'
+              OR responses.final_action IN ('would_block', 'temporary_block')
+            )
+            """
+        )
+    elif outcome == "human_review":
+        filters.append(
+            """
+            (
+              lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
+              OR responses.final_action = 'human_review'
+            )
+            """
+        )
+    elif outcome == "safe":
+        filters.append(
+            """
+            NOT (
+              lower(COALESCE(responses.final_classification, '')) LIKE '%dangerous%'
+              OR responses.final_action IN ('would_block', 'temporary_block')
+              OR lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
+              OR responses.final_action = 'human_review'
+            )
+            """
+        )
+    filter_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
     params.append(limit)
 
     rows = conn.execute(
@@ -436,11 +769,29 @@ def latest_decision_evidence(conn, limit=25, detection_type=None):
         """,
         params,
     ).fetchall()
-    return [dict(row) for row in rows]
+    evidence = []
+    for row in rows:
+        item = dict(row)
+        item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
+        item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
+        evidence.append(item)
+    return evidence
 
 
 def enrichment_status(conn, config, limit=50):
     threat_intel = config.get("threat_intel", {})
+    cache_ttl_hours = int(threat_intel.get("cache_ttl_hours", 24))
+    otx_enabled = bool(threat_intel.get("otx_enabled", False))
+    otx_key_configured = bool(threat_intel.get("otx_api_key"))
+    if otx_enabled and otx_key_configured:
+        otx_status = "ready"
+        otx_notes = "AlienVault OTX manual lookups are enabled. Use Run OTX Lookups to cache reputation results."
+    elif otx_enabled:
+        otx_status = "missing_key"
+        otx_notes = "OTX is enabled but no API key is configured."
+    else:
+        otx_status = "disabled"
+        otx_notes = "AlienVault OTX lookups are disabled."
     recent_lookups = conn.execute(
         """
         SELECT indicator, indicator_type, source, reputation, malicious_count,
@@ -479,16 +830,25 @@ def enrichment_status(conn, config, limit=50):
             {
                 "name": "virustotal",
                 "enabled": bool(threat_intel.get("virustotal_enabled", False)),
-                "status": "configured" if threat_intel.get("virustotal_enabled", False) else "disabled",
-                "notes": "External reputation lookups are disabled by default to avoid API quota use.",
+                "status": "configured" if threat_intel.get("virustotal_enabled", False) else "wip_disabled",
+                "notes": "WIP external reputation source. Python will call the API only when enabled and cache results before Ollama sees them.",
+                "cache_ttl_hours": cache_ttl_hours,
+                "api_key_configured": bool(threat_intel.get("virustotal_api_key")),
             },
             {
                 "name": "otx",
-                "enabled": bool(threat_intel.get("otx_enabled", False)),
-                "status": "configured" if threat_intel.get("otx_enabled", False) else "disabled",
-                "notes": "AlienVault OTX lookups are disabled by default.",
+                "enabled": otx_enabled,
+                "status": otx_status,
+                "notes": otx_notes,
+                "cache_ttl_hours": cache_ttl_hours,
+                "api_key_configured": otx_key_configured,
             },
         ],
+        "cache_policy": {
+            "enabled": True,
+            "ttl_hours": cache_ttl_hours,
+            "notes": "Reuse recent SQLite threat_intel_lookups rows to avoid burning API quota.",
+        },
         "lookup_count": lookup_count,
         "recent_lookups": [dict(row) for row in recent_lookups],
         "top_ips": [
@@ -597,7 +957,16 @@ def list_review_queue(conn, limit=50):
     return [dict(row) for row in rows]
 
 
-def submit_analyst_review(conn, detection_id, action, analyst_name, notes="", score=None, classification=None):
+def submit_analyst_review(
+    conn,
+    detection_id,
+    action,
+    analyst_name,
+    notes="",
+    score=None,
+    classification=None,
+    tuning_label=None,
+):
     now = datetime.now(timezone.utc).isoformat()
     existing = conn.execute(
         "SELECT id, original_score, original_classification, original_action FROM analyst_reviews WHERE detection_id = ?",
@@ -640,6 +1009,21 @@ def submit_analyst_review(conn, detection_id, action, analyst_name, notes="", sc
             detection_id,
         ),
     )
+    if tuning_label:
+        conn.execute(
+            """
+            INSERT INTO tuning_labels (
+              detection_id, label, false_positive_reason, analyst_notes
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                detection_id,
+                tuning_label,
+                notes if tuning_label in {"false_positive", "authorized_test"} else None,
+                notes,
+            ),
+        )
     conn.commit()
     return True
 

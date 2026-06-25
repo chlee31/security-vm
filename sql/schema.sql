@@ -65,6 +65,20 @@ CREATE TABLE IF NOT EXISTS threat_intel_lookups (
   raw_response TEXT
 );
 
+CREATE TABLE IF NOT EXISTS assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip_address TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  device_type TEXT NOT NULL,
+  network_interface TEXT DEFAULT 'ens37',
+  asset_score INTEGER NOT NULL,
+  function TEXT,
+  notes TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS incident_evidence (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,

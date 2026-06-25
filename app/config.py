@@ -28,8 +28,27 @@ DEFAULT_CONFIG = {
         "high_risk_min": 70,
         "dangerous_min": 85,
     },
-    "threat_intel": {"virustotal_enabled": False, "otx_enabled": False},
-    "assets": {},
+    "threat_intel": {
+        "cache_ttl_hours": 24,
+        "virustotal_enabled": False,
+        "virustotal_api_key": "",
+        "otx_enabled": False,
+        "otx_api_key": "",
+    },
+    "assets": {
+        "internal_interface": "ens37",
+        "default_scores": {
+            "laptop": 10,
+            "desktop": 8,
+            "server": 10,
+            "firewall_router": 10,
+            "security_appliance": 10,
+            "printer": 5,
+            "camera_iot": 6,
+            "unknown": 6,
+            "other": 6,
+        },
+    },
     "safelist": ["127.0.0.1", "::1"],
 }
 
