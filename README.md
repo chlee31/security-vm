@@ -4,6 +4,28 @@ Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata
 
 The system starts in safe `alert_only` mode. Ollama can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `auto_response` is explicitly enabled.
 
+## Screenshots
+
+Main dashboard with Suricata detections, asset tracking, enrichment status, and visible risk scores:
+
+![Security VM dashboard overview](docs/images/dashboard-overview.png)
+
+Detection workbooks break down each alert type with IP share, Ollama opinions, timeline, evidence, and recent alerts:
+
+![DNS tunneling detection workbook](docs/images/dns-tunneling-workbook.png)
+
+![Port scan detection workbook](docs/images/port-scan-workbook.png)
+
+![Unknown detection workbook](docs/images/unknown-detection-workbook.png)
+
+Admin controls let users update Ollama settings, registered machines, asset status, and local tool checks:
+
+![Admin controls](docs/images/admin-controls.png)
+
+Home Ollama/GPU usage during AI triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
+
+![GPU usage while running Ollama at home](docs/images/gpu-ollama-home.png)
+
 ## What It Shows
 
 - Latest Suricata alerts
