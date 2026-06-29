@@ -18,6 +18,8 @@
           <span id="mode">Loading</span>
           <span class="divider"></span>
           <span id="updated">Waiting for data</span>
+          <span class="divider"></span>
+          <a class="nav-link" href="/admin" target="_blank" rel="noopener">Admin</a>
         </div>
       </section>
 
@@ -27,10 +29,30 @@
           <strong id="total-alerts">0</strong>
           <small>Stored in SQLite</small>
         </article>
-        <article class="metric">
+        <article class="metric" data-outcome-all="true" role="button" tabindex="0" title="Open all decision outcomes in a new tab">
           <span>Detections</span>
           <strong id="total-detections">0</strong>
-          <small>Python correlation results</small>
+          <small>Open all outcomes</small>
+        </article>
+        <article class="metric outcome safe" data-outcome-filter="safe" role="button" tabindex="0" title="Open safe decisions in a new tab">
+          <span>Safe</span>
+          <strong id="safe-count">0</strong>
+          <small>Open safe decisions</small>
+        </article>
+        <article class="metric outcome review" data-outcome-filter="human_review" role="button" tabindex="0" title="Open human-review decisions in a new tab">
+          <span>Human Review</span>
+          <strong id="review-count">0</strong>
+          <small>Open review queue</small>
+        </article>
+        <article class="metric outcome danger" data-outcome-filter="dangerous" role="button" tabindex="0" title="Open dangerous decisions in a new tab">
+          <span>Dangerous</span>
+          <strong id="danger-count">0</strong>
+          <small>Open dangerous decisions</small>
+        </article>
+        <article class="metric">
+          <span>Assets</span>
+          <strong id="total-assets">0</strong>
+          <small>Manual internal inventory</small>
         </article>
         <article class="metric">
           <span>Top Detection</span>
@@ -102,6 +124,74 @@
           <section class="panel">
             <div class="panel-head compact">
               <div>
+                <p class="eyebrow">Inventory WIP</p>
+                <h2>Internal Assets</h2>
+              </div>
+            </div>
+            <form id="asset-form" class="form-grid">
+              <label class="field">
+                <span>Machine IP address</span>
+                <input id="asset-ip" name="ip_address" type="text" placeholder="Example: 192.168.11.50" required>
+              </label>
+              <label class="field">
+                <span>Asset name</span>
+                <input id="asset-name" name="name" type="text" placeholder="Example: Marino's Desktop" required>
+              </label>
+              <label class="field">
+                <span>Device type</span>
+                <select id="asset-type" name="device_type" required></select>
+              </label>
+              <label class="field">
+                <span>Network interface</span>
+                <input id="asset-interface" name="network_interface" type="text" placeholder="Example: ens37">
+              </label>
+              <label class="field">
+                <span>Asset score, 0-10</span>
+                <input id="asset-score" name="asset_score" type="number" min="0" max="10" placeholder="Example: 10">
+              </label>
+              <label class="field">
+                <span>Machine function</span>
+                <input id="asset-function" name="function" type="text" placeholder="Example: Windows test endpoint">
+              </label>
+              <label class="field wide-field">
+                <span>Notes</span>
+                <textarea id="asset-notes" name="notes" placeholder="Example: Runs Atomic Red Team tests from ens37"></textarea>
+              </label>
+              <button class="wide-button" type="submit">Save Asset</button>
+            </form>
+            <div id="assets" class="list asset-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow">Enrichment</p>
+                <h2>Lookup Status</h2>
+              </div>
+            </div>
+            <form id="threat-intel-form" class="form-grid">
+              <label class="check-row">
+                <input id="otx-enabled" name="otx_enabled" type="checkbox">
+                <span>Enable OTX</span>
+              </label>
+              <input id="otx-cache-ttl" name="cache_ttl_hours" type="number" min="1" max="168" value="24" placeholder="Cache hours">
+              <input id="otx-api-key" name="otx_api_key" type="password" placeholder="OTX API key">
+              <select id="otx-lookup-scope" name="lookup_scope">
+                <option value="top5">Lookup top 5 public IPs</option>
+                <option value="top10">Lookup top 10 public IPs</option>
+                <option value="visible">Lookup all visible public IPs</option>
+              </select>
+              <button id="test-otx" class="wide-button" type="button">Test OTX Connection</button>
+              <button class="wide-button" type="submit">Save OTX Settings</button>
+              <button id="run-otx" class="wide-button" type="button">Run OTX Lookups</button>
+              <div id="otx-status" class="connection-status">OTX connection not tested.</div>
+            </form>
+            <div id="enrichment" class="list enrichment-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
                 <p class="eyebrow">Analyst Review</p>
                 <h2>Human Required</h2>
               </div>
@@ -143,19 +233,12 @@
                 <p class="eyebrow">Runtime</p>
                 <h2>System Logs</h2>
               </div>
-              <button id="check-ollama" type="button" title="Check Ollama">O</button>
-            </div>
-            <div id="events" class="list log-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
-                <p class="eyebrow">Enrichment</p>
-                <h2>Lookup Status</h2>
+              <div class="panel-actions">
+                <button id="check-ollama" type="button" title="Check Ollama">O</button>
+                <button id="reset-logs" class="danger-button" type="button" title="Reset dashboard logs">X</button>
               </div>
             </div>
-            <div id="enrichment" class="list enrichment-list"></div>
+            <div id="events" class="list log-list"></div>
           </section>
 
           <section class="panel">
@@ -169,6 +252,8 @@
               <span>Suricata EVE JSON</span>
               <span>SQLite storage</span>
               <span>Python correlation</span>
+              <span>Manual asset score WIP</span>
+              <span>Cached enrichment WIP</span>
               <span>MITRE + risk score</span>
               <span>Ollama opinion for every alert</span>
               <span>Alert-only decision by default</span>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Outcome Workbook</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Outcome Workbook</p>
+          <h1 id="outcome-title">Loading Outcome</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="outcome-updated">Waiting for data</span>
+        </div>
+      </section>
+
+      <section class="workbook-metrics">
+        <article class="metric">
+          <span>Decisions</span>
+          <strong id="oc-total">0</strong>
+          <small>Matching outcome</small>
+        </article>
+        <article class="metric">
+          <span>Unique IPs</span>
+          <strong id="oc-ips">0</strong>
+          <small>Sources and destinations</small>
+        </article>
+        <article class="metric">
+          <span>Max Score</span>
+          <strong id="oc-max-score">0</strong>
+          <small>Highest final score</small>
+        </article>
+        <article class="metric">
+          <span>Analyst Items</span>
+          <strong id="oc-review-count">0</strong>
+          <small>Review-related rows</small>
+        </article>
+      </section>
+
+      <section class="workbook-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Affected IPs</p>
+              <h2>Top IP Addresses</h2>
+            </div>
+          </div>
+          <div id="oc-ip-pie" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Correlation</p>
+              <h2>Detection Types</h2>
+            </div>
+          </div>
+          <div id="oc-detection-chart" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">AI Triage</p>
+              <h2>Ollama Opinions</h2>
+            </div>
+          </div>
+          <div id="oc-ollama-chart" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Analyst</p>
+              <h2>Review State</h2>
+            </div>
+          </div>
+          <div id="oc-review-chart" class="chart-panel"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Indicators</p>
+              <h2>IPs In This Outcome</h2>
+            </div>
+          </div>
+          <div id="oc-ips-list" class="workbook-list"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Evidence</p>
+              <h2>Matching Decisions</h2>
+            </div>
+          </div>
+          <div id="oc-evidence" class="evidence-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/outcome.js"></script>
+  </body>
+</html>

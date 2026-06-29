@@ -1,6 +1,10 @@
 const els = {
   totalAlerts: document.querySelector("#total-alerts"),
   totalDetections: document.querySelector("#total-detections"),
+  safeCount: document.querySelector("#safe-count"),
+  reviewCount: document.querySelector("#review-count"),
+  dangerCount: document.querySelector("#danger-count"),
+  totalAssets: document.querySelector("#total-assets"),
   topDetection: document.querySelector("#top-detection"),
   systemMode: document.querySelector("#system-mode"),
   detailTitle: document.querySelector("#detail-title"),
@@ -15,17 +19,67 @@ const els = {
   reviews: document.querySelector("#reviews"),
   allowlist: document.querySelector("#allowlist"),
   allowlistForm: document.querySelector("#allowlist-form"),
+  assets: document.querySelector("#assets"),
+  assetForm: document.querySelector("#asset-form"),
+  assetType: document.querySelector("#asset-type"),
+  assetInterface: document.querySelector("#asset-interface"),
+  assetScore: document.querySelector("#asset-score"),
   enrichment: document.querySelector("#enrichment"),
+  threatIntelForm: document.querySelector("#threat-intel-form"),
+  otxEnabled: document.querySelector("#otx-enabled"),
+  otxCacheTtl: document.querySelector("#otx-cache-ttl"),
+  otxApiKey: document.querySelector("#otx-api-key"),
+  otxLookupScope: document.querySelector("#otx-lookup-scope"),
+  otxStatus: document.querySelector("#otx-status"),
+  testOtx: document.querySelector("#test-otx"),
+  runOtx: document.querySelector("#run-otx"),
   events: document.querySelector("#events"),
   checkOllama: document.querySelector("#check-ollama"),
+  resetLogs: document.querySelector("#reset-logs"),
   refresh: document.querySelector("#refresh")
 };
 
 let selectedDetectionType = null;
+let selectedOutcome = null;
 
-if (window.location.hash.startsWith("#type=")) {
-  selectedDetectionType = decodeURIComponent(window.location.hash.slice(6));
+function readHashFilters() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  selectedDetectionType = params.get("type");
+  selectedOutcome = params.get("outcome");
 }
+
+function writeHashFilters() {
+  const params = new URLSearchParams();
+  if (selectedDetectionType) params.set("type", selectedDetectionType);
+  if (selectedOutcome) params.set("outcome", selectedOutcome);
+  const hash = params.toString();
+  if (hash) {
+    window.location.hash = hash;
+  } else {
+    history.replaceState(null, "", window.location.pathname);
+  }
+}
+
+function filteredDashboardUrl(outcome) {
+  const params = new URLSearchParams();
+  if (selectedDetectionType) params.set("type", selectedDetectionType);
+  if (outcome) params.set("outcome", outcome);
+  const hash = params.toString();
+  return `${window.location.pathname}${hash ? `#${hash}` : ""}`;
+}
+
+function detectionWorkbookUrl(detectionType) {
+  return `/detection?type=${encodeURIComponent(detectionType)}`;
+}
+
+function outcomeWorkbookUrl(outcome) {
+  const params = new URLSearchParams();
+  if (outcome) params.set("type", outcome);
+  if (selectedDetectionType) params.set("detection_type", selectedDetectionType);
+  return `/outcome?${params.toString()}`;
+}
+
+readHashFilters();
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -40,8 +94,18 @@ async function sendJson(path, method, body) {
     body: body ? JSON.stringify(body) : undefined
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || `${path} returned ${response.status}`);
+  if (!response.ok) throw new Error(formatApiError(data, `${path} returned ${response.status}`));
   return data;
+}
+
+function formatApiError(data, fallback) {
+  const detail = data?.detail ?? data?.error ?? data?.message;
+  if (!detail) return fallback;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item.msg || JSON.stringify(item)).join("; ");
+  }
+  return JSON.stringify(detail);
 }
 
 function detectionLabel(value) {
@@ -49,24 +113,63 @@ function detectionLabel(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function scoreClass(score) {
+  const value = Number(score || 0);
+  if (value >= 70) return "danger";
+  if (value >= 30) return "review";
+  return "safe";
+}
+
+function scoreBadge(score, label = "Score") {
+  const value = Number(score || 0);
+  return `
+    <div class="score-badge ${scoreClass(value)}">
+      <span>${label}</span>
+      <strong>${value}</strong>
+      <small>/100</small>
+    </div>
+  `;
+}
+
 function renderMetrics(metrics) {
   const detections = metrics.detections_by_type || [];
-  if (!selectedDetectionType && detections[0]) {
-    selectedDetectionType = detections[0].detection_type;
-  }
   els.totalAlerts.textContent = metrics.total_alerts ?? 0;
   els.totalDetections.textContent = metrics.total_detections ?? 0;
+  els.safeCount.textContent = metrics.outcome_counts?.safe ?? 0;
+  els.reviewCount.textContent = metrics.outcome_counts?.human_review ?? 0;
+  els.dangerCount.textContent = metrics.outcome_counts?.dangerous ?? 0;
+  els.totalAssets.textContent = metrics.total_assets ?? 0;
   els.topDetection.textContent = detections[0] ? detectionLabel(detections[0].detection_type) : "None";
   els.systemMode.textContent = metrics.mode || "alert_only";
   els.mode.textContent = metrics.mode || "alert_only";
+  document.querySelectorAll("[data-outcome-filter]").forEach((card) => {
+    card.classList.toggle("selected", card.dataset.outcomeFilter === selectedOutcome);
+  });
+  document.querySelector("[data-outcome-all]")?.classList.toggle("selected", !selectedOutcome);
 
   const max = Math.max(1, ...detections.map((item) => item.count));
-  els.detections.innerHTML = detections.map((item) => `
+  const allTrafficButton = `
     <button
-      class="list-item detection-button ${item.detection_type === selectedDetectionType ? "selected" : ""}"
+      class="list-item detection-button ${selectedDetectionType ? "" : "selected"}"
       type="button"
-      data-detection-type="${item.detection_type}"
-      aria-pressed="${item.detection_type === selectedDetectionType ? "true" : "false"}"
+      data-detection-all="true"
+      aria-pressed="${selectedDetectionType ? "false" : "true"}"
+      title="Show all traffic"
+    >
+      <div class="row">
+        <strong>All Traffic</strong>
+        <span>${metrics.total_detections ?? 0}</span>
+      </div>
+      <div class="bar"><span style="--value:100%"></span></div>
+      <small>Clear investigation filter</small>
+    </button>
+  `;
+  els.detections.innerHTML = allTrafficButton + (detections.map((item) => `
+    <a
+      class="list-item detection-button ${item.detection_type === selectedDetectionType ? "selected" : ""}"
+      href="${detectionWorkbookUrl(item.detection_type)}"
+      target="_blank"
+      rel="noopener"
       title="Open ${detectionLabel(item.detection_type)} investigation"
     >
       <div class="row">
@@ -74,9 +177,9 @@ function renderMetrics(metrics) {
         <span>${item.count}</span>
       </div>
       <div class="bar"><span style="--value:${(item.count / max) * 100}%"></span></div>
-      <small>Open investigation</small>
-    </button>
-  `).join("") || `<div class="empty">No detections yet. Start ingest and generate test traffic.</div>`;
+      <small>Open detection workbook</small>
+    </a>
+  `).join("") || `<div class="empty">No detections yet. Start ingest and generate test traffic.</div>`);
 }
 
 function renderAlerts(alerts) {
@@ -91,6 +194,10 @@ function renderAlerts(alerts) {
           ${alert.protocol || ""}
         </p>
         <p>${alert.category || "unknown"} · priority ${alert.priority || "unknown"}</p>
+      </div>
+      <div class="score-badge priority">
+        <span>Priority</span>
+        <strong>${alert.priority || "?"}</strong>
       </div>
     </article>
   `).join("") || `<div class="empty">No alerts in SQLite yet. Run the ingest command while Suricata writes eve.json.</div>`;
@@ -136,6 +243,15 @@ function renderEvents(events) {
   `).join("") || `<div class="empty">No runtime logs yet. Start ingest or check Ollama.</div>`;
 }
 
+function renderOtxSummary(result) {
+  if (!result) return "OTX no lookup yet";
+  const reputation = result.reputation || "unknown";
+  const malicious = result.malicious_count ?? 0;
+  const suspicious = result.suspicious_count ?? 0;
+  const cached = result.cached ? "cached" : "fresh";
+  return `OTX ${reputation} · malicious ${malicious} · suspicious ${suspicious} · ${cached}`;
+}
+
 function renderDetectionDetail(detail) {
   if (!detail || !detail.detection_type) {
     els.detailTitle.textContent = "Detection Detail";
@@ -149,7 +265,8 @@ function renderDetectionDetail(detail) {
   const recent = detail.recent || [];
   const max = Math.max(1, ...timeline.map((item) => item.count));
 
-  els.detailTitle.textContent = detectionLabel(detail.detection_type);
+  const detailName = detail.detection_type === "all_traffic" ? "All Traffic" : detectionLabel(detail.detection_type);
+  els.detailTitle.textContent = detailName;
   els.detectionDetail.innerHTML = `
     <div class="detail-card">
       <span>Total</span>
@@ -168,24 +285,34 @@ function renderDetectionDetail(detail) {
         `).join("") || `<div class="empty">No timeline data.</div>`}
       </div>
     </div>
-    <div class="detail-card">
-      <span>IP Addresses</span>
-      <div class="mini-list">
+    <div class="detail-card wide compact-list-card">
+      <span>IP Addresses (${ips.length})</span>
+      <div class="mini-list dense expanded-list ip-list">
         ${ips.map((item) => `
           <div>
             <strong>${item.ip_address}</strong>
-            <small>${item.location} · ${item.scope} · seen ${item.count}</small>
+            <small>
+              ${item.asset ? `${item.asset.name} · ${detectionLabel(item.asset.device_type)} · score ${item.asset.asset_score}` : item.location}
+              · ${item.scope} · seen ${item.count}
+            </small>
+            <small class="intel-line">${renderOtxSummary(item.otx)}</small>
           </div>
         `).join("") || `<small>No IP data.</small>`}
       </div>
     </div>
-    <div class="detail-card wide">
-      <span>Recent ${detectionLabel(detail.detection_type)} Alerts</span>
-      <div class="mini-list">
+    <div class="detail-card wide compact-list-card">
+      <span>Recent ${detailName} Alerts (${recent.length})</span>
+      <div class="mini-list dense recent-alert-list">
         ${recent.map((item) => `
-          <div>
-            <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
-            <small>${item.signature || "Detection"} · score ${item.python_initial_score || 0} · ${item.ollama_classification || "no Ollama"}</small>
+          <div class="score-row">
+            ${scoreBadge(item.python_initial_score || 0, "Score")}
+            <div>
+              <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
+              <small>
+                ${item.signature || "Detection"} · ${item.ollama_classification || "no Ollama"}
+                ${item.src_asset || item.dest_asset ? ` · asset ${item.src_asset?.name || item.dest_asset?.name}` : ""}
+              </small>
+            </div>
           </div>
         `).join("") || `<small>No recent rows.</small>`}
       </div>
@@ -196,14 +323,33 @@ function renderDetectionDetail(detail) {
 function renderEnrichment(status) {
   const sources = status.sources || [];
   const topIps = status.top_ips || [];
+  const otx = sources.find((source) => source.name === "otx") || {};
+  els.otxEnabled.checked = Boolean(otx.enabled);
+  els.otxCacheTtl.value = status.cache_policy?.ttl_hours || 24;
+  els.otxApiKey.placeholder = otx.api_key_configured ? "OTX API key saved" : "OTX API key";
+  if (!otx.api_key_configured && !els.otxApiKey.value) {
+    els.otxStatus.className = "connection-status warn";
+    els.otxStatus.textContent = "OTX key not configured.";
+  } else if (!els.otxStatus.dataset.manual) {
+    els.otxStatus.className = "connection-status";
+    els.otxStatus.textContent = "OTX connection not tested.";
+  }
   els.enrichment.innerHTML = `
+    <div class="list-item">
+      <div class="row tight">
+        <strong>Cache policy</strong>
+        <span>${status.cache_policy?.ttl_hours || 24}h TTL</span>
+      </div>
+      <p>${status.cache_policy?.notes || "Recent lookups are reused from SQLite."}</p>
+    </div>
     ${sources.map((source) => `
       <div class="list-item enrichment-source ${source.status}">
         <div class="row tight">
           <strong>${source.name}</strong>
-          <span>${source.status}</span>
+          <span>${source.status}${source.cache_ttl_hours ? ` · ${source.cache_ttl_hours}h cache` : ""}</span>
         </div>
         <p>${source.notes}</p>
+        ${source.api_key_configured !== undefined ? `<small>API key configured: ${source.api_key_configured ? "yes" : "no"}</small>` : ""}
       </div>
     `).join("")}
     <div class="list-item">
@@ -260,12 +406,14 @@ function renderPcapFiles(inventory) {
 }
 
 function renderDecisionEvidence(rows) {
+  const outcomeLabel = selectedOutcome ? detectionLabel(selectedOutcome) : "All Outcomes";
   els.decisionEvidence.innerHTML = rows.map((row) => `
     <article class="evidence-item">
       <div class="row tight">
         <strong>${row.final_classification || "Decision"}</strong>
-        <span>${row.final_action || "none"} · score ${row.final_score ?? 0}</span>
+        <span>${row.final_action || "none"}</span>
       </div>
+      ${scoreBadge(row.final_score ?? 0, "Final")}
       <div class="evidence-chain">
         <div>
           <span>Alert</span>
@@ -280,7 +428,10 @@ function renderDecisionEvidence(rows) {
         <div>
           <span>Scoring</span>
           <strong>Python ${row.python_initial_score ?? 0} + Ollama ${row.ollama_risk_adjustment ?? 0}</strong>
-          <small>Final score ${row.final_score ?? 0}</small>
+          <small>
+            Final score ${row.final_score ?? 0}
+            ${row.src_asset || row.dest_asset ? ` · asset ${row.src_asset?.name || row.dest_asset?.name} score ${row.src_asset?.asset_score ?? row.dest_asset?.asset_score}` : " · no asset score yet"}
+          </small>
         </div>
         <div>
           <span>Ollama</span>
@@ -294,7 +445,7 @@ function renderDecisionEvidence(rows) {
         </div>
       </div>
     </article>
-  `).join("") || `<div class="empty">No decision evidence rows for this selection yet.</div>`;
+  `).join("") || `<div class="empty">No ${outcomeLabel} decision evidence rows for this selection yet.</div>`;
 }
 
 function formatRemaining(seconds) {
@@ -341,6 +492,13 @@ function renderReviews(reviews) {
           <option value="would_block">Override: would block</option>
           <option value="temporary_block">Override: temporary block</option>
         </select>
+        <select data-review-label="${review.detection_id}">
+          <option value="">Tuning label</option>
+          <option value="true_positive">True positive</option>
+          <option value="false_positive">False positive</option>
+          <option value="authorized_test">Authorized test</option>
+          <option value="unknown">Unknown</option>
+        </select>
         <textarea placeholder="Notes" data-review-notes="${review.detection_id}"></textarea>
         <button class="wide-button" type="button" data-review-submit="${review.detection_id}">Save Review</button>
       </div>
@@ -348,26 +506,71 @@ function renderReviews(reviews) {
   `).join("") || `<div class="empty">No human-review alerts waiting.</div>`;
 }
 
+function renderAssetTypeOptions(types) {
+  const currentValue = els.assetType.value;
+  els.assetType.innerHTML = (types || []).map((type) => `
+    <option value="${type.value}" data-score="${type.default_score}">
+      ${type.label} (${type.default_score})
+    </option>
+  `).join("");
+  if (currentValue) els.assetType.value = currentValue;
+  if (!els.assetScore.value) {
+    const selected = els.assetType.selectedOptions[0];
+    els.assetScore.value = selected ? selected.dataset.score : "";
+  }
+}
+
+function renderAssets(payload) {
+  renderAssetTypeOptions(payload.types || []);
+  if (!els.assetInterface.value) {
+    els.assetInterface.placeholder = payload.default_interface || "ens37";
+  }
+
+  const summary = payload.summary || {};
+  const assets = payload.assets || [];
+  els.assets.innerHTML = `
+    <div class="list-item">
+      <div class="row tight">
+        <strong>Tracked assets</strong>
+        <span>${summary.total || 0}</span>
+      </div>
+      <p>Manual inventory for the internal interface, currently used as WIP decision context.</p>
+    </div>
+    ${assets.map((asset) => `
+      <div class="list-item asset-item">
+        <div class="row tight">
+          <strong>${asset.name}</strong>
+          <span>score ${asset.asset_score}</span>
+        </div>
+        <p>${asset.ip_address} · ${detectionLabel(asset.device_type)} · ${asset.network_interface || "ens37"}</p>
+        <small>${asset.function || "No function"}${asset.notes ? ` · ${asset.notes}` : ""}</small>
+        <button class="text-button" type="button" data-asset-remove="${asset.id}">Deactivate</button>
+      </div>
+    `).join("")}
+  `;
+}
+
 async function refresh() {
   try {
     const detailPath = selectedDetectionType
       ? `/api/detection-detail?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=50`
-      : null;
+      : "/api/detection-detail?limit=50";
     const pcapPath = selectedDetectionType
       ? `/api/pcap-files?detection_type=${encodeURIComponent(selectedDetectionType)}`
       : "/api/pcap-files";
     const evidencePath = selectedDetectionType
-      ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20`
-      : "/api/decision-evidence?limit=20";
-    const [metrics, alerts, ollamaReports, reviews, allowlist, enrichment, events, detail, pcaps, evidence] = await Promise.all([
+      ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`
+      : `/api/decision-evidence?limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`;
+    const [metrics, alerts, ollamaReports, reviews, allowlist, assets, enrichment, events, detail, pcaps, evidence] = await Promise.all([
       getJson("/api/metrics"),
       getJson("/api/alerts?limit=50"),
       getJson("/api/ollama-reports?limit=50"),
       getJson("/api/reviews?limit=25"),
       getJson("/api/allowlist?limit=25"),
+      getJson("/api/assets?limit=25"),
       getJson("/api/enrichment-status?limit=25"),
       getJson("/api/events?limit=40"),
-      detailPath ? getJson(detailPath) : Promise.resolve(null),
+      getJson(detailPath),
       getJson(pcapPath),
       getJson(evidencePath)
     ]);
@@ -376,6 +579,7 @@ async function refresh() {
     renderOllamaReports(ollamaReports);
     renderReviews(reviews);
     renderAllowlist(allowlist);
+    renderAssets(assets);
     renderEnrichment(enrichment);
     renderDetectionDetail(detail);
     renderPcapFiles(pcaps);
@@ -388,6 +592,7 @@ async function refresh() {
     els.ollamaReports.innerHTML = `<div class="empty">${error.message}</div>`;
     els.reviews.innerHTML = `<div class="empty">${error.message}</div>`;
     els.allowlist.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.assets.innerHTML = `<div class="empty">${error.message}</div>`;
     els.enrichment.innerHTML = `<div class="empty">${error.message}</div>`;
     els.pcapFiles.innerHTML = `<div class="empty">${error.message}</div>`;
     els.decisionEvidence.innerHTML = `<div class="empty">${error.message}</div>`;
@@ -400,6 +605,82 @@ async function checkOllama() {
   try {
     await getJson("/api/ollama-status");
   } finally {
+    refresh();
+  }
+}
+
+async function resetLogs() {
+  const confirmText = window.prompt("Type RESET to clear dashboard logs, alerts, detections, Ollama reports, reviews, evidence, and cached threat intel. Assets and allowlist entries are kept.");
+  if (confirmText !== "RESET") return;
+  await sendJson("/api/reset-logs", "POST", { confirm: confirmText });
+  selectedDetectionType = null;
+  selectedOutcome = null;
+  writeHashFilters();
+  refresh();
+}
+
+async function saveThreatIntelSettingsFromForm(forceEnable = false) {
+  const form = new FormData(els.threatIntelForm);
+  return sendJson("/api/threat-intel-config", "POST", {
+    otx_enabled: forceEnable || form.get("otx_enabled") === "on",
+    otx_api_key: form.get("otx_api_key") || "",
+    cache_ttl_hours: Number(form.get("cache_ttl_hours") || 24)
+  });
+}
+
+async function saveThreatIntelSettings(event) {
+  event.preventDefault();
+  await saveThreatIntelSettingsFromForm();
+  els.otxApiKey.value = "";
+  refresh();
+}
+
+async function testOtxConnection() {
+  els.otxStatus.dataset.manual = "true";
+  els.otxStatus.className = "connection-status warn";
+  els.otxStatus.textContent = "Testing OTX connection...";
+  const result = await sendJson("/api/otx-status", "POST", {
+    otx_api_key: els.otxApiKey.value || ""
+  });
+  if (result.ok) {
+    els.otxStatus.className = "connection-status ok";
+    els.otxStatus.textContent = `OTX connected. Subscribed pulses: ${result.pulse_count ?? 0}.`;
+  } else {
+    els.otxStatus.className = "connection-status error";
+    els.otxStatus.textContent = `OTX failed: ${result.error || result.status || "unknown error"}`;
+  }
+  refresh();
+}
+
+async function runOtxLookups() {
+  const scope = els.otxLookupScope.value || "top5";
+  const limitByScope = { top5: 5, top10: 10, visible: 50 };
+  els.otxStatus.dataset.manual = "true";
+  els.otxStatus.className = "connection-status warn";
+  els.otxStatus.textContent = "Running OTX lookups...";
+  els.updated.textContent = "Running OTX lookups";
+  try {
+    await saveThreatIntelSettingsFromForm(true);
+    els.otxEnabled.checked = true;
+    const lookupPayload = {
+      scope,
+      limit: limitByScope[scope] || 5
+    };
+    if (scope === "visible" && selectedDetectionType) {
+      lookupPayload.detection_type = selectedDetectionType;
+    }
+    const result = await sendJson("/api/otx-lookups", "POST", lookupPayload);
+    const okCount = (result.results || []).filter((item) => item.status === "ok").length;
+    const errors = (result.results || []).filter((item) => item.status === "error");
+    const errorCount = errors.length;
+    const totalCount = (result.results || []).length;
+    els.otxStatus.className = errorCount ? "connection-status warn" : "connection-status ok";
+    const firstError = errors[0] ? ` First error ${errors[0].ip_address}: ${errors[0].error}` : "";
+    els.otxStatus.textContent = result.message || `OTX lookups complete. Checked ${totalCount}; saved ${okCount}; errors ${errorCount}.${firstError}`;
+    refresh();
+  } catch (error) {
+    els.otxStatus.className = "connection-status error";
+    els.otxStatus.textContent = `OTX lookup failed: ${error.message}`;
     refresh();
   }
 }
@@ -419,21 +700,66 @@ async function addAllowlistEntry(event) {
   refresh();
 }
 
+async function addAsset(event) {
+  event.preventDefault();
+  const form = new FormData(els.assetForm);
+  const score = form.get("asset_score");
+  await sendJson("/api/assets", "POST", {
+    ip_address: form.get("ip_address"),
+    name: form.get("name"),
+    device_type: form.get("device_type"),
+    network_interface: form.get("network_interface"),
+    asset_score: score === "" ? null : Number(score),
+    function: form.get("function"),
+    notes: form.get("notes")
+  });
+  els.assetForm.reset();
+  const selected = els.assetType.selectedOptions[0];
+  els.assetScore.value = selected ? selected.dataset.score : "";
+  refresh();
+}
+
 async function handleDashboardClick(event) {
+  const outcomeAll = event.target.closest ? event.target.closest("[data-outcome-all]") : null;
+  if (outcomeAll) {
+    window.open(outcomeWorkbookUrl("all"), "_blank", "noopener");
+    return;
+  }
+
+  const outcomeCard = event.target.closest ? event.target.closest("[data-outcome-filter]") : null;
+  const outcome = outcomeCard ? outcomeCard.dataset.outcomeFilter : null;
+  if (outcome) {
+    window.open(outcomeWorkbookUrl(outcome), "_blank", "noopener");
+    return;
+  }
+
+  const allTrafficButton = event.target.closest ? event.target.closest("[data-detection-all]") : null;
+  if (allTrafficButton) {
+    selectedDetectionType = null;
+    writeHashFilters();
+    els.detailTitle.textContent = "Loading All Traffic";
+    document.querySelector("#detection-detail-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    refresh();
+    return;
+  }
+
   const detectionButton = event.target.closest ? event.target.closest("[data-detection-type]") : null;
   const detectionType = detectionButton ? detectionButton.dataset.detectionType : null;
   if (detectionType) {
-    selectedDetectionType = detectionType;
-    window.location.hash = `type=${encodeURIComponent(detectionType)}`;
-    els.detailTitle.textContent = `Loading ${detectionLabel(detectionType)}`;
-    document.querySelector("#detection-detail-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-    refresh();
+    window.open(detectionWorkbookUrl(detectionType), "_blank", "noopener");
     return;
   }
 
   const removeId = event.target.dataset.allowRemove;
   if (removeId) {
     await sendJson(`/api/allowlist/${removeId}`, "DELETE");
+    refresh();
+    return;
+  }
+
+  const assetRemoveId = event.target.dataset.assetRemove;
+  if (assetRemoveId) {
+    await sendJson(`/api/assets/${assetRemoveId}`, "DELETE");
     refresh();
     return;
   }
@@ -446,6 +772,7 @@ async function handleDashboardClick(event) {
       action,
       analyst_name: document.querySelector(`[data-review-name="${detectionId}"]`).value,
       notes: document.querySelector(`[data-review-notes="${detectionId}"]`).value,
+      tuning_label: document.querySelector(`[data-review-label="${detectionId}"]`).value,
       score: action === "confirm" ? null : Number(scoreValue),
       classification: action === "log_only" ? "Safe" : action === "would_block" || action === "temporary_block" ? "Dangerous" : "Human Review Required"
     });
@@ -455,7 +782,16 @@ async function handleDashboardClick(event) {
 
 els.refresh.addEventListener("click", refresh);
 els.checkOllama.addEventListener("click", checkOllama);
+els.resetLogs.addEventListener("click", resetLogs);
+els.threatIntelForm.addEventListener("submit", saveThreatIntelSettings);
+els.testOtx.addEventListener("click", testOtxConnection);
+els.runOtx.addEventListener("click", runOtxLookups);
 els.allowlistForm.addEventListener("submit", addAllowlistEntry);
+els.assetForm.addEventListener("submit", addAsset);
+els.assetType.addEventListener("change", () => {
+  const selected = els.assetType.selectedOptions[0];
+  els.assetScore.value = selected ? selected.dataset.score : "";
+});
 document.addEventListener("click", handleDashboardClick);
 refresh();
 setInterval(refresh, 2000);
