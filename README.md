@@ -16,6 +16,7 @@ The system starts in safe `alert_only` mode. Ollama can recommend actions, but P
 - Human-review queue
 - Temporary allowlist entries
 - Manual internal asset inventory for lab machines on `ens37`
+- Admin controls for registered machine IPs, Ollama host/model settings, and installed tool checks
 - Runtime logs and enrichment status
 
 ## Work In Progress Features
@@ -55,6 +56,17 @@ Dashboard reset:
 - The Runtime panel has a reset control for clearing dashboard history during demos.
 - Reset clears alerts, detections, Ollama reports, responses, review queue, evidence, runtime logs, and cached threat-intel rows.
 - Reset keeps manual assets, allowlist entries, and local configuration.
+
+Admin controls:
+
+- Open `/admin` from the dashboard header.
+- Change the Ollama host, model name, and timeout without editing `config.yaml` manually.
+- Suggested model names include `llama3.1:8b`, `llama3.2:latest`, and DeepSeek options for future testing.
+- View and edit registered internal machine IP addresses stored in SQLite.
+- Mark assets inactive to preserve tracking history, or permanently delete mistaken entries from admin controls.
+- View required system tools and Python packages detected on the Security VM, including version numbers when available.
+- Copy install or update commands from the admin page. Run system package commands in the terminal because they usually require `sudo`.
+- If `dumpcap` is installed but marked permission-limited, add the user to the `wireshark` group or run packet capture with sudo.
 
 ## Prerequisites
 
@@ -193,6 +205,12 @@ From another machine, use:
 
 ```text
 http://<security-vm-ip>:8000/
+```
+
+Admin controls:
+
+```text
+http://<security-vm-ip>:8000/admin
 ```
 
 Terminal 4: start rolling PCAP capture

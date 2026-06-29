@@ -113,6 +113,24 @@ function detectionLabel(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function scoreClass(score) {
+  const value = Number(score || 0);
+  if (value >= 70) return "danger";
+  if (value >= 30) return "review";
+  return "safe";
+}
+
+function scoreBadge(score, label = "Score") {
+  const value = Number(score || 0);
+  return `
+    <div class="score-badge ${scoreClass(value)}">
+      <span>${label}</span>
+      <strong>${value}</strong>
+      <small>/100</small>
+    </div>
+  `;
+}
+
 function renderMetrics(metrics) {
   const detections = metrics.detections_by_type || [];
   els.totalAlerts.textContent = metrics.total_alerts ?? 0;
@@ -176,6 +194,10 @@ function renderAlerts(alerts) {
           ${alert.protocol || ""}
         </p>
         <p>${alert.category || "unknown"} · priority ${alert.priority || "unknown"}</p>
+      </div>
+      <div class="score-badge priority">
+        <span>Priority</span>
+        <strong>${alert.priority || "?"}</strong>
       </div>
     </article>
   `).join("") || `<div class="empty">No alerts in SQLite yet. Run the ingest command while Suricata writes eve.json.</div>`;
@@ -282,12 +304,15 @@ function renderDetectionDetail(detail) {
       <span>Recent ${detailName} Alerts (${recent.length})</span>
       <div class="mini-list dense recent-alert-list">
         ${recent.map((item) => `
-          <div>
-            <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
-            <small>
-              ${item.signature || "Detection"} · score ${item.python_initial_score || 0} · ${item.ollama_classification || "no Ollama"}
-              ${item.src_asset || item.dest_asset ? ` · asset ${item.src_asset?.name || item.dest_asset?.name}` : ""}
-            </small>
+          <div class="score-row">
+            ${scoreBadge(item.python_initial_score || 0, "Score")}
+            <div>
+              <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
+              <small>
+                ${item.signature || "Detection"} · ${item.ollama_classification || "no Ollama"}
+                ${item.src_asset || item.dest_asset ? ` · asset ${item.src_asset?.name || item.dest_asset?.name}` : ""}
+              </small>
+            </div>
           </div>
         `).join("") || `<small>No recent rows.</small>`}
       </div>
@@ -386,8 +411,9 @@ function renderDecisionEvidence(rows) {
     <article class="evidence-item">
       <div class="row tight">
         <strong>${row.final_classification || "Decision"}</strong>
-        <span>${row.final_action || "none"} · score ${row.final_score ?? 0}</span>
+        <span>${row.final_action || "none"}</span>
       </div>
+      ${scoreBadge(row.final_score ?? 0, "Final")}
       <div class="evidence-chain">
         <div>
           <span>Alert</span>

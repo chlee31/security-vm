@@ -28,6 +28,24 @@ function label(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function scoreClass(score) {
+  const value = Number(score || 0);
+  if (value >= 70) return "danger";
+  if (value >= 30) return "review";
+  return "safe";
+}
+
+function scoreBadge(score, badgeLabel = "Score") {
+  const value = Number(score || 0);
+  return `
+    <div class="score-badge ${scoreClass(value)}">
+      <span>${badgeLabel}</span>
+      <strong>${value}</strong>
+      <small>/100</small>
+    </div>
+  `;
+}
+
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -138,11 +156,12 @@ function renderIps(ips) {
 
 function renderRecent(recent) {
   els.recent.innerHTML = recent.map((item) => `
-    <div class="workbook-row">
+    <div class="workbook-row score-row">
+      ${scoreBadge(item.python_initial_score || 0, "Score")}
       <div>
         <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
         <p>${item.signature || "Detection"}</p>
-        <small>score ${item.python_initial_score || 0} · ${item.ollama_classification || "no Ollama"}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
+        <small>${item.ollama_classification || "no Ollama"}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
       </div>
     </div>
   `).join("") || `<div class="empty">No recent detections.</div>`;
@@ -153,8 +172,9 @@ function renderEvidence(rows) {
     <article class="evidence-item">
       <div class="row tight">
         <strong>${row.final_classification || "Decision"}</strong>
-        <span>${row.final_action || "none"} · score ${row.final_score ?? 0}</span>
+        <span>${row.final_action || "none"}</span>
       </div>
+      ${scoreBadge(row.final_score ?? 0, "Final")}
       <div class="evidence-chain">
         <div>
           <span>Alert</span>

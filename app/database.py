@@ -91,6 +91,20 @@ def list_assets(conn, limit=100):
     return [dict(row) for row in rows]
 
 
+def list_all_assets(conn, limit=500):
+    rows = conn.execute(
+        """
+        SELECT id, ip_address, name, device_type, network_interface, asset_score,
+               function, notes, status, created_at, updated_at
+        FROM assets
+        ORDER BY status ASC, updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def lookup_asset(conn, ip_address):
     if not ip_address:
         return None
@@ -161,6 +175,46 @@ def deactivate_asset(conn, asset_id):
     cur = conn.execute(
         "UPDATE assets SET status = 'inactive', updated_at = ? WHERE id = ?",
         (utc_now(), asset_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_asset(conn, asset_id):
+    cur = conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_asset(conn, asset_id, asset):
+    now = utc_now()
+    ip_address = normalize_ip(asset.get("ip_address"))
+    cur = conn.execute(
+        """
+        UPDATE assets
+        SET ip_address = ?,
+            name = ?,
+            device_type = ?,
+            network_interface = ?,
+            asset_score = ?,
+            function = ?,
+            notes = ?,
+            status = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            ip_address,
+            asset.get("name"),
+            asset.get("device_type"),
+            asset.get("network_interface") or "ens37",
+            int(asset.get("asset_score")),
+            asset.get("function"),
+            asset.get("notes"),
+            asset.get("status") or "active",
+            now,
+            asset_id,
+        ),
     )
     conn.commit()
     return cur.rowcount > 0

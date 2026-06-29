@@ -1,6 +1,14 @@
 from pathlib import Path
+import importlib.util
+import getpass
 import ipaddress
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -14,6 +22,7 @@ from app.database import (
     asset_summary,
     connect,
     deactivate_asset,
+    delete_asset,
     default_asset_score,
     default_asset_types,
     init_db,
@@ -25,6 +34,7 @@ from app.database import (
     latest_app_events,
     latest_decision_evidence,
     latest_ollama_reports,
+    list_all_assets,
     list_assets,
     list_review_queue,
     public_ips_for_enrichment,
@@ -32,6 +42,7 @@ from app.database import (
     submit_analyst_review,
     upsert_threat_intel_lookup,
     upsert_asset,
+    update_asset,
 )
 from app.enrichment import lookup_otx_ip, test_otx_connection
 from app.ollama_client import check_ollama
@@ -68,6 +79,16 @@ class AssetRequest(BaseModel):
     notes: str = ""
 
 
+class AdminAssetRequest(AssetRequest):
+    status: str = "active"
+
+
+class OllamaConfigRequest(BaseModel):
+    host: str
+    model: str
+    timeout_seconds: int = 90
+
+
 class ResetLogsRequest(BaseModel):
     confirm: str
 
@@ -88,6 +109,134 @@ class OtxStatusRequest(BaseModel):
     otx_api_key: str = ""
 
 
+ADMIN_SYSTEM_TOOLS = {
+    "Python": {"binary": "python3", "package": "python3 python3-venv python3-pip"},
+    "Suricata": {"binary": "suricata", "package": "suricata"},
+    "Suricata Update": {"binary": "suricata-update", "package": "suricata-update"},
+    "SQLite CLI": {"binary": "sqlite3", "package": "sqlite3"},
+    "curl": {"binary": "curl", "package": "curl"},
+    "dumpcap": {"binary": "dumpcap", "package": "wireshark-common"},
+    "tshark": {"binary": "tshark", "package": "tshark"},
+    "firewalld": {"binary": "firewall-cmd", "package": "firewalld"},
+    "Tailscale": {"binary": "tailscale", "package": "tailscale"},
+}
+
+ADMIN_PYTHON_PACKAGES = {
+    "FastAPI": {"module": "fastapi", "package": "fastapi", "distribution": "fastapi"},
+    "Uvicorn": {"module": "uvicorn", "package": "uvicorn", "distribution": "uvicorn"},
+    "PyYAML": {"module": "yaml", "package": "PyYAML", "distribution": "PyYAML"},
+    "Requests": {"module": "requests", "package": "requests", "distribution": "requests"},
+}
+
+OLLAMA_MODEL_SUGGESTIONS = [
+    "llama3.1:8b",
+    "llama3.2:latest",
+    "deepseek-r1:8b",
+    "deepseek-r1:latest",
+]
+
+
+def tool_status():
+    tools = []
+    current_user = getpass.getuser()
+    for name, meta in ADMIN_SYSTEM_TOOLS.items():
+        binary = meta["binary"]
+        package = meta["package"]
+        if name == "Python":
+            path = sys.executable
+            installed = bool(path)
+            executable = True
+            version = sys.version.split()[0]
+        else:
+            path = shutil.which(binary, mode=os.F_OK)
+            installed = bool(path)
+            executable = bool(path and os.access(path, os.X_OK))
+            version = tool_version(path) if executable else ""
+        if installed and executable:
+            status = "ready"
+            notes = "Available on PATH."
+        elif installed:
+            status = "permission_limited"
+            notes = "Installed, but the dashboard user cannot execute it."
+            if binary == "dumpcap":
+                notes = "Installed, but packet capture needs wireshark group access or sudo. After adding the user, log out and back in or run newgrp wireshark, then restart the dashboard."
+        else:
+            status = "missing"
+            notes = "Not found on PATH."
+        tools.append(
+            {
+                "name": name,
+                "binary": binary,
+                "installed": installed,
+                "executable": executable,
+                "status": status,
+                "path": path or "",
+                "version": version,
+                "notes": notes,
+                "install_command": f"sudo apt install -y {package}",
+                "update_command": f"sudo apt update && sudo apt install --only-upgrade -y {package}",
+                "fix_command": f"sudo usermod -aG wireshark {current_user}"
+                if binary == "dumpcap" and installed and not executable
+                else "",
+                "after_fix": "Log out and back in, or run: newgrp wireshark. Then restart the dashboard.",
+            }
+        )
+    return tools
+
+
+def tool_version(path):
+    commands = ([path, "--version"], [path, "-V"], [path, "version"])
+    for command in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        text = (result.stdout or result.stderr or "").strip()
+        if text:
+            return text.splitlines()[0][:140]
+    return "installed, version unknown"
+
+
+def python_package_status():
+    packages = []
+    for name, meta in ADMIN_PYTHON_PACKAGES.items():
+        module_name = meta["module"]
+        spec = importlib.util.find_spec(module_name)
+        version = ""
+        if spec is not None:
+            try:
+                from importlib import metadata
+
+                version = metadata.version(meta["distribution"])
+            except Exception:
+                version = "installed, version unknown"
+        packages.append(
+            {
+                "name": name,
+                "module": module_name,
+                "installed": spec is not None,
+                "version": version,
+                "source": "requirements.txt",
+                "install_command": f"./venv/bin/python -m pip install -U {meta['package']}",
+                "update_command": "./venv/bin/python -m pip install -U -r requirements.txt",
+            }
+        )
+    return packages
+
+
+def validate_ollama_config(payload):
+    host = payload.host.strip().rstrip("/")
+    model = payload.model.strip()
+    parsed = urlparse(host)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Ollama host must look like http://IP:11434")
+    if not model:
+        raise HTTPException(status_code=400, detail="Ollama model is required")
+    if payload.timeout_seconds < 5 or payload.timeout_seconds > 300:
+        raise HTTPException(status_code=400, detail="Timeout must be between 5 and 300 seconds")
+    return host, model, payload.timeout_seconds
+
+
 def create_app(config_path):
     config = load_config(config_path)
     db_path = config.get("database", {}).get("path", "security_vm.db")
@@ -106,6 +255,125 @@ def create_app(config_path):
     @app.get("/outcome")
     def outcome_workbook():
         return FileResponse(STATIC_DIR / "outcome.html")
+
+    @app.get("/admin")
+    def admin_controls():
+        return FileResponse(STATIC_DIR / "admin.html")
+
+    @app.get("/api/admin/settings")
+    def api_admin_settings(limit: int = 500):
+        conn = connect(db_path)
+        try:
+            return {
+                "config_path": str(config_path),
+                "database_path": db_path,
+                "ollama": {
+                    "host": config.get("ollama", {}).get("host", ""),
+                    "model": config.get("ollama", {}).get("model", ""),
+                    "timeout_seconds": config.get("ollama", {}).get("timeout_seconds", 90),
+                    "model_suggestions": OLLAMA_MODEL_SUGGESTIONS,
+                },
+                "network": {
+                    "internal_interface": config.get("assets", {}).get("internal_interface", "ens37"),
+                    "suricata_eve_json_path": config.get("suricata", {}).get("eve_json_path", ""),
+                    "pcap_rolling_dir": config.get("pcap", {}).get("rolling_dir", ""),
+                },
+                "assets": {
+                    "types": default_asset_types(config),
+                    "summary": asset_summary(conn),
+                    "items": list_all_assets(conn, limit),
+                },
+                "tools": tool_status(),
+                "python_packages": python_package_status(),
+            }
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/ollama")
+    def api_admin_ollama(payload: OllamaConfigRequest):
+        host, model, timeout_seconds = validate_ollama_config(payload)
+        config.setdefault("ollama", {})
+        config["ollama"]["host"] = host
+        config["ollama"]["model"] = model
+        config["ollama"]["timeout_seconds"] = timeout_seconds
+        save_config(config, config_path)
+
+        conn = connect(db_path)
+        try:
+            insert_app_event(
+                conn,
+                "info",
+                "admin",
+                f"Updated Ollama settings to {model} at {host}",
+                {"host": host, "model": model, "timeout_seconds": timeout_seconds},
+            )
+        finally:
+            conn.close()
+        return {"status": "saved", "host": host, "model": model, "timeout_seconds": timeout_seconds}
+
+    @app.put("/api/admin/assets/{asset_id}")
+    def api_admin_update_asset(asset_id: int, payload: AdminAssetRequest):
+        try:
+            ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Enter a valid IPv4 or IPv6 address")
+
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Asset name is required")
+
+        allowed_types = {item["value"] for item in default_asset_types(config)}
+        device_type = payload.device_type.strip()
+        if device_type not in allowed_types:
+            raise HTTPException(status_code=400, detail="Unsupported device type")
+
+        status = payload.status.strip().lower()
+        if status not in {"active", "inactive"}:
+            raise HTTPException(status_code=400, detail="Asset status must be active or inactive")
+
+        score = payload.asset_score
+        if score is None:
+            score = default_asset_score(config, device_type)
+        if score < 0 or score > 10:
+            raise HTTPException(status_code=400, detail="Asset score must be between 0 and 10")
+
+        conn = connect(db_path)
+        try:
+            try:
+                ok = update_asset(
+                    conn,
+                    asset_id,
+                    {
+                        "ip_address": ip_address,
+                        "name": name,
+                        "device_type": device_type,
+                        "network_interface": payload.network_interface.strip()
+                        or config.get("assets", {}).get("internal_interface", "ens37"),
+                        "asset_score": score,
+                        "function": payload.function.strip(),
+                        "notes": payload.notes.strip(),
+                        "status": status,
+                    },
+                )
+            except sqlite3.IntegrityError:
+                raise HTTPException(status_code=400, detail="Another asset already uses that IP address")
+            if not ok:
+                raise HTTPException(status_code=404, detail="Asset not found")
+            insert_app_event(conn, "info", "admin", f"Updated asset {name} ({ip_address})", {"asset_id": asset_id})
+            return {"status": "saved", "id": asset_id}
+        finally:
+            conn.close()
+
+    @app.delete("/api/admin/assets/{asset_id}")
+    def api_admin_delete_asset(asset_id: int):
+        conn = connect(db_path)
+        try:
+            if not delete_asset(conn, asset_id):
+                raise HTTPException(status_code=404, detail="Asset not found")
+            insert_app_event(conn, "warning", "admin", f"Deleted asset {asset_id}")
+            return {"status": "deleted"}
+        finally:
+            conn.close()
 
     @app.get("/api/alerts")
     def api_alerts(limit: int = 50):

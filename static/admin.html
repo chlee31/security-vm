@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security VM Admin Controls</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Developer Options</p>
+          <h1>Admin Controls</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="admin-updated">Loading</span>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+        </div>
+      </section>
+
+      <section class="admin-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">AI Runtime</p>
+              <h2>Ollama Settings</h2>
+            </div>
+          </div>
+          <form id="ollama-form" class="form-grid admin-form">
+            <label class="field">
+              <span>Ollama IP address and port</span>
+              <input id="ollama-host" name="host" type="url" placeholder="Example: http://100.99.223.100:11434" required>
+              <small>Use the AI machine address plus Ollama port.</small>
+            </label>
+            <label class="field">
+              <span>Ollama model name</span>
+              <input id="ollama-model" name="model" list="ollama-models" placeholder="Example: llama3.1:8b" required>
+              <small>This is the model Python asks for each alert.</small>
+            </label>
+            <datalist id="ollama-models"></datalist>
+            <label class="field">
+              <span>Response timeout, seconds</span>
+              <input id="ollama-timeout" name="timeout_seconds" type="number" min="5" max="300" placeholder="Example: 90" required>
+              <small>How long Python waits before marking Ollama unavailable.</small>
+            </label>
+            <button class="wide-button" type="submit">Save Ollama Settings</button>
+            <button id="test-ollama-admin" class="wide-button" type="button">Save and Test Ollama</button>
+            <div id="ollama-admin-status" class="connection-status">Ollama connection not tested.</div>
+          </form>
+          <div id="ollama-summary" class="list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Setup Inputs</p>
+              <h2>Registered Machines</h2>
+            </div>
+          </div>
+          <form id="admin-asset-form" class="form-grid admin-form">
+            <input id="admin-asset-id" name="id" type="hidden">
+            <label class="field">
+              <span>Machine IP address</span>
+              <input id="admin-asset-ip" name="ip_address" type="text" placeholder="Example: 192.168.11.50" required>
+            </label>
+            <label class="field">
+              <span>Machine name</span>
+              <input id="admin-asset-name" name="name" type="text" placeholder="Example: Marino's Desktop" required>
+            </label>
+            <label class="field">
+              <span>Device type</span>
+              <select id="admin-asset-type" name="device_type" required></select>
+              <small>Used to choose the default asset score.</small>
+            </label>
+            <label class="field">
+              <span>Network interface</span>
+              <input id="admin-asset-interface" name="network_interface" type="text" placeholder="Example: ens37">
+              <small>Use the internal network interface for lab machines.</small>
+            </label>
+            <label class="field">
+              <span>Asset score, 0-10</span>
+              <input id="admin-asset-score" name="asset_score" type="number" min="0" max="10" placeholder="Example: 10">
+              <small>Higher means more important to protect.</small>
+            </label>
+            <label class="field">
+              <span>Status</span>
+              <select id="admin-asset-status" name="status">
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Machine function</span>
+              <input id="admin-asset-function" name="function" type="text" placeholder="Example: Windows test endpoint">
+            </label>
+            <label class="field wide-field">
+              <span>Notes</span>
+              <textarea id="admin-asset-notes" name="notes" placeholder="Example: Runs Atomic Red Team tests from ens37"></textarea>
+            </label>
+            <button id="admin-asset-submit" class="wide-button" type="submit">Add Machine</button>
+            <button id="admin-asset-cancel" class="wide-button" type="button">Cancel Edit</button>
+          </form>
+          <div id="admin-assets" class="list admin-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Host Setup</p>
+              <h2>Downloaded Tools</h2>
+            </div>
+          </div>
+          <div id="admin-tools" class="list admin-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Python Environment</p>
+              <h2>Installed by Python</h2>
+            </div>
+          </div>
+          <div id="admin-python-packages" class="list admin-list"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Paths</p>
+              <h2>Configuration Locations</h2>
+            </div>
+          </div>
+          <div id="admin-paths" class="list admin-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/admin.js"></script>
+  </body>
+</html>

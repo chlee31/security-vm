@@ -65,9 +65,10 @@ def run_ingest(config_path):
         detection = correlator.correlate(alert, alert_id)
         detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
         detection_id = insert_detection(conn, detection)
+        runtime_config = load_config(config_path)
 
         try:
-            ollama_report = ask_ollama(config, alert, detection)
+            ollama_report = ask_ollama(runtime_config, alert, detection)
             insert_app_event(
                 conn,
                 "info",
@@ -98,11 +99,11 @@ def run_ingest(config_path):
             )
         insert_ollama_report(conn, detection_id, ollama_report)
 
-        response = decide(conn, config, alert, detection, ollama_report)
+        response = decide(conn, runtime_config, alert, detection, ollama_report)
         response["detection_id"] = detection_id
 
         if response["final_action"] == "temporary_block":
-            timeout = config.get("firewall", {}).get("block_timeout_seconds", 3600)
+            timeout = runtime_config.get("firewall", {}).get("block_timeout_seconds", 3600)
             status, elapsed_ms = temporary_block_firewalld(response["target_ip"], timeout)
             response["response_status"] = status
             response["response_time_ms"] = elapsed_ms
