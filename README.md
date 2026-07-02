@@ -45,7 +45,7 @@ Home Ollama/GPU usage during AI triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
 
 These sections are visible in the dashboard so the project direction can be demonstrated, but they are still being refined.
 
-Asset inventory: Current Goal - Samatar
+Asset inventory: <mark>Current Goal - Samatar</mark>
 
 - Add internal machines manually by IP address, name, device type, function, and notes.
 - Device type applies a default asset score.
