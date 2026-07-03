@@ -85,6 +85,10 @@ function investigationUrl(detectionId) {
   return `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
 
+function assetWorkbookUrl() {
+  return "/assets";
+}
+
 readHashFilters();
 
 async function getJson(path) {
@@ -822,6 +826,12 @@ async function handleDashboardClick(event) {
     return;
   }
 
+  const assetCard = event.target.closest ? event.target.closest("[data-assets-workbook]") : null;
+  if (assetCard) {
+    window.open(assetWorkbookUrl(), "_blank", "noopener");
+    return;
+  }
+
   const allTrafficButton = event.target.closest ? event.target.closest("[data-detection-all]") : null;
   if (allTrafficButton) {
     selectedDetectionType = null;
@@ -874,5 +884,12 @@ els.assetType.addEventListener("change", () => {
   els.assetScore.value = selected ? selected.dataset.score : "";
 });
 document.addEventListener("click", handleDashboardClick);
+document.addEventListener("keydown", (event) => {
+  if (!["Enter", " "].includes(event.key)) return;
+  const target = event.target.closest ? event.target.closest("[data-outcome-all], [data-outcome-filter], [data-assets-workbook], [data-detection-all], [data-otx-reputation]") : null;
+  if (!target) return;
+  event.preventDefault();
+  target.click();
+});
 refresh();
 setInterval(refresh, 2000);

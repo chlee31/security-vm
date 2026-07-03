@@ -313,6 +313,10 @@ def create_app(config_path):
     def ai_comparison_workbook():
         return static_page("compare.html")
 
+    @app.get("/assets")
+    def asset_workbook():
+        return static_page("assets.html")
+
     @app.get("/admin")
     def admin_controls():
         return static_page("admin.html")
@@ -792,6 +796,113 @@ def create_app(config_path):
                 "default_interface": config.get("assets", {}).get("internal_interface", "ens37"),
                 "summary": asset_summary(conn),
                 "assets": list_assets(conn, limit),
+            }
+        finally:
+            conn.close()
+
+    @app.get("/api/assets-workbook")
+    def api_assets_workbook(limit: int = 500):
+        conn = connect(db_path)
+        try:
+            assets = list_all_assets(conn, limit)
+            type_rows = conn.execute(
+                """
+                SELECT device_type, status, COUNT(*) AS count, AVG(asset_score) AS avg_score
+                FROM assets
+                GROUP BY device_type, status
+                ORDER BY count DESC, device_type ASC
+                """
+            ).fetchall()
+            score_rows = conn.execute(
+                """
+                SELECT asset_score, COUNT(*) AS count
+                FROM assets
+                WHERE status = 'active'
+                GROUP BY asset_score
+                ORDER BY asset_score DESC
+                """
+            ).fetchall()
+            match_rows = conn.execute(
+                """
+                SELECT ip_address, SUM(source_matches) AS source_matches, SUM(destination_matches) AS destination_matches
+                FROM (
+                  SELECT assets.ip_address, COUNT(detections.id) AS source_matches, 0 AS destination_matches
+                  FROM assets
+                  LEFT JOIN detections ON detections.src_ip = assets.ip_address
+                  GROUP BY assets.ip_address
+                  UNION ALL
+                  SELECT assets.ip_address, 0 AS source_matches, COUNT(detections.id) AS destination_matches
+                  FROM assets
+                  LEFT JOIN detections ON detections.dest_ip = assets.ip_address
+                  GROUP BY assets.ip_address
+                )
+                GROUP BY ip_address
+                """
+            ).fetchall()
+            matches_by_ip = {
+                row["ip_address"]: {
+                    "source_matches": row["source_matches"] or 0,
+                    "destination_matches": row["destination_matches"] or 0,
+                    "total_matches": (row["source_matches"] or 0) + (row["destination_matches"] or 0),
+                }
+                for row in match_rows
+            }
+            recent_rows = conn.execute(
+                """
+                SELECT
+                  detections.id AS detection_id,
+                  detections.src_ip,
+                  detections.dest_ip,
+                  detections.detection_type,
+                  detections.python_initial_score,
+                  detections.created_at,
+                  alerts.signature,
+                  responses.final_classification,
+                  responses.final_score
+                FROM detections
+                LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+                LEFT JOIN responses ON responses.detection_id = detections.id
+                WHERE detections.src_ip IN (SELECT ip_address FROM assets)
+                   OR detections.dest_ip IN (SELECT ip_address FROM assets)
+                ORDER BY detections.id DESC
+                LIMIT 50
+                """
+            ).fetchall()
+            recent_by_ip = {}
+            for row in recent_rows:
+                item = dict(row)
+                for ip_address in {item.get("src_ip"), item.get("dest_ip")}:
+                    if ip_address:
+                        recent_by_ip.setdefault(ip_address, []).append(item)
+            enriched_assets = []
+            for asset in assets:
+                item = dict(asset)
+                item["matches"] = matches_by_ip.get(
+                    item["ip_address"],
+                    {"source_matches": 0, "destination_matches": 0, "total_matches": 0},
+                )
+                item["recent_detections"] = recent_by_ip.get(item["ip_address"], [])[:6]
+                enriched_assets.append(item)
+            active_assets = [asset for asset in enriched_assets if asset.get("status") == "active"]
+            internal_interface = config.get("assets", {}).get("internal_interface", "ens37")
+            return {
+                "types": default_asset_types(config),
+                "default_interface": internal_interface,
+                "summary": {
+                    **asset_summary(conn),
+                    "inactive": len([asset for asset in enriched_assets if asset.get("status") == "inactive"]),
+                    "high_value": len([asset for asset in active_assets if int(asset.get("asset_score") or 0) >= 8]),
+                    "ens37": len(
+                        [
+                            asset
+                            for asset in active_assets
+                            if (asset.get("network_interface") or internal_interface) == internal_interface
+                        ]
+                    ),
+                },
+                "by_type": [dict(row) for row in type_rows],
+                "by_score": [dict(row) for row in score_rows],
+                "assets": enriched_assets,
             }
         finally:
             conn.close()

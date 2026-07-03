@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Asset Inventory Workbook</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Asset Inventory</p>
+          <h1>Internal Assets</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="asset-updated">Waiting for data</span>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/admin">Admin</a>
+        </div>
+      </section>
+
+      <section class="workbook-metrics">
+        <article class="metric">
+          <span>Active Assets</span>
+          <strong id="asset-total">0</strong>
+          <small>Manual internal inventory</small>
+        </article>
+        <article class="metric">
+          <span>High Value</span>
+          <strong id="asset-high-value">0</strong>
+          <small>Score 8-10</small>
+        </article>
+        <article class="metric">
+          <span>Lab Network</span>
+          <strong id="asset-ens37">0</strong>
+          <small id="asset-interface-label">ens37 target</small>
+        </article>
+        <article class="metric">
+          <span>Matched Alerts</span>
+          <strong id="asset-matches">0</strong>
+          <small>Source or destination IP</small>
+        </article>
+      </section>
+
+      <section class="workbook-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Inventory Shape</p>
+              <h2>Device Types</h2>
+            </div>
+          </div>
+          <div id="asset-type-chart" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Risk Context</p>
+              <h2>Asset Scores</h2>
+            </div>
+          </div>
+          <div id="asset-score-chart" class="chart-panel"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Registered Machines</p>
+              <h2>Inventory Records</h2>
+            </div>
+            <div class="asset-workbook-filters">
+              <input id="asset-search" type="search" placeholder="Filter assets">
+              <select id="asset-status-filter" aria-label="Filter by status">
+                <option value="active">Active</option>
+                <option value="all">All</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </div>
+          </div>
+          <div id="asset-records" class="asset-workbook-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/assets.js?v=20260703-local-assets"></script>
+  </body>
+</html>

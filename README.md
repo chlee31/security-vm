@@ -39,6 +39,7 @@ Home AI/GPU usage during triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
 - Human-review queue
 - Temporary allowlist entries
 - Manual internal asset inventory for lab machines on `ens37`
+- Dedicated asset inventory workbook at `/assets` with registered machines, scores, notes, and matched detection context
 - Admin controls for registered machine IPs, AI service URL/model settings, and installed tool checks
 - Runtime logs and enrichment status
 
