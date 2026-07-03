@@ -67,6 +67,10 @@ function otxText(result) {
   return `OTX ${result.reputation || "unknown"} · malicious ${result.malicious_count ?? 0} · suspicious ${result.suspicious_count ?? 0}`;
 }
 
+function investigationUrl(detectionId) {
+  return `/investigation?id=${encodeURIComponent(detectionId)}`;
+}
+
 function renderPie(ips) {
   const top = ips.slice(0, 6);
   const total = top.reduce((sum, item) => sum + Number(item.count || 0), 0);
@@ -161,7 +165,8 @@ function renderRecent(recent) {
       <div>
         <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
         <p>${item.signature || "Detection"}</p>
-        <small>${item.ollama_classification || "no Ollama"}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
+        <small>${item.ollama_classification || "no AI opinion"} · ${item.ollama_model_identity || "unknown model"}${item.ollama_ai_profile_uid ? ` · profile ${item.ollama_ai_profile_uid}` : ""}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
+        <a class="inline-link" href="${investigationUrl(item.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>
       </div>
     </div>
   `).join("") || `<div class="empty">No recent detections.</div>`;
@@ -187,9 +192,10 @@ function renderEvidence(rows) {
           <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
         </div>
         <div>
-          <span>Ollama</span>
+          <span>AI Model</span>
           <strong>${row.ollama_classification || "No opinion"}</strong>
-          <small>${row.ollama_reason || "No Ollama reason stored."}</small>
+          <small>${row.ollama_model_identity || "unknown model"} · profile ${row.ollama_ai_profile_uid || "legacy-profile"} · run ${row.ollama_model_run_id || "not recorded"}</small>
+          <small>${row.ollama_reason || "No AI reason stored."}</small>
         </div>
         <div>
           <span>Analyst</span>
@@ -197,6 +203,7 @@ function renderEvidence(rows) {
           <small>${row.analyst_action || "No analyst override"}</small>
         </div>
       </div>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>
     </article>
   `).join("") || `<div class="empty">No decision evidence yet.</div>`;
 }

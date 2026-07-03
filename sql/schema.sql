@@ -93,13 +93,36 @@ CREATE TABLE IF NOT EXISTS incident_evidence (
 CREATE TABLE IF NOT EXISTS ollama_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,
+  ai_profile_uid TEXT,
+  model_provider TEXT,
+  model_name TEXT,
+  model_identity TEXT,
+  model_endpoint TEXT,
+  model_run_id TEXT,
+  prompt_version TEXT,
   classification TEXT,
   confidence TEXT,
   risk_adjustment INTEGER,
   reason TEXT,
   recommended_action TEXT,
   raw_response TEXT,
+  elapsed_ms INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  host TEXT NOT NULL,
+  model TEXT NOT NULL,
+  timeout_seconds INTEGER DEFAULT 90,
+  status TEXT DEFAULT 'active',
+  notes TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  last_selected_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS responses (

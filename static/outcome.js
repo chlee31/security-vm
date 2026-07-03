@@ -17,6 +17,8 @@ const els = {
   evidence: document.querySelector("#oc-evidence")
 };
 
+let currentRows = [];
+
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
@@ -115,6 +117,10 @@ function renderPie(container, rows, emptyText) {
   `;
 }
 
+function investigationUrl(detectionId) {
+  return `/investigation?id=${encodeURIComponent(detectionId)}`;
+}
+
 function renderIpList(rows) {
   const ipCounts = countBy(rows, (row) => [row.src_ip, row.dest_ip]);
   els.ips.textContent = ipCounts.length;
@@ -150,9 +156,10 @@ function renderEvidence(rows) {
           <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
         </div>
         <div>
-          <span>Ollama</span>
+          <span>AI Model</span>
           <strong>${row.ollama_classification || "No opinion"}</strong>
-          <small>${row.ollama_reason || "No Ollama reason stored."}</small>
+          <small>${row.ollama_model_identity || "unknown model"} · profile ${row.ollama_ai_profile_uid || "legacy-profile"} · run ${row.ollama_model_run_id || "not recorded"}</small>
+          <small>${row.ollama_reason || "No AI reason stored."}</small>
         </div>
         <div>
           <span>Analyst</span>
@@ -160,6 +167,7 @@ function renderEvidence(rows) {
           <small>${row.analyst_action || "No analyst override"}</small>
         </div>
       </div>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id)}" target="_blank" rel="noopener">Investigate / Give Feedback</a>
     </article>
   `).join("") || `<div class="empty">No matching decisions.</div>`;
 }
@@ -175,6 +183,7 @@ async function refresh() {
 
   try {
     const rows = await getJson(`/api/decision-evidence?${query.toString()}`);
+    currentRows = rows;
     els.total.textContent = rows.length;
     els.maxScore.textContent = rows.reduce((max, row) => Math.max(max, Number(row.final_score || 0)), 0);
     els.reviewCount.textContent = rows.filter((row) => {
@@ -184,7 +193,7 @@ async function refresh() {
 
     renderIpList(rows);
     renderHorizontalBars(els.detectionChart, countBy(rows, (row) => row.detection_type || "unknown"), "No detection type data.");
-    renderHorizontalBars(els.ollamaChart, countBy(rows, (row) => row.ollama_classification || "No opinion"), "No Ollama data.");
+    renderHorizontalBars(els.ollamaChart, countBy(rows, (row) => row.ollama_classification || "No opinion"), "No AI opinion data.");
     renderHorizontalBars(els.reviewChart, countBy(rows, (row) => row.review_status || "No review"), "No analyst review data.");
     renderEvidence(rows);
     els.updated.textContent = new Date().toLocaleTimeString();

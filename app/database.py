@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import ipaddress
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,6 +44,44 @@ def ensure_migrations(conn):
         if "updated_at" not in asset_columns:
             conn.execute("ALTER TABLE assets ADD COLUMN updated_at TEXT")
 
+    report_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(ollama_reports)").fetchall()
+    }
+    if report_columns:
+        report_migrations = {
+            "ai_profile_uid": "ALTER TABLE ollama_reports ADD COLUMN ai_profile_uid TEXT",
+            "model_provider": "ALTER TABLE ollama_reports ADD COLUMN model_provider TEXT",
+            "model_name": "ALTER TABLE ollama_reports ADD COLUMN model_name TEXT",
+            "model_identity": "ALTER TABLE ollama_reports ADD COLUMN model_identity TEXT",
+            "model_endpoint": "ALTER TABLE ollama_reports ADD COLUMN model_endpoint TEXT",
+            "model_run_id": "ALTER TABLE ollama_reports ADD COLUMN model_run_id TEXT",
+            "prompt_version": "ALTER TABLE ollama_reports ADD COLUMN prompt_version TEXT",
+            "elapsed_ms": "ALTER TABLE ollama_reports ADD COLUMN elapsed_ms INTEGER",
+        }
+        for column, statement in report_migrations.items():
+            if column not in report_columns:
+                conn.execute(statement)
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_profiles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          uid TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          host TEXT NOT NULL,
+          model TEXT NOT NULL,
+          timeout_seconds INTEGER DEFAULT 90,
+          status TEXT DEFAULT 'active',
+          notes TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          last_selected_at TEXT
+        )
+        """
+    )
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -74,6 +113,143 @@ def default_asset_types(config):
 def default_asset_score(config, device_type):
     scores = config.get("assets", {}).get("default_scores", {})
     return int(scores.get(device_type, scores.get("unknown", 6)))
+
+
+def new_ai_profile_uid():
+    return f"ai-{uuid.uuid4().hex[:12]}"
+
+
+def list_ai_profiles(conn, limit=100):
+    rows = conn.execute(
+        """
+        SELECT id, uid, name, provider, host, model, timeout_seconds, status,
+               notes, created_at, updated_at, last_selected_at
+        FROM ai_profiles
+        ORDER BY
+          CASE status WHEN 'active' THEN 0 ELSE 1 END,
+          COALESCE(last_selected_at, updated_at, created_at) DESC,
+          id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_ai_profile(conn, uid):
+    row = conn.execute(
+        """
+        SELECT id, uid, name, provider, host, model, timeout_seconds, status,
+               notes, created_at, updated_at, last_selected_at
+        FROM ai_profiles
+        WHERE uid = ?
+        """,
+        (uid,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def create_ai_profile(conn, profile):
+    uid = profile.get("uid") or new_ai_profile_uid()
+    conn.execute(
+        """
+        INSERT INTO ai_profiles (
+          uid, name, provider, host, model, timeout_seconds, status, notes,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            uid,
+            profile["name"],
+            profile["provider"],
+            profile["host"],
+            profile["model"],
+            int(profile.get("timeout_seconds") or 90),
+            profile.get("status", "active"),
+            profile.get("notes", ""),
+            utc_now(),
+        ),
+    )
+    conn.commit()
+    return uid
+
+
+def update_ai_profile(conn, uid, profile):
+    cur = conn.execute(
+        """
+        UPDATE ai_profiles
+        SET name = ?, provider = ?, host = ?, model = ?, timeout_seconds = ?,
+            status = ?, notes = ?, updated_at = ?
+        WHERE uid = ?
+        """,
+        (
+            profile["name"],
+            profile["provider"],
+            profile["host"],
+            profile["model"],
+            int(profile.get("timeout_seconds") or 90),
+            profile.get("status", "active"),
+            profile.get("notes", ""),
+            utc_now(),
+            uid,
+        ),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def mark_ai_profile_selected(conn, uid):
+    cur = conn.execute(
+        """
+        UPDATE ai_profiles
+        SET last_selected_at = ?, updated_at = ?
+        WHERE uid = ? AND status = 'active'
+        """,
+        (utc_now(), utc_now(), uid),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def ensure_ai_profile_from_config(conn, config):
+    ollama = config.setdefault("ollama", {})
+    active_uid = ollama.get("active_profile_uid")
+    if active_uid and get_ai_profile(conn, active_uid):
+        return active_uid
+
+    host = (ollama.get("host") or "").rstrip("/")
+    model = ollama.get("model") or "llama3.1:8b"
+    provider = ollama.get("provider") or "ollama"
+    timeout_seconds = int(ollama.get("timeout_seconds") or 90)
+    existing = conn.execute(
+        """
+        SELECT uid
+        FROM ai_profiles
+        WHERE host = ? AND model = ? AND provider = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (host, model, provider),
+    ).fetchone()
+    if existing:
+        uid = existing["uid"]
+    else:
+        uid = create_ai_profile(
+            conn,
+            {
+                "name": f"{provider}:{model}",
+                "provider": provider,
+                "host": host,
+                "model": model,
+                "timeout_seconds": timeout_seconds,
+                "status": "active",
+                "notes": "Created from current config.yaml AI settings.",
+            },
+        )
+    mark_ai_profile_selected(conn, uid)
+    ollama["active_profile_uid"] = uid
+    return uid
 
 
 def list_assets(conn, limit=100):
@@ -312,19 +488,28 @@ def insert_ollama_report(conn, detection_id, report):
     conn.execute(
         """
         INSERT INTO ollama_reports (
-          detection_id, classification, confidence, risk_adjustment,
-          reason, recommended_action, raw_response
+          detection_id, ai_profile_uid, model_provider, model_name, model_identity,
+          model_endpoint, model_run_id, prompt_version, classification, confidence,
+          risk_adjustment, reason, recommended_action, raw_response, elapsed_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection_id,
+            sqlite_value(report.get("ai_profile_uid")),
+            sqlite_value(report.get("model_provider")),
+            sqlite_value(report.get("model_name")),
+            sqlite_value(report.get("model_identity")),
+            sqlite_value(report.get("model_endpoint")),
+            sqlite_value(report.get("model_run_id")),
+            sqlite_value(report.get("prompt_version")),
             sqlite_value(report.get("classification")),
             sqlite_value(report.get("confidence")),
             sqlite_int(report.get("risk_adjustment", 0)),
             sqlite_value(report.get("reason")),
             sqlite_value(report.get("recommended_action")),
             sqlite_value(report.get("raw_response")),
+            sqlite_int(report.get("elapsed_ms", 0)),
         ),
     )
     conn.commit()
@@ -415,7 +600,19 @@ def reset_dashboard_logs(conn):
 
 def latest_alerts(conn, limit=50):
     rows = conn.execute(
-        "SELECT * FROM alerts ORDER BY id DESC LIMIT ?",
+        """
+        SELECT
+          alerts.*,
+          detections.id AS detection_id,
+          detections.detection_type,
+          responses.final_score,
+          responses.final_classification
+        FROM alerts
+        LEFT JOIN detections ON detections.first_alert_id = alerts.id
+        LEFT JOIN responses ON responses.detection_id = detections.id
+        ORDER BY alerts.id DESC
+        LIMIT ?
+        """,
         (limit,),
     ).fetchall()
     return [dict(row) for row in rows]
@@ -427,11 +624,19 @@ def latest_ollama_reports(conn, limit=50):
         SELECT
           ollama_reports.id,
           ollama_reports.detection_id,
+          ollama_reports.ai_profile_uid,
+          ollama_reports.model_provider,
+          ollama_reports.model_name,
+          ollama_reports.model_identity,
+          ollama_reports.model_endpoint,
+          ollama_reports.model_run_id,
+          ollama_reports.prompt_version,
           ollama_reports.classification,
           ollama_reports.confidence,
           ollama_reports.risk_adjustment,
           ollama_reports.reason,
           ollama_reports.recommended_action,
+          ollama_reports.elapsed_ms,
           ollama_reports.created_at,
           detections.detection_type,
           detections.python_initial_score,
@@ -446,6 +651,26 @@ def latest_ollama_reports(conn, limit=50):
         LIMIT ?
         """,
         (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def ai_model_comparison(conn):
+    rows = conn.execute(
+        """
+        SELECT
+          COALESCE(model_identity, 'unknown model') AS model_identity,
+          COALESCE(ai_profile_uid, 'legacy-profile') AS ai_profile_uid,
+          COALESCE(model_provider, 'unknown') AS model_provider,
+          COALESCE(model_name, 'unknown') AS model_name,
+          COALESCE(classification, 'No opinion') AS classification,
+          COUNT(*) AS count,
+          AVG(COALESCE(risk_adjustment, 0)) AS avg_risk_adjustment,
+          AVG(COALESCE(elapsed_ms, 0)) AS avg_elapsed_ms
+        FROM ollama_reports
+        GROUP BY ai_profile_uid, model_identity, classification
+        ORDER BY ai_profile_uid ASC, count DESC
+        """
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -680,7 +905,9 @@ def detection_type_detail(conn, detection_type=None, limit=50):
           alerts.signature,
           alerts.category,
           ollama_reports.classification AS ollama_classification,
-          ollama_reports.confidence AS ollama_confidence
+          ollama_reports.confidence AS ollama_confidence,
+          ollama_reports.ai_profile_uid AS ollama_ai_profile_uid,
+          ollama_reports.model_identity AS ollama_model_identity
         FROM detections
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
         LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
@@ -808,6 +1035,13 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           ollama_reports.risk_adjustment AS ollama_risk_adjustment,
           ollama_reports.reason AS ollama_reason,
           ollama_reports.recommended_action AS ollama_recommended_action,
+          ollama_reports.ai_profile_uid AS ollama_ai_profile_uid,
+          ollama_reports.model_provider AS ollama_model_provider,
+          ollama_reports.model_name AS ollama_model_name,
+          ollama_reports.model_identity AS ollama_model_identity,
+          ollama_reports.model_run_id AS ollama_model_run_id,
+          ollama_reports.prompt_version AS ollama_prompt_version,
+          ollama_reports.elapsed_ms AS ollama_elapsed_ms,
           analyst_reviews.review_status,
           analyst_reviews.analyst_name,
           analyst_reviews.analyst_score,
@@ -830,6 +1064,87 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
         item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
         evidence.append(item)
     return evidence
+
+
+def investigation_detail(conn, detection_id):
+    row = conn.execute(
+        """
+        SELECT
+          detections.id AS detection_id,
+          detections.first_seen,
+          detections.last_seen,
+          detections.detection_type,
+          detections.alert_count,
+          detections.unique_dest_ports,
+          detections.unique_dest_hosts,
+          detections.time_window_seconds,
+          detections.mitre_id,
+          detections.mitre_name,
+          detections.python_initial_score,
+          detections.status AS detection_status,
+          alerts.id AS alert_id,
+          alerts.timestamp,
+          alerts.src_ip,
+          alerts.dest_ip,
+          alerts.src_port,
+          alerts.dest_port,
+          alerts.protocol,
+          alerts.signature,
+          alerts.category,
+          alerts.priority,
+          alerts.raw_json,
+          ollama_reports.classification AS ai_classification,
+          ollama_reports.confidence AS ai_confidence,
+          ollama_reports.risk_adjustment AS ai_risk_adjustment,
+          ollama_reports.reason AS ai_reason,
+          ollama_reports.recommended_action AS ai_recommended_action,
+          ollama_reports.raw_response AS ai_raw_response,
+          ollama_reports.ai_profile_uid AS ai_profile_uid,
+          ollama_reports.model_provider AS ai_model_provider,
+          ollama_reports.model_name AS ai_model_name,
+          ollama_reports.model_identity AS ai_model_identity,
+          ollama_reports.model_endpoint AS ai_model_endpoint,
+          ollama_reports.model_run_id AS ai_model_run_id,
+          ollama_reports.prompt_version AS ai_prompt_version,
+          ollama_reports.elapsed_ms AS ai_elapsed_ms,
+          ollama_reports.created_at AS ai_created_at,
+          responses.final_score,
+          responses.final_classification,
+          responses.final_action,
+          responses.target_ip,
+          responses.response_status,
+          responses.response_time_ms,
+          responses.created_at AS response_created_at,
+          analyst_reviews.review_status,
+          analyst_reviews.analyst_name,
+          analyst_reviews.analyst_score,
+          analyst_reviews.analyst_classification,
+          analyst_reviews.analyst_action,
+          analyst_reviews.analyst_notes,
+          analyst_reviews.due_at,
+          analyst_reviews.reviewed_at
+        FROM detections
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        LEFT JOIN responses ON responses.detection_id = detections.id
+        LEFT JOIN analyst_reviews ON analyst_reviews.detection_id = detections.id
+        WHERE detections.id = ?
+        ORDER BY responses.id DESC, ollama_reports.id DESC
+        LIMIT 1
+        """,
+        (detection_id,),
+    ).fetchone()
+    if not row:
+        return None
+
+    item = dict(row)
+    item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
+    item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
+    item["src_ip_profile"] = ip_enrichment_profile(item.get("src_ip"))
+    item["dest_ip_profile"] = ip_enrichment_profile(item.get("dest_ip"))
+    item["src_otx"] = latest_threat_intel_for_ip(conn, item.get("src_ip"), "otx")
+    item["dest_otx"] = latest_threat_intel_for_ip(conn, item.get("dest_ip"), "otx")
+    return item
 
 
 def enrichment_status(conn, config, limit=50):
@@ -885,7 +1200,7 @@ def enrichment_status(conn, config, limit=50):
                 "name": "virustotal",
                 "enabled": bool(threat_intel.get("virustotal_enabled", False)),
                 "status": "configured" if threat_intel.get("virustotal_enabled", False) else "wip_disabled",
-                "notes": "WIP external reputation source. Python will call the API only when enabled and cache results before Ollama sees them.",
+                "notes": "WIP external reputation source. Python will call the API only when enabled and cache results before the AI model sees them.",
                 "cache_ttl_hours": cache_ttl_hours,
                 "api_key_configured": bool(threat_intel.get("virustotal_api_key")),
             },
@@ -995,7 +1310,9 @@ def list_review_queue(conn, limit=50):
           alerts.timestamp,
           ollama_reports.classification AS ollama_classification,
           ollama_reports.confidence AS ollama_confidence,
-          ollama_reports.reason AS ollama_reason
+          ollama_reports.reason AS ollama_reason,
+          ollama_reports.ai_profile_uid AS ollama_ai_profile_uid,
+          ollama_reports.model_identity AS ollama_model_identity
         FROM analyst_reviews
         LEFT JOIN detections ON detections.id = analyst_reviews.detection_id
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
@@ -1027,7 +1344,48 @@ def submit_analyst_review(
         (detection_id,),
     ).fetchone()
     if not existing:
-        return False
+        source = conn.execute(
+            """
+            SELECT
+              responses.final_score,
+              responses.final_classification,
+              responses.final_action,
+              detections.python_initial_score
+            FROM detections
+            LEFT JOIN responses ON responses.detection_id = detections.id
+            WHERE detections.id = ?
+            ORDER BY responses.id DESC
+            LIMIT 1
+            """,
+            (detection_id,),
+        ).fetchone()
+        if not source:
+            return False
+        original_score = source["final_score"]
+        if original_score is None:
+            original_score = source["python_initial_score"] or 0
+        original_classification = source["final_classification"] or "Human Review Required"
+        original_action = source["final_action"] or "human_review"
+        conn.execute(
+            """
+            INSERT INTO analyst_reviews (
+              detection_id, original_score, original_classification, original_action, due_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                detection_id,
+                original_score,
+                original_classification,
+                original_action,
+                (datetime.now(timezone.utc) + timedelta(days=3)).isoformat(),
+            ),
+        )
+        existing = {
+            "original_score": original_score,
+            "original_classification": original_classification,
+            "original_action": original_action,
+        }
 
     if action == "confirm":
         review_status = "confirmed"
@@ -1082,9 +1440,19 @@ def submit_analyst_review(
     return True
 
 
-def detections_without_ollama_reports(conn, limit=50):
+def detections_without_ollama_reports(conn, limit=50, model_identity=None, ai_profile_uid=None):
+    join_filters = []
+    params = []
+    if ai_profile_uid:
+        join_filters.append("AND ollama_reports.ai_profile_uid = ?")
+        params.append(ai_profile_uid)
+    elif model_identity:
+        join_filters.append("AND ollama_reports.model_identity = ?")
+        params.append(model_identity)
+    join_filter = " ".join(join_filters)
+    params.append(limit)
     rows = conn.execute(
-        """
+        f"""
         SELECT
           alerts.id AS alert_id,
           alerts.suricata_event_id,
@@ -1116,11 +1484,13 @@ def detections_without_ollama_reports(conn, limit=50):
           detections.status
         FROM detections
         JOIN alerts ON alerts.id = detections.first_alert_id
-        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        LEFT JOIN ollama_reports
+          ON ollama_reports.detection_id = detections.id
+          {join_filter}
         WHERE ollama_reports.id IS NULL
         ORDER BY detections.id ASC
         LIMIT ?
         """,
-        (limit,),
+        params,
     ).fetchall()
     return [dict(row) for row in rows]

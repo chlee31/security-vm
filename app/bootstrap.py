@@ -61,24 +61,24 @@ def test_ollama(host, model, timeout):
         response = requests.get(f"{host}/api/tags", timeout=timeout)
         response.raise_for_status()
         models = [item.get("name") for item in response.json().get("models", [])]
-        print(f"[+] Ollama reachable. Models: {', '.join(models) if models else 'none returned'}")
+        print(f"[+] AI model service reachable. Models: {', '.join(models) if models else 'none returned'}")
         if model not in models:
-            print(f"[!] Model {model!r} was not listed. You can still try it if Ollama accepts aliases.")
+            print(f"[!] Model {model!r} was not listed. You can still try it if the service accepts aliases.")
     except requests.RequestException as exc:
-        print(f"[!] Could not reach Ollama at {host}: {exc}")
+        print(f"[!] Could not reach AI model service at {host}: {exc}")
 
 
 def main():
     print("Tailscale is required for this project.")
     print("Please head over to Tailscale or the admin console to get your AI machine IP address.")
-    print("Example Ollama/Tailscale endpoint: http://100.99.223.100:11434\n")
+    print("Example AI service/Tailscale endpoint: http://<ai-machine-ip>:11434\n")
 
     ai_ip = input("What is the IP address of your AI machine? ").strip()
     if not ai_ip:
-        ai_ip = "100.99.223.100"
+        ai_ip = "127.0.0.1"
 
-    ollama_port = input("What port is Ollama running on? [11434] ").strip() or "11434"
-    ollama_model = input("What Ollama model should be used? [llama3.2:latest] ").strip() or "llama3.2:latest"
+    ollama_port = input("What port is the AI service running on? [11434] ").strip() or "11434"
+    ollama_model = input("What AI model should be used? [llama3.1:8b] ").strip() or "llama3.1:8b"
     ollama_host = f"http://{ai_ip}:{ollama_port}"
 
     print("\nChecking required system tools:")

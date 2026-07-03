@@ -1,8 +1,8 @@
 # Security VM
 
-Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts, stores them in SQLite, asks Ollama for a second opinion, records rolling PCAP files, and shows analyst review information in a browser dashboard.
+Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts, stores them in SQLite, asks a configured AI model for a second opinion, records rolling PCAP files, and shows analyst review information in a browser dashboard.
 
-The system starts in safe `alert_only` mode. Ollama can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `auto_response` is explicitly enabled.
+The system starts in safe `alert_only` mode. The AI model can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `auto_response` is explicitly enabled.
 
 ## Screenshots
 
@@ -10,7 +10,7 @@ Main dashboard with Suricata detections, asset tracking, enrichment status, and 
 
 ![Security VM dashboard overview](docs/images/dashboard-overview.png)
 
-Detection workbooks break down each alert type with IP share, Ollama opinions, timeline, evidence, and recent alerts:
+Detection workbooks break down each alert type with IP share, AI opinions, timeline, evidence, and recent alerts:
 
 ![DNS tunneling detection workbook](docs/images/dns-tunneling-workbook.png)
 
@@ -18,27 +18,28 @@ Detection workbooks break down each alert type with IP share, Ollama opinions, t
 
 ![Unknown detection workbook](docs/images/unknown-detection-workbook.png)
 
-Admin controls let users update Ollama settings, registered machines, asset status, and local tool checks:
+Admin controls let users update AI model settings, registered machines, asset status, and local tool checks:
 
 ![Admin controls](docs/images/admin-controls.png)
 
-Home Ollama/GPU usage during AI triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
+Home AI/GPU usage during triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
 
-![GPU usage while running Ollama at home](docs/images/gpu-ollama-home.png)
+![GPU usage while running the AI model at home](docs/images/gpu-ollama-home.png)
 
 ## What It Shows
 
 - Latest Suricata alerts
 - Detection types and investigation drilldowns
-- Dedicated detection workbook tabs with IP share, Ollama opinion, timeline, evidence, and PCAP views
+- Dedicated detection workbook tabs with IP share, AI opinion, timeline, evidence, and PCAP views
 - Dedicated outcome workbook tabs for Safe, Human Review, and Dangerous decisions
-- Ollama opinions for alerts
-- Decision evidence: alert data, correlation, score, Ollama reason, and final action
+- AI opinions for alerts
+- AI model comparison by provider/model identity, classification, average adjustment, and average response time
+- Decision evidence: alert data, correlation, score, AI reason, and final action
 - Related PCAP files by detection time window
 - Human-review queue
 - Temporary allowlist entries
 - Manual internal asset inventory for lab machines on `ens37`
-- Admin controls for registered machine IPs, Ollama host/model settings, and installed tool checks
+- Admin controls for registered machine IPs, AI service URL/model settings, and installed tool checks
 - Runtime logs and enrichment status
 
 ## Work In Progress Features
@@ -52,7 +53,7 @@ Asset inventory: <mark>Current Goal - Samatar</mark>
 - Current lab target is the internal `ens37` network.
 - Asset context is shown in detection detail and decision evidence.
 - When alert traffic matches a registered source or destination IP, the asset score is added to Python's initial risk score.
-- The matched asset details and applied score are sent to Ollama as analyst-defined context.
+- The matched asset details and applied score are sent to the AI model as analyst-defined context.
 
 Human review tuning:
 
@@ -70,19 +71,26 @@ Threat enrichment:
 - VirusTotal is still planned as an opt-in external lookup.
 - API keys must be entered locally in `config.yaml` and must not be committed to GitHub.
 - Lookups should be cached in SQLite so the project does not burn API quota.
-- Ollama should receive enrichment summaries from Python; Ollama should not call external APIs directly.
+- The AI model receives cached enrichment summaries from Python; the model does not call external APIs directly.
 - IP address drilldowns show cached OTX results when present, or `OTX no lookup yet` before live lookup support is enabled.
+
+PCAP evidence:
+
+- Rolling PCAP capture files are tracked by time window and shown in detection views.
+- The AI model receives related PCAP file metadata as evidence context, including capture label, file size, and modified time.
+- Raw PCAP bytes are not sent to the AI model. A future packet-summary step should convert selected PCAPs into compact tshark summaries before AI review.
 
 Dashboard reset:
 
 - The Runtime panel has a reset control for clearing dashboard history during demos.
-- Reset clears alerts, detections, Ollama reports, responses, review queue, evidence, runtime logs, and cached threat-intel rows.
+- Reset clears alerts, detections, AI reports, responses, review queue, evidence, runtime logs, and cached threat-intel rows.
 - Reset keeps manual assets, allowlist entries, and local configuration.
 
 Admin controls:
 
 - Open `/admin` from the dashboard header.
-- Change the Ollama host, model name, and timeout without editing `config.yaml` manually.
+- Change the AI service URL, model name, and timeout without editing `config.yaml` manually.
+- Set a provider label such as `ollama`, `nvidia`, or `deepseek` so reports can be compared by engine.
 - Suggested model names include `llama3.1:8b`, `llama3.2:latest`, and DeepSeek options for future testing.
 - View and edit registered internal machine IP addresses stored in SQLite.
 - Mark assets inactive to preserve tracking history, or permanently delete mistaken entries from admin controls.
@@ -116,7 +124,7 @@ curl
 Optional tools / work in progress:
 
 ```text
-tailscale      needed if Ollama is reached over Tailscale
+tailscale      needed if the AI service is reached over Tailscale
 firewalld      needed only for auto_response firewall blocking
 git            needed for cloning and branch workflow
 ```
@@ -144,7 +152,7 @@ Current Python packages:
 fastapi     dashboard API framework
 uvicorn     web server for the dashboard
 PyYAML      config.yaml parsing
-requests    Ollama and HTTP API calls
+requests    AI model and HTTP API calls
 ```
 
 FastAPI also installs supporting packages such as `pydantic` and `starlette`.
@@ -186,7 +194,7 @@ Run bootstrap:
 python -m app.bootstrap
 ```
 
-Bootstrap creates `config.yaml`, initializes `security_vm.db`, checks required tools, and tests the Ollama endpoint.
+Bootstrap creates `config.yaml`, initializes `security_vm.db`, checks required tools, and tests the AI model endpoint.
 
 ## Run The System
 
@@ -318,9 +326,9 @@ af-packet:
   - interface: ens37
 ```
 
-## Ollama Setup
+## AI Model Setup
 
-Ollama should be reachable from the Security VM over Tailscale:
+The AI model service should be reachable from the Security VM over Tailscale:
 
 ```text
 http://<tailscale-ip>:11434
@@ -338,7 +346,21 @@ The default model used during development:
 llama3.2:latest
 ```
 
-Ingest asks Ollama for an opinion on every normalized Suricata alert. If Ollama is unavailable, the alert is still stored and the dashboard records the failure.
+Ingest asks the configured AI model for an opinion on every normalized Suricata alert. If the model service is unavailable, the alert is still stored and the dashboard records the failure.
+
+Each AI report stores:
+
+```text
+ai_profile_uid   stable UID for the selected Admin AI profile
+model_provider   example: ollama, nvidia, deepseek
+model_name       example: llama3.1:8b
+model_identity   example: ollama:llama3.1:8b
+model_run_id     unique ID for that specific AI opinion
+prompt_version   prompt template version used for the request
+elapsed_ms       model response time
+```
+
+Use the Admin page to create AI profiles such as `Home GPU`, `Ollama 3.1`, `NVIDIA NIM`, or `DeepSeek`. Selecting a profile writes it to `config.yaml`, and every new AI report is stamped with that profile UID plus a unique run ID so different engines can be compared later.
 
 ## Useful Commands
 
@@ -348,11 +370,13 @@ Initialize or repair the SQLite schema:
 ./venv/bin/python -c "from app.database import init_db; conn = init_db('security_vm.db'); conn.close()"
 ```
 
-Backfill missing Ollama reports:
+Backfill missing AI reports for the currently configured model identity:
 
 ```bash
-python -m app.main ollama-backfill --config config.yaml --limit 500
+python -m app.main ai-backfill --config config.yaml --limit 500
 ```
+
+If you switch from one model to another, run `ai-backfill` again. The command skips only detections that already have a report from the current `provider:model` identity, so it can create side-by-side opinions for comparison.
 
 Check Python syntax:
 
@@ -429,8 +453,8 @@ security-vm/
 
 - Default mode is `alert_only`.
 - Python makes final decisions.
-- Ollama does not execute firewall actions.
-- Raw PCAP files are not sent to Ollama.
+- The AI model does not execute firewall actions.
+- Raw PCAP files are not sent to the AI model.
 - Alerts and evidence are stored before any action.
 - Allowlist and safelist checks happen before blocking.
 - Temporary firewall blocks should only happen in explicit `auto_response` mode.

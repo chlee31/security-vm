@@ -19,37 +19,50 @@ from pydantic import BaseModel
 from app.allowlist import add_allowlist_entry, deactivate_allowlist_entry, list_allowlist_entries
 from app.config import load_config, save_config
 from app.database import (
+    ai_model_comparison,
     asset_summary,
     connect,
+    create_ai_profile,
     deactivate_asset,
     delete_asset,
     default_asset_score,
     default_asset_types,
+    ensure_ai_profile_from_config,
+    get_ai_profile,
     init_db,
     insert_app_event,
     detection_type_detail,
     detection_time_window,
     enrichment_status,
+    investigation_detail,
     latest_alerts,
     latest_app_events,
     latest_decision_evidence,
     latest_ollama_reports,
+    list_ai_profiles,
     list_all_assets,
     list_assets,
     list_review_queue,
+    mark_ai_profile_selected,
     public_ips_for_enrichment,
     reset_dashboard_logs,
     submit_analyst_review,
     upsert_threat_intel_lookup,
     upsert_asset,
     update_asset,
+    update_ai_profile,
 )
 from app.enrichment import lookup_otx_ip, test_otx_connection
-from app.ollama_client import check_ollama
+from app.ollama_client import check_ollama, model_metadata
 from app.pcap_inventory import list_pcap_files
 
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
+
+
+def static_page(filename):
+    return FileResponse(STATIC_DIR / filename, headers=NO_CACHE_HEADERS)
 
 
 class AllowlistRequest(BaseModel):
@@ -86,7 +99,14 @@ class AdminAssetRequest(AssetRequest):
 class OllamaConfigRequest(BaseModel):
     host: str
     model: str
+    provider: str = ""
     timeout_seconds: int = 90
+
+
+class AIProfileRequest(OllamaConfigRequest):
+    name: str
+    status: str = "active"
+    notes: str = ""
 
 
 class ResetLogsRequest(BaseModel):
@@ -227,14 +247,43 @@ def python_package_status():
 def validate_ollama_config(payload):
     host = payload.host.strip().rstrip("/")
     model = payload.model.strip()
+    provider = payload.provider.strip().lower().replace(" ", "_")
     parsed = urlparse(host)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(status_code=400, detail="Ollama host must look like http://IP:11434")
+        raise HTTPException(status_code=400, detail="AI service URL must look like http://IP:11434")
     if not model:
-        raise HTTPException(status_code=400, detail="Ollama model is required")
+        raise HTTPException(status_code=400, detail="AI model name is required")
     if payload.timeout_seconds < 5 or payload.timeout_seconds > 300:
         raise HTTPException(status_code=400, detail="Timeout must be between 5 and 300 seconds")
-    return host, model, payload.timeout_seconds
+    return host, model, provider, payload.timeout_seconds
+
+
+def validate_ai_profile(payload):
+    host, model, provider, timeout_seconds = validate_ollama_config(payload)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="AI profile name is required")
+    status = payload.status.strip().lower()
+    if status not in {"active", "inactive"}:
+        raise HTTPException(status_code=400, detail="AI profile status must be active or inactive")
+    return {
+        "name": name,
+        "host": host,
+        "model": model,
+        "provider": provider,
+        "timeout_seconds": timeout_seconds,
+        "status": status,
+        "notes": payload.notes.strip(),
+    }
+
+
+def apply_ai_profile_to_config(config, profile):
+    config.setdefault("ollama", {})
+    config["ollama"]["active_profile_uid"] = profile["uid"]
+    config["ollama"]["host"] = profile["host"]
+    config["ollama"]["model"] = profile["model"]
+    config["ollama"]["provider"] = profile["provider"]
+    config["ollama"]["timeout_seconds"] = int(profile.get("timeout_seconds") or 90)
 
 
 def create_app(config_path):
@@ -246,32 +295,50 @@ def create_app(config_path):
 
     @app.get("/")
     def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        return static_page("index.html")
 
     @app.get("/detection")
     def detection_workbook():
-        return FileResponse(STATIC_DIR / "detection.html")
+        return static_page("detection.html")
 
     @app.get("/outcome")
     def outcome_workbook():
-        return FileResponse(STATIC_DIR / "outcome.html")
+        return static_page("outcome.html")
+
+    @app.get("/investigation")
+    def investigation_workbook():
+        return static_page("investigation.html")
+
+    @app.get("/compare")
+    def ai_comparison_workbook():
+        return static_page("compare.html")
 
     @app.get("/admin")
     def admin_controls():
-        return FileResponse(STATIC_DIR / "admin.html")
+        return static_page("admin.html")
 
     @app.get("/api/admin/settings")
     def api_admin_settings(limit: int = 500):
         conn = connect(db_path)
         try:
+            profile_uid = ensure_ai_profile_from_config(conn, config)
+            save_config(config, config_path)
+            metadata = model_metadata(config)
             return {
                 "config_path": str(config_path),
                 "database_path": db_path,
                 "ollama": {
+                    "active_profile_uid": profile_uid,
                     "host": config.get("ollama", {}).get("host", ""),
                     "model": config.get("ollama", {}).get("model", ""),
+                    "provider": config.get("ollama", {}).get("provider", ""),
                     "timeout_seconds": config.get("ollama", {}).get("timeout_seconds", 90),
                     "model_suggestions": OLLAMA_MODEL_SUGGESTIONS,
+                    "metadata": metadata,
+                },
+                "ai_profiles": {
+                    "active_uid": profile_uid,
+                    "items": list_ai_profiles(conn, limit),
                 },
                 "network": {
                     "internal_interface": config.get("assets", {}).get("internal_interface", "ens37"),
@@ -291,25 +358,111 @@ def create_app(config_path):
 
     @app.post("/api/admin/ollama")
     def api_admin_ollama(payload: OllamaConfigRequest):
-        host, model, timeout_seconds = validate_ollama_config(payload)
+        host, model, provider, timeout_seconds = validate_ollama_config(payload)
         config.setdefault("ollama", {})
         config["ollama"]["host"] = host
         config["ollama"]["model"] = model
+        config["ollama"]["provider"] = provider
         config["ollama"]["timeout_seconds"] = timeout_seconds
-        save_config(config, config_path)
 
         conn = connect(db_path)
         try:
+            profile = {
+                "name": f"{provider or 'ai'}:{model}",
+                "host": host,
+                "model": model,
+                "provider": provider or "ai_service",
+                "timeout_seconds": timeout_seconds,
+                "status": "active",
+                "notes": "Updated from legacy AI settings form.",
+            }
+            active_uid = config.get("ollama", {}).get("active_profile_uid")
+            if active_uid and get_ai_profile(conn, active_uid):
+                update_ai_profile(conn, active_uid, profile)
+                profile_uid = active_uid
+            else:
+                profile_uid = create_ai_profile(conn, profile)
+            saved_profile = get_ai_profile(conn, profile_uid)
+            apply_ai_profile_to_config(config, saved_profile)
+            mark_ai_profile_selected(conn, profile_uid)
+            save_config(config, config_path)
             insert_app_event(
                 conn,
                 "info",
                 "admin",
-                f"Updated Ollama settings to {model} at {host}",
-                {"host": host, "model": model, "timeout_seconds": timeout_seconds},
+                f"Updated AI model settings to profile {profile_uid}",
+                {"ai_profile_uid": profile_uid, "host": host, "model": model, "provider": provider, "timeout_seconds": timeout_seconds},
             )
         finally:
             conn.close()
-        return {"status": "saved", "host": host, "model": model, "timeout_seconds": timeout_seconds}
+        return {"status": "saved", "host": host, "model": model, "provider": provider, "timeout_seconds": timeout_seconds, "ai_profile_uid": profile_uid}
+
+    @app.post("/api/admin/ai-profiles")
+    def api_admin_create_ai_profile(payload: AIProfileRequest):
+        profile = validate_ai_profile(payload)
+        conn = connect(db_path)
+        try:
+            uid = create_ai_profile(conn, profile)
+            saved = get_ai_profile(conn, uid)
+            if saved.get("status") == "active":
+                apply_ai_profile_to_config(config, saved)
+                mark_ai_profile_selected(conn, uid)
+                save_config(config, config_path)
+            insert_app_event(
+                conn,
+                "info",
+                "admin",
+                f"Created AI profile {saved['name']} ({uid})",
+                {"ai_profile_uid": uid, "model": saved["model"], "provider": saved["provider"]},
+            )
+            return {"status": "created", "profile": saved}
+        finally:
+            conn.close()
+
+    @app.put("/api/admin/ai-profiles/{profile_uid}")
+    def api_admin_update_ai_profile(profile_uid: str, payload: AIProfileRequest):
+        profile = validate_ai_profile(payload)
+        conn = connect(db_path)
+        try:
+            if not update_ai_profile(conn, profile_uid, profile):
+                raise HTTPException(status_code=404, detail="AI profile not found")
+            saved = get_ai_profile(conn, profile_uid)
+            if config.get("ollama", {}).get("active_profile_uid") == profile_uid:
+                apply_ai_profile_to_config(config, saved)
+                save_config(config, config_path)
+            insert_app_event(
+                conn,
+                "info",
+                "admin",
+                f"Updated AI profile {saved['name']} ({profile_uid})",
+                {"ai_profile_uid": profile_uid, "model": saved["model"], "provider": saved["provider"]},
+            )
+            return {"status": "saved", "profile": saved}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/ai-profiles/{profile_uid}/select")
+    def api_admin_select_ai_profile(profile_uid: str):
+        conn = connect(db_path)
+        try:
+            profile = get_ai_profile(conn, profile_uid)
+            if not profile:
+                raise HTTPException(status_code=404, detail="AI profile not found")
+            if profile.get("status") != "active":
+                raise HTTPException(status_code=400, detail="Inactive AI profiles cannot be selected")
+            apply_ai_profile_to_config(config, profile)
+            mark_ai_profile_selected(conn, profile_uid)
+            save_config(config, config_path)
+            insert_app_event(
+                conn,
+                "info",
+                "admin",
+                f"Selected AI profile {profile['name']} ({profile_uid})",
+                {"ai_profile_uid": profile_uid, "model": profile["model"], "provider": profile["provider"]},
+            )
+            return {"status": "selected", "profile": profile}
+        finally:
+            conn.close()
 
     @app.put("/api/admin/assets/{asset_id}")
     def api_admin_update_asset(asset_id: int, payload: AdminAssetRequest):
@@ -391,11 +544,86 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.get("/api/ai-model-comparison")
+    def api_ai_model_comparison():
+        conn = connect(db_path)
+        try:
+            return ai_model_comparison(conn)
+        finally:
+            conn.close()
+
     @app.get("/api/detection-detail")
     def api_detection_detail(detection_type: str = None, limit: int = 50):
         conn = connect(db_path)
         try:
             return detection_type_detail(conn, detection_type, limit)
+        finally:
+            conn.close()
+
+    @app.get("/api/dashboard-summary")
+    def api_dashboard_summary(limit: int = 12):
+        conn = connect(db_path)
+        try:
+            detail = detection_type_detail(conn, None, limit)
+            comparison = ai_model_comparison(conn)
+            enrichment = enrichment_status(conn, config, limit)
+            active_uid = config.get("ollama", {}).get("active_profile_uid")
+            active_profile = get_ai_profile(conn, active_uid) if active_uid else None
+            otx_rows = conn.execute(
+                """
+                SELECT
+                  COALESCE(reputation, 'unknown') AS reputation,
+                  COUNT(*) AS count,
+                  SUM(COALESCE(malicious_count, 0)) AS malicious_total,
+                  SUM(COALESCE(suspicious_count, 0)) AS suspicious_total
+                FROM threat_intel_lookups
+                WHERE source = 'otx'
+                GROUP BY COALESCE(reputation, 'unknown')
+                ORDER BY count DESC
+                """
+            ).fetchall()
+            otx_lookup_rows = conn.execute(
+                """
+                SELECT indicator, indicator_type, COALESCE(reputation, 'unknown') AS reputation,
+                       malicious_count, suspicious_count, lookup_result, lookup_time, cached
+                FROM threat_intel_lookups
+                WHERE source = 'otx'
+                ORDER BY reputation ASC, lookup_time DESC, id DESC
+                LIMIT ?
+                """,
+                (max(50, limit * 10),),
+            ).fetchall()
+            otx_by_reputation = {}
+            seen_indicators = set()
+            for row in otx_lookup_rows:
+                item = dict(row)
+                key = (item.get("reputation"), item.get("indicator"))
+                if key in seen_indicators:
+                    continue
+                seen_indicators.add(key)
+                otx_by_reputation.setdefault(item.get("reputation") or "unknown", []).append(item)
+            review_rows = conn.execute(
+                """
+                SELECT review_status, COUNT(*) AS count
+                FROM analyst_reviews
+                GROUP BY review_status
+                ORDER BY count DESC
+                """
+            ).fetchall()
+            return {
+                "timeline": detail.get("timeline", [])[-8:],
+                "top_ips": detail.get("ips", [])[:limit],
+                "otx": {
+                    "lookup_count": enrichment.get("lookup_count", 0),
+                    "sources": enrichment.get("sources", []),
+                    "by_reputation": [dict(row) for row in otx_rows],
+                    "lookups_by_reputation": otx_by_reputation,
+                    "recent_lookups": enrichment.get("recent_lookups", [])[:limit],
+                },
+                "model_comparison": comparison,
+                "active_ai_profile": active_profile,
+                "review_status": [dict(row) for row in review_rows],
+            }
         finally:
             conn.close()
 
@@ -540,6 +768,20 @@ def create_app(config_path):
             return latest_decision_evidence(conn, limit, detection_type, outcome)
         finally:
             conn.close()
+
+    @app.get("/api/investigation/{detection_id}")
+    def api_investigation(detection_id: int):
+        conn = connect(db_path)
+        try:
+            detail = investigation_detail(conn, detection_id)
+            if not detail:
+                raise HTTPException(status_code=404, detail="Investigation not found")
+        finally:
+            conn.close()
+        pcaps = list_pcap_files(config, detail.get("timestamp") or detail.get("first_seen"), detail.get("last_seen") or detail.get("timestamp"))
+        pcaps["detection_id"] = detection_id
+        detail["pcap_files"] = pcaps
+        return detail
 
     @app.get("/api/assets")
     def api_assets(limit: int = 100):
@@ -724,13 +966,13 @@ def create_app(config_path):
                 insert_app_event(
                     conn,
                     "info",
-                    "ollama",
-                    f"Ollama reachable at {status['host']}",
+                    "ai_model",
+                    f"AI model reachable at {status['host']}",
                     {"elapsed_ms": status["elapsed_ms"], "models": status["models"]},
                 )
                 return {"ok": True, **status}
             except requests.RequestException as exc:
-                insert_app_event(conn, "error", "ollama", f"Ollama unreachable: {exc}")
+                insert_app_event(conn, "error", "ai_model", f"AI model unreachable: {exc}")
                 return {"ok": False, "error": str(exc), "host": config.get("ollama", {}).get("host")}
         finally:
             conn.close()

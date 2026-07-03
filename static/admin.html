@@ -26,31 +26,65 @@
           <div class="panel-head">
             <div>
               <p class="eyebrow">AI Runtime</p>
-              <h2>Ollama Settings</h2>
+              <h2>AI Model Settings</h2>
             </div>
           </div>
           <form id="ollama-form" class="form-grid admin-form">
             <label class="field">
-              <span>Ollama IP address and port</span>
-              <input id="ollama-host" name="host" type="url" placeholder="Example: http://100.99.223.100:11434" required>
-              <small>Use the AI machine address plus Ollama port.</small>
+              <span>AI profile name</span>
+              <input id="ai-profile-name" name="name" type="text" placeholder="Example: Home RTX 4070 Ti SUPER" required>
+              <small>Human-friendly profile name for comparison and audits.</small>
             </label>
             <label class="field">
-              <span>Ollama model name</span>
+              <span>AI profile UID</span>
+              <input id="ai-profile-uid" name="uid" type="text" placeholder="Created automatically" readonly>
+              <small>Stable identifier stamped into new AI logs.</small>
+            </label>
+            <label class="field">
+              <span>AI service URL</span>
+              <input id="ollama-host" name="host" type="url" placeholder="Example: http://127.0.0.1:11434" required>
+              <small>Use the model server address and port.</small>
+            </label>
+            <label class="field">
+              <span>Model name</span>
               <input id="ollama-model" name="model" list="ollama-models" placeholder="Example: llama3.1:8b" required>
               <small>This is the model Python asks for each alert.</small>
             </label>
             <datalist id="ollama-models"></datalist>
             <label class="field">
+              <span>Provider label</span>
+              <input id="ollama-provider" name="provider" list="ollama-providers" placeholder="Example: ollama, nvidia, deepseek">
+              <small>Used to compare AI opinions by engine.</small>
+            </label>
+            <datalist id="ollama-providers">
+              <option value="ollama"></option>
+              <option value="nvidia"></option>
+              <option value="deepseek"></option>
+              <option value="ai_service"></option>
+            </datalist>
+            <label class="field">
               <span>Response timeout, seconds</span>
               <input id="ollama-timeout" name="timeout_seconds" type="number" min="5" max="300" placeholder="Example: 90" required>
-              <small>How long Python waits before marking Ollama unavailable.</small>
+              <small>How long Python waits before marking the AI model unavailable.</small>
             </label>
-            <button class="wide-button" type="submit">Save Ollama Settings</button>
-            <button id="test-ollama-admin" class="wide-button" type="button">Save and Test Ollama</button>
-            <div id="ollama-admin-status" class="connection-status">Ollama connection not tested.</div>
+            <label class="field">
+              <span>Profile status</span>
+              <select id="ai-profile-status" name="status">
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
+            <label class="field wide-field">
+              <span>Profile notes</span>
+              <textarea id="ai-profile-notes" name="notes" placeholder="Example: Local GPU model used for project demo"></textarea>
+            </label>
+            <button id="save-ai-profile" class="wide-button" type="submit">Save Selected AI Profile</button>
+            <button id="new-ai-profile" class="wide-button" type="button">Save as New AI Profile</button>
+            <button id="test-ollama-admin" class="wide-button" type="button">Save and Test Selected Profile</button>
+            <div id="ollama-admin-status" class="connection-status">AI model connection not tested.</div>
           </form>
           <div id="ollama-summary" class="list"></div>
+          <div id="ai-profiles" class="list admin-list"></div>
         </section>
 
         <section class="panel">
@@ -138,6 +172,6 @@
       </section>
     </main>
 
-    <script src="/static/admin.js"></script>
+    <script src="/static/admin.js?v=20260703-profile-connect"></script>
   </body>
 </html>

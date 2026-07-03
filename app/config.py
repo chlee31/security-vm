@@ -17,8 +17,10 @@ DEFAULT_CONFIG = {
         "rolling_retention_days": 2,
     },
     "ollama": {
-        "host": "http://100.99.223.100:11434",
+        "host": "http://127.0.0.1:11434",
         "model": "llama3.2:latest",
+        "provider": "ollama",
+        "active_profile_uid": "",
         "timeout_seconds": 90,
     },
     "firewall": {"provider": "firewalld", "block_timeout_seconds": 3600},

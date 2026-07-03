@@ -6,7 +6,7 @@ import requests
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", required=True, help="Example: http://100.99.223.100:11434")
+    parser.add_argument("--host", required=True, help="Example: http://127.0.0.1:11434")
     parser.add_argument("--model", default="llama3.2:latest")
     args = parser.parse_args()
 

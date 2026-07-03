@@ -19,6 +19,10 @@
           <span class="divider"></span>
           <span id="updated">Waiting for data</span>
           <span class="divider"></span>
+          <a class="nav-link" href="/outcome?type=human_review" target="_blank" rel="noopener">Investigate</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/compare" target="_blank" rel="noopener">Compare</a>
+          <span class="divider"></span>
           <a class="nav-link" href="/admin" target="_blank" rel="noopener">Admin</a>
         </div>
       </section>
@@ -66,18 +70,50 @@
         </article>
       </section>
 
+      <section class="insight-grid">
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Indicators</p>
+              <h2>Top IP Share</h2>
+            </div>
+          </div>
+          <div id="summary-ip-pie" class="chart-panel compact-chart"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Timeline</p>
+              <h2>Activity</h2>
+            </div>
+          </div>
+          <div id="summary-timeline" class="chart-panel compact-chart"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Enrichment</p>
+              <h2>OTX Status</h2>
+            </div>
+          </div>
+          <div id="summary-otx" class="chart-panel compact-chart"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">AI Comparison</p>
+              <h2>Model Snapshot</h2>
+            </div>
+          </div>
+          <div id="summary-models" class="chart-panel compact-chart"></div>
+        </section>
+      </section>
+
       <section class="grid">
         <section class="streams">
-          <section class="panel" id="detection-detail-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Investigation</p>
-                <h2 id="detail-title">Detection Detail</h2>
-              </div>
-            </div>
-            <div id="detection-detail" class="detail-grid"></div>
-          </section>
-
           <section class="panel">
             <div class="panel-head">
               <div>
@@ -113,7 +149,7 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">AI Triage</p>
-                <h2>Ollama Opinions</h2>
+                <h2>AI Opinions</h2>
               </div>
             </div>
             <div id="ollama-reports" class="alerts compact-alerts"></div>
@@ -192,16 +228,6 @@
           <section class="panel">
             <div class="panel-head compact">
               <div>
-                <p class="eyebrow">Analyst Review</p>
-                <h2>Human Required</h2>
-              </div>
-            </div>
-            <div id="reviews" class="list review-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
                 <p class="eyebrow">Allowlist</p>
                 <h2>Trusted IPs</h2>
               </div>
@@ -234,7 +260,7 @@
                 <h2>System Logs</h2>
               </div>
               <div class="panel-actions">
-                <button id="check-ollama" type="button" title="Check Ollama">O</button>
+                <button id="check-ollama" type="button" title="Check AI model">AI</button>
                 <button id="reset-logs" class="danger-button" type="button" title="Reset dashboard logs">X</button>
               </div>
             </div>
@@ -255,7 +281,7 @@
               <span>Manual asset score WIP</span>
               <span>Cached enrichment WIP</span>
               <span>MITRE + risk score</span>
-              <span>Ollama opinion for every alert</span>
+              <span>AI model opinion for every alert</span>
               <span>Alert-only decision by default</span>
             </div>
           </section>
@@ -263,6 +289,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260703-otx-drilldown"></script>
   </body>
 </html>

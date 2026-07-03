@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Model Comparison</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">AI Comparison</p>
+          <h1>Model Opinion Comparison</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="compare-updated">Loading</span>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/outcome?type=human_review">Investigate</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/admin">Admin</a>
+        </div>
+      </section>
+
+      <section class="workbook-metrics">
+        <article class="metric">
+          <span>Models</span>
+          <strong id="cmp-models">0</strong>
+          <small>Provider/model identities</small>
+        </article>
+        <article class="metric">
+          <span>AI Reports</span>
+          <strong id="cmp-reports">0</strong>
+          <small>Stored opinions</small>
+        </article>
+        <article class="metric">
+          <span>Avg Adjust</span>
+          <strong id="cmp-adjust">0</strong>
+          <small>Risk adjustment</small>
+        </article>
+        <article class="metric">
+          <span>Avg Time</span>
+          <strong id="cmp-time">0</strong>
+          <small>Milliseconds</small>
+        </article>
+      </section>
+
+      <section class="workbook-grid">
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Comparison</p>
+              <h2>Model Outcomes</h2>
+            </div>
+          </div>
+          <div id="cmp-models-list" class="workbook-list"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Recent</p>
+              <h2>Latest AI Opinions</h2>
+            </div>
+          </div>
+          <div id="cmp-recent" class="alerts compact-alerts"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/compare.js?v=20260703-profile-labels"></script>
+  </body>
+</html>

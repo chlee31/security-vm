@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security VM Investigation</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Investigation</p>
+          <h1 id="investigation-title">Detection Detail</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="investigation-updated">Loading</span>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+        </div>
+      </section>
+
+      <section class="workbook-metrics">
+        <article class="metric">
+          <span>Final Score</span>
+          <strong id="inv-final-score">0</strong>
+          <small>Python plus AI adjustment</small>
+        </article>
+        <article class="metric">
+          <span>Decision</span>
+          <strong id="inv-decision">Unknown</strong>
+          <small id="inv-action">No action</small>
+        </article>
+        <article class="metric">
+          <span>AI Confidence</span>
+          <strong id="inv-ai-confidence">None</strong>
+          <small id="inv-ai-classification">No opinion</small>
+        </article>
+        <article class="metric">
+          <span>Related PCAPs</span>
+          <strong id="inv-pcap-count">0</strong>
+          <small>Capture files in window</small>
+        </article>
+      </section>
+
+      <section class="workbook-grid">
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Human Feedback</p>
+              <h2>Analyst Review</h2>
+            </div>
+          </div>
+          <div id="inv-review" class="workbook-list"></div>
+          <form id="inv-review-form" class="form-grid investigation-review-form">
+            <label class="field">
+              <span>Analyst name</span>
+              <input id="inv-review-name" type="text" placeholder="Example: analyst">
+            </label>
+            <label class="field">
+              <span>Override score, 0-100</span>
+              <input id="inv-review-score" type="number" min="0" max="100" placeholder="Only needed for override">
+            </label>
+            <label class="field wide-field">
+              <span>Review decision</span>
+              <select id="inv-review-action">
+                <option value="confirm">Confirm original</option>
+                <option value="log_only">Override: log only</option>
+                <option value="human_review">Override: keep review</option>
+                <option value="would_block">Override: would block</option>
+                <option value="temporary_block">Override: temporary block</option>
+              </select>
+            </label>
+            <label class="field wide-field">
+              <span>Tuning label</span>
+              <select id="inv-review-label">
+                <option value="">No tuning label</option>
+                <option value="true_positive">True positive</option>
+                <option value="false_positive">False positive</option>
+                <option value="authorized_test">Authorized test</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </label>
+            <label class="field wide-field">
+              <span>Notes</span>
+              <textarea id="inv-review-notes" placeholder="Analyst notes for tuning and compliance history"></textarea>
+            </label>
+            <button class="wide-button" type="submit">Save Feedback</button>
+            <div id="inv-review-status" class="connection-status">Feedback not submitted.</div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Alert</p>
+              <h2>Suricata Event</h2>
+            </div>
+          </div>
+          <div id="inv-alert" class="workbook-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">AI Review</p>
+              <h2>Model Reasoning</h2>
+            </div>
+          </div>
+          <div id="inv-ai" class="workbook-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Evidence</p>
+              <h2>Scoring & Correlation</h2>
+            </div>
+          </div>
+          <div id="inv-scoring" class="workbook-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Enrichment</p>
+              <h2>Assets & Threat Intel</h2>
+            </div>
+          </div>
+          <div id="inv-intel" class="workbook-list"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Packet Capture</p>
+              <h2>Related PCAP Files</h2>
+            </div>
+          </div>
+          <div id="inv-pcaps" class="pcap-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Raw AI Output</p>
+              <h2>Model JSON</h2>
+            </div>
+          </div>
+          <div id="inv-raw" class="workbook-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/investigation.js?v=20260703-human-feedback"></script>
+  </body>
+</html>

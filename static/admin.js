@@ -1,8 +1,15 @@
 const els = {
   updated: document.querySelector("#admin-updated"),
   ollamaForm: document.querySelector("#ollama-form"),
+  profileName: document.querySelector("#ai-profile-name"),
+  profileUid: document.querySelector("#ai-profile-uid"),
+  profileStatus: document.querySelector("#ai-profile-status"),
+  profileNotes: document.querySelector("#ai-profile-notes"),
+  profiles: document.querySelector("#ai-profiles"),
+  newProfile: document.querySelector("#new-ai-profile"),
   ollamaHost: document.querySelector("#ollama-host"),
   ollamaModel: document.querySelector("#ollama-model"),
+  ollamaProvider: document.querySelector("#ollama-provider"),
   ollamaModels: document.querySelector("#ollama-models"),
   ollamaTimeout: document.querySelector("#ollama-timeout"),
   ollamaStatus: document.querySelector("#ollama-admin-status"),
@@ -26,7 +33,7 @@ const els = {
   paths: document.querySelector("#admin-paths")
 };
 
-let state = { assets: [], types: [], network: {} };
+let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "" };
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -65,8 +72,17 @@ function setStatus(element, kind, text) {
 
 function renderOllama(settings) {
   const ollama = settings.ollama || {};
+  const profiles = settings.ai_profiles || {};
+  state.aiProfiles = profiles.items || [];
+  state.activeProfileUid = profiles.active_uid || ollama.active_profile_uid || "";
+  const activeProfile = state.aiProfiles.find((profile) => profile.uid === state.activeProfileUid) || {};
+  els.profileName.value = activeProfile.name || `${ollama.provider || "ai"}:${ollama.model || ""}`;
+  els.profileUid.value = state.activeProfileUid || "";
+  els.profileStatus.value = activeProfile.status || "active";
+  els.profileNotes.value = activeProfile.notes || "";
   els.ollamaHost.value = ollama.host || "";
   els.ollamaModel.value = ollama.model || "";
+  els.ollamaProvider.value = ollama.provider || "";
   els.ollamaTimeout.value = ollama.timeout_seconds || 90;
   els.ollamaModels.innerHTML = (ollama.model_suggestions || []).map((model) => `
     <option value="${model}"></option>
@@ -74,12 +90,48 @@ function renderOllama(settings) {
   els.ollamaSummary.innerHTML = `
     <div class="list-item">
       <div class="row tight">
-        <strong>Current model</strong>
-        <span>${ollama.model || "not configured"}</span>
+        <strong>Selected AI profile</strong>
+        <span>${state.activeProfileUid || "no uid"}</span>
       </div>
-      <p>${ollama.host || "No Ollama host configured"}</p>
-      <small>Timeout ${ollama.timeout_seconds || 90}s. Changes are written to config.yaml.</small>
+      <p>${activeProfile.name || "Current model"} · ${ollama.provider || "auto"}:${ollama.model || "not configured"}</p>
+      <p>${ollama.host || "No AI service URL configured"}</p>
+      <small>Timeout ${ollama.timeout_seconds || 90}s. New AI logs are stamped with this profile UID and run ID.</small>
     </div>
+  `;
+  renderAiProfiles();
+}
+
+function renderAiProfiles() {
+  els.profiles.innerHTML = `
+    <div class="list-item">
+      <div class="row tight">
+        <strong>Saved AI profiles</strong>
+        <span>${state.aiProfiles.length}</span>
+      </div>
+      <p>Select one before a test run so future AI logs can be compared by UID.</p>
+    </div>
+    ${state.aiProfiles.map((profile) => `
+      <div
+        class="list-item ai-profile ${profile.uid === state.activeProfileUid ? "active" : ""} ${profile.status === "inactive" ? "inactive" : ""}"
+        ${profile.status === "active" ? `data-select-ai-profile="${profile.uid}" role="button" tabindex="0"` : ""}
+      >
+        <div class="row tight">
+          <strong>${profile.name}</strong>
+          <span class="status-pill ${profile.uid === state.activeProfileUid ? "active" : profile.status === "inactive" ? "inactive" : ""}">
+            ${profile.uid === state.activeProfileUid ? "active / selected" : profile.status}
+          </span>
+        </div>
+        <p>${profile.provider}:${profile.model}</p>
+        <small>${profile.uid} · ${profile.host} · timeout ${profile.timeout_seconds || 90}s</small>
+        ${profile.notes ? `<small>${profile.notes}</small>` : ""}
+        <div class="asset-admin-actions">
+          <button class="text-button" type="button" data-edit-ai-profile="${profile.uid}">Edit</button>
+          <button class="text-button" type="button" data-select-ai-profile="${profile.uid}" ${profile.status === "inactive" || profile.uid === state.activeProfileUid ? "disabled" : ""}>
+            ${profile.uid === state.activeProfileUid ? "Selected" : "Select"}
+          </button>
+        </div>
+      </div>
+    `).join("")}
   `;
 }
 
@@ -318,14 +370,57 @@ async function deleteAsset(assetId) {
 }
 
 async function saveOllama() {
-  const payload = {
+  const payload = aiProfilePayloadFromForm();
+  const uid = els.profileUid.value;
+  if (uid) {
+    await sendJson(`/api/admin/ai-profiles/${encodeURIComponent(uid)}`, "PUT", payload);
+    if (payload.status === "active") {
+      await sendJson(`/api/admin/ai-profiles/${encodeURIComponent(uid)}/select`, "POST");
+    }
+  } else {
+    await sendJson("/api/admin/ai-profiles", "POST", payload);
+  }
+  setStatus(els.ollamaStatus, "ok", payload.status === "active" ? "AI profile saved and selected." : "AI profile saved as inactive.");
+  await refresh();
+}
+
+function aiProfilePayloadFromForm() {
+  return {
+    name: els.profileName.value,
     host: els.ollamaHost.value,
     model: els.ollamaModel.value,
-    timeout_seconds: Number(els.ollamaTimeout.value || 90)
+    provider: els.ollamaProvider.value,
+    timeout_seconds: Number(els.ollamaTimeout.value || 90),
+    status: els.profileStatus.value,
+    notes: els.profileNotes.value
   };
-  await sendJson("/api/admin/ollama", "POST", payload);
-  setStatus(els.ollamaStatus, "ok", "Ollama settings saved.");
+}
+
+async function saveNewAiProfile() {
+  const payload = aiProfilePayloadFromForm();
+  await sendJson("/api/admin/ai-profiles", "POST", payload);
+  setStatus(els.ollamaStatus, "ok", payload.status === "active" ? "New AI profile created and selected." : "New inactive AI profile created.");
   await refresh();
+}
+
+async function selectAiProfile(uid) {
+  await sendJson(`/api/admin/ai-profiles/${encodeURIComponent(uid)}/select`, "POST");
+  setStatus(els.ollamaStatus, "ok", "AI profile selected. New AI logs will use that UID.");
+  await refresh();
+}
+
+function editAiProfile(uid) {
+  const profile = state.aiProfiles.find((item) => item.uid === uid);
+  if (!profile) return;
+  els.profileName.value = profile.name || "";
+  els.profileUid.value = profile.uid || "";
+  els.profileStatus.value = profile.status || "active";
+  els.profileNotes.value = profile.notes || "";
+  els.ollamaHost.value = profile.host || "";
+  els.ollamaModel.value = profile.model || "";
+  els.ollamaProvider.value = profile.provider || "";
+  els.ollamaTimeout.value = profile.timeout_seconds || 90;
+  els.ollamaForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 els.ollamaForm.addEventListener("submit", async (event) => {
@@ -342,10 +437,22 @@ els.testOllama.addEventListener("click", async () => {
     await saveOllama();
     const status = await getJson("/api/ollama-status");
     if (status.ok) {
-      setStatus(els.ollamaStatus, "ok", `Ollama reachable. Models: ${(status.models || []).join(", ") || "none returned"}`);
+      setStatus(
+        els.ollamaStatus,
+        "ok",
+        `AI profile ${status.ai_profile_uid || "unknown"} reachable in ${status.elapsed_ms ?? 0}ms. Models: ${(status.models || []).join(", ") || "none returned"}`
+      );
     } else {
-      setStatus(els.ollamaStatus, "error", status.error || "Ollama check failed");
+      setStatus(els.ollamaStatus, "error", status.error || "AI model check failed");
     }
+  } catch (error) {
+    setStatus(els.ollamaStatus, "error", error.message);
+  }
+});
+
+els.newProfile.addEventListener("click", async () => {
+  try {
+    await saveNewAiProfile();
   } catch (error) {
     setStatus(els.ollamaStatus, "error", error.message);
   }
@@ -377,6 +484,7 @@ els.assetType.addEventListener("change", () => {
 });
 
 document.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
   const assetId = event.target.dataset.editAsset;
   if (assetId) editAsset(assetId);
   const toggleId = event.target.dataset.toggleAsset;
@@ -386,6 +494,16 @@ document.addEventListener("click", (event) => {
   const deleteId = event.target.dataset.deleteAsset;
   if (deleteId) {
     deleteAsset(deleteId).catch((error) => window.alert(error.message));
+  }
+  const editProfileUid = event.target.dataset.editAiProfile;
+  if (editProfileUid) {
+    editAiProfile(editProfileUid);
+    return;
+  }
+  const profileTarget = event.target.closest("[data-select-ai-profile]");
+  const selectProfileUid = profileTarget && !button ? profileTarget.dataset.selectAiProfile : event.target.dataset.selectAiProfile;
+  if (selectProfileUid) {
+    selectAiProfile(selectProfileUid).catch((error) => setStatus(els.ollamaStatus, "error", error.message));
   }
   const command = event.target.dataset.copyCommand;
   if (command) {
@@ -404,6 +522,14 @@ document.addEventListener("click", (event) => {
       })
       .catch(() => window.prompt("Copy this command:", commandText));
   }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!["Enter", " "].includes(event.key)) return;
+  const profileTarget = event.target.closest("[data-select-ai-profile]");
+  if (!profileTarget) return;
+  event.preventDefault();
+  selectAiProfile(profileTarget.dataset.selectAiProfile).catch((error) => setStatus(els.ollamaStatus, "error", error.message));
 });
 
 refresh();

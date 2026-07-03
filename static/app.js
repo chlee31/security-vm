@@ -7,8 +7,10 @@ const els = {
   totalAssets: document.querySelector("#total-assets"),
   topDetection: document.querySelector("#top-detection"),
   systemMode: document.querySelector("#system-mode"),
-  detailTitle: document.querySelector("#detail-title"),
-  detectionDetail: document.querySelector("#detection-detail"),
+  summaryIpPie: document.querySelector("#summary-ip-pie"),
+  summaryTimeline: document.querySelector("#summary-timeline"),
+  summaryOtx: document.querySelector("#summary-otx"),
+  summaryModels: document.querySelector("#summary-models"),
   decisionEvidence: document.querySelector("#decision-evidence"),
   pcapFiles: document.querySelector("#pcap-files"),
   mode: document.querySelector("#mode"),
@@ -16,7 +18,6 @@ const els = {
   alerts: document.querySelector("#alerts"),
   ollamaReports: document.querySelector("#ollama-reports"),
   detections: document.querySelector("#detections"),
-  reviews: document.querySelector("#reviews"),
   allowlist: document.querySelector("#allowlist"),
   allowlistForm: document.querySelector("#allowlist-form"),
   assets: document.querySelector("#assets"),
@@ -41,6 +42,7 @@ const els = {
 
 let selectedDetectionType = null;
 let selectedOutcome = null;
+let selectedOtxReputation = null;
 
 function readHashFilters() {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -77,6 +79,10 @@ function outcomeWorkbookUrl(outcome) {
   if (outcome) params.set("type", outcome);
   if (selectedDetectionType) params.set("detection_type", selectedDetectionType);
   return `/outcome?${params.toString()}`;
+}
+
+function investigationUrl(detectionId) {
+  return `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
 
 readHashFilters();
@@ -127,6 +133,189 @@ function scoreBadge(score, label = "Score") {
       <span>${label}</span>
       <strong>${value}</strong>
       <small>/100</small>
+    </div>
+  `;
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function renderPie(container, rows, labelFn, valueFn, emptyText) {
+  const top = rows.slice(0, 6);
+  const total = top.reduce((sum, item) => sum + Number(valueFn(item) || 0), 0);
+  if (!total) {
+    container.innerHTML = `<div class="empty">${emptyText}</div>`;
+    return;
+  }
+
+  const colors = [cssVar("--green"), cssVar("--cyan"), cssVar("--amber"), cssVar("--red"), "#a78bfa", "#94a3b8"];
+  let cursor = 0;
+  const segments = top.map((item, index) => {
+    const start = cursor;
+    const size = (Number(valueFn(item) || 0) / total) * 360;
+    cursor += size;
+    return `${colors[index]} ${start}deg ${cursor}deg`;
+  });
+
+  container.innerHTML = `
+    <div class="pie-layout dashboard-pie">
+      <div class="pie-chart compact-pie" style="background: conic-gradient(${segments.join(", ")});"></div>
+      <div class="legend-list compact-legend">
+        ${top.map((item, index) => `
+          <div>
+            <span class="legend-dot" style="background:${colors[index]}"></span>
+            <strong>${labelFn(item)}</strong>
+            <small>${valueFn(item)} seen</small>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderBars(container, rows, labelFn, valueFn, emptyText) {
+  const max = Math.max(1, ...rows.map((row) => Number(valueFn(row) || 0)));
+  container.innerHTML = `
+    <div class="bar-list">
+      ${rows.map((row) => `
+        <div>
+          <div class="row tight">
+            <strong>${labelFn(row)}</strong>
+            <span>${valueFn(row)}</span>
+          </div>
+          <div class="bar"><span style="--value:${(Number(valueFn(row) || 0) / max) * 100}%"></span></div>
+        </div>
+      `).join("") || `<div class="empty">${emptyText}</div>`}
+    </div>
+  `;
+}
+
+function renderSummary(summary) {
+  if (summary._error) {
+    const message = `${summary._error}. Restart the dashboard backend to enable this summary.`;
+    els.summaryIpPie.innerHTML = `<div class="empty">${message}</div>`;
+    els.summaryTimeline.innerHTML = `<div class="empty">${message}</div>`;
+    els.summaryOtx.innerHTML = `<div class="empty">${message}</div>`;
+    els.summaryModels.innerHTML = `<div class="empty">${message}</div>`;
+    return;
+  }
+
+  renderPie(
+    els.summaryIpPie,
+    summary.top_ips || [],
+    (item) => item.ip_address,
+    (item) => item.count,
+    "No IP activity yet."
+  );
+  renderBars(
+    els.summaryTimeline,
+    summary.timeline || [],
+    (item) => item.bucket || "unknown",
+    (item) => item.count,
+    "No timeline data yet."
+  );
+
+  const otxSource = (summary.otx?.sources || []).find((source) => source.name === "otx") || {};
+  const reputationRows = summary.otx?.by_reputation || [];
+  const lookupsByReputation = summary.otx?.lookups_by_reputation || {};
+  if (selectedOtxReputation && !lookupsByReputation[selectedOtxReputation]) {
+    selectedOtxReputation = null;
+  }
+  const selectedOtxRows = selectedOtxReputation ? lookupsByReputation[selectedOtxReputation] || [] : [];
+  els.summaryOtx.innerHTML = `
+    <div class="summary-stack">
+      <div class="summary-cardline">
+        <strong>${otxSource.status || "unknown"}</strong>
+        <span>${summary.otx?.lookup_count || 0} lookups</span>
+      </div>
+      <small>${otxSource.api_key_configured ? "API key configured" : "API key not configured"} · ${otxSource.cache_ttl_hours || 24}h cache</small>
+      <div class="bar-list compact-bars">
+        ${reputationRows.map((row) => `
+          <button class="summary-drill-row ${selectedOtxReputation === (row.reputation || "unknown") ? "selected" : ""}" type="button" data-otx-reputation="${row.reputation || "unknown"}">
+            <div class="row tight">
+              <strong>${row.reputation || "unknown"}</strong>
+              <span>${row.count}</span>
+            </div>
+            <small>malicious ${row.malicious_total || 0} · suspicious ${row.suspicious_total || 0}</small>
+          </button>
+        `).join("") || `<div class="empty">No cached OTX results yet.</div>`}
+      </div>
+      ${selectedOtxReputation ? `
+        <div class="otx-drilldown">
+          <div class="summary-cardline">
+            <strong>${selectedOtxReputation} IPs</strong>
+            <span>${selectedOtxRows.length}</span>
+          </div>
+          <div class="mini-list dense">
+            ${selectedOtxRows.slice(0, 10).map((item) => `
+              <div>
+                <strong>${item.indicator}</strong>
+                <small>malicious ${item.malicious_count || 0} · suspicious ${item.suspicious_count || 0}</small>
+                <small>${item.lookup_result || "No OTX detail"}${item.lookup_time ? ` · ${item.lookup_time}` : ""}</small>
+              </div>
+            `).join("") || `<small>No IPs found for this reputation.</small>`}
+          </div>
+        </div>
+      ` : `<small>Click a reputation row to see searched IP addresses.</small>`}
+    </div>
+  `;
+
+  const grouped = new Map();
+  let legacyCount = 0;
+  (summary.model_comparison || []).forEach((row) => {
+    const key = row.ai_profile_uid || row.model_identity || "legacy-profile";
+    const modelIdentity = row.model_identity || "";
+    const isLegacy = key === "legacy-profile" || !modelIdentity || modelIdentity === "unknown model";
+    if (isLegacy) {
+      legacyCount += Number(row.count || 0);
+      return;
+    }
+    const label = modelIdentity;
+    grouped.set(key, (grouped.get(key) || 0) + Number(row.count || 0));
+    grouped.set(`${key}:label`, label);
+  });
+  const activeProfile = summary.active_ai_profile;
+  if (activeProfile && !grouped.has(activeProfile.uid)) {
+    grouped.set(activeProfile.uid, 0);
+    grouped.set(`${activeProfile.uid}:label`, `${activeProfile.provider}:${activeProfile.model}`);
+  }
+  const modelRows = [...grouped.entries()]
+    .filter(([key]) => !String(key).endsWith(":label"))
+    .map(([key, count]) => ({ key, model: grouped.get(`${key}:label`) || key, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+  const modelMax = Math.max(1, ...modelRows.map((item) => Number(item.count || 0)));
+  els.summaryModels.innerHTML = `
+    <div class="summary-stack">
+      ${activeProfile ? `
+        <div class="summary-cardline">
+          <strong>${activeProfile.name}</strong>
+          <span>selected</span>
+        </div>
+        <small>${activeProfile.uid} · ${activeProfile.provider}:${activeProfile.model}</small>
+      ` : `<div class="empty">No selected AI profile.</div>`}
+      <div class="bar-list compact-bars">
+        ${modelRows.map((item) => `
+          <div>
+            <div class="row tight">
+              <strong>${item.model}</strong>
+              <span>${item.count}</span>
+            </div>
+            <div class="bar"><span style="--value:${(Number(item.count || 0) / modelMax) * 100}%"></span></div>
+            <small>${item.key === "legacy-profile" ? "rows created before AI profiles were enabled" : `profile ${item.key}`}</small>
+          </div>
+        `).join("") || `<div class="empty">No AI reports yet.</div>`}
+        ${legacyCount ? `
+          <div>
+            <div class="row tight">
+              <strong>Legacy AI reports</strong>
+              <span>${legacyCount}</span>
+            </div>
+            <small>older rows without profile UID; restart ingest for new named rows</small>
+          </div>
+        ` : ""}
+      </div>
     </div>
   `;
 }
@@ -184,7 +373,7 @@ function renderMetrics(metrics) {
 
 function renderAlerts(alerts) {
   els.alerts.innerHTML = alerts.map((alert) => `
-    <article class="alert">
+    <a class="alert investigation-link" href="${alert.detection_id ? investigationUrl(alert.detection_id) : "#"}" target="_blank" rel="noopener">
       <time>${alert.timestamp || ""}</time>
       <div>
         <strong>${alert.signature || "Suricata alert"}</strong>
@@ -194,12 +383,13 @@ function renderAlerts(alerts) {
           ${alert.protocol || ""}
         </p>
         <p>${alert.category || "unknown"} · priority ${alert.priority || "unknown"}</p>
+        ${alert.final_classification ? `<p>${alert.final_classification} · score ${alert.final_score ?? 0}</p>` : ""}
       </div>
       <div class="score-badge priority">
         <span>Priority</span>
         <strong>${alert.priority || "?"}</strong>
       </div>
-    </article>
+    </a>
   `).join("") || `<div class="empty">No alerts in SQLite yet. Run the ingest command while Suricata writes eve.json.</div>`;
 }
 
@@ -212,12 +402,12 @@ function classificationClass(value) {
 
 function renderOllamaReports(reports) {
   els.ollamaReports.innerHTML = reports.map((report) => `
-    <article class="alert ollama ${classificationClass(report.classification)}">
+    <a class="alert ollama investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id) : "#"}" target="_blank" rel="noopener">
       <time>${report.created_at || report.timestamp || ""}</time>
       <div>
         <div class="row tight">
-          <strong>${report.classification || "Ollama opinion"}</strong>
-          <span>${report.confidence || "Unknown"} confidence</span>
+          <strong>${report.classification || "AI opinion"}</strong>
+          <span>${report.confidence || "Unknown"} confidence · ${report.model_identity || "unknown model"}</span>
         </div>
         <p>
           ${report.src_ip || "unknown"} -> ${report.dest_ip || "unknown"}
@@ -225,9 +415,10 @@ function renderOllamaReports(reports) {
         </p>
         <p>${report.reason || "No reason returned."}</p>
         <p>Recommended action: ${report.recommended_action || "none"} · risk adjustment ${report.risk_adjustment ?? 0}</p>
+        <p>Profile ${report.ai_profile_uid || "legacy-profile"} · run ${report.model_run_id || "not recorded"} · ${report.elapsed_ms ?? 0}ms</p>
       </div>
-    </article>
-  `).join("") || `<div class="empty">No Ollama opinions yet. Start ingest and confirm Ollama is reachable.</div>`;
+    </a>
+  `).join("") || `<div class="empty">No AI opinions yet. Start ingest and confirm the AI model is reachable.</div>`;
 }
 
 function renderEvents(events) {
@@ -240,7 +431,7 @@ function renderEvents(events) {
       <p>${event.message || ""}</p>
       ${event.details ? `<small>${event.details}</small>` : ""}
     </div>
-  `).join("") || `<div class="empty">No runtime logs yet. Start ingest or check Ollama.</div>`;
+  `).join("") || `<div class="empty">No runtime logs yet. Start ingest or check the AI model.</div>`;
 }
 
 function renderOtxSummary(result) {
@@ -250,74 +441,6 @@ function renderOtxSummary(result) {
   const suspicious = result.suspicious_count ?? 0;
   const cached = result.cached ? "cached" : "fresh";
   return `OTX ${reputation} · malicious ${malicious} · suspicious ${suspicious} · ${cached}`;
-}
-
-function renderDetectionDetail(detail) {
-  if (!detail || !detail.detection_type) {
-    els.detailTitle.textContent = "Detection Detail";
-    els.detectionDetail.innerHTML = `<div class="empty">Select a detection type to investigate.</div>`;
-    return;
-  }
-
-  const summary = detail.summary || {};
-  const timeline = detail.timeline || [];
-  const ips = detail.ips || [];
-  const recent = detail.recent || [];
-  const max = Math.max(1, ...timeline.map((item) => item.count));
-
-  const detailName = detail.detection_type === "all_traffic" ? "All Traffic" : detectionLabel(detail.detection_type);
-  els.detailTitle.textContent = detailName;
-  els.detectionDetail.innerHTML = `
-    <div class="detail-card">
-      <span>Total</span>
-      <strong>${summary.total || 0}</strong>
-      <small>avg score ${Math.round(summary.avg_score || 0)} · max ${summary.max_score || 0}</small>
-    </div>
-    <div class="detail-card wide">
-      <span>Activity Over Time</span>
-      <div class="timeline">
-        ${timeline.map((item) => `
-          <div class="timeline-row">
-            <time>${item.bucket || "unknown"}</time>
-            <div class="bar"><span style="--value:${(item.count / max) * 100}%"></span></div>
-            <strong>${item.count}</strong>
-          </div>
-        `).join("") || `<div class="empty">No timeline data.</div>`}
-      </div>
-    </div>
-    <div class="detail-card wide compact-list-card">
-      <span>IP Addresses (${ips.length})</span>
-      <div class="mini-list dense expanded-list ip-list">
-        ${ips.map((item) => `
-          <div>
-            <strong>${item.ip_address}</strong>
-            <small>
-              ${item.asset ? `${item.asset.name} · ${detectionLabel(item.asset.device_type)} · score ${item.asset.asset_score}` : item.location}
-              · ${item.scope} · seen ${item.count}
-            </small>
-            <small class="intel-line">${renderOtxSummary(item.otx)}</small>
-          </div>
-        `).join("") || `<small>No IP data.</small>`}
-      </div>
-    </div>
-    <div class="detail-card wide compact-list-card">
-      <span>Recent ${detailName} Alerts (${recent.length})</span>
-      <div class="mini-list dense recent-alert-list">
-        ${recent.map((item) => `
-          <div class="score-row">
-            ${scoreBadge(item.python_initial_score || 0, "Score")}
-            <div>
-              <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
-              <small>
-                ${item.signature || "Detection"} · ${item.ollama_classification || "no Ollama"}
-                ${item.src_asset || item.dest_asset ? ` · asset ${item.src_asset?.name || item.dest_asset?.name}` : ""}
-              </small>
-            </div>
-          </div>
-        `).join("") || `<small>No recent rows.</small>`}
-      </div>
-    </div>
-  `;
 }
 
 function renderEnrichment(status) {
@@ -427,16 +550,17 @@ function renderDecisionEvidence(rows) {
         </div>
         <div>
           <span>Scoring</span>
-          <strong>Python ${row.python_initial_score ?? 0} + Ollama ${row.ollama_risk_adjustment ?? 0}</strong>
+          <strong>Python ${row.python_initial_score ?? 0} + AI ${row.ollama_risk_adjustment ?? 0}</strong>
           <small>
             Final score ${row.final_score ?? 0}
             ${row.src_asset || row.dest_asset ? ` · asset ${row.src_asset?.name || row.dest_asset?.name} score ${row.src_asset?.asset_score ?? row.dest_asset?.asset_score}` : " · no asset score yet"}
           </small>
         </div>
         <div>
-          <span>Ollama</span>
+          <span>AI Model</span>
           <strong>${row.ollama_classification || "No opinion"} ${row.ollama_confidence ? `(${row.ollama_confidence})` : ""}</strong>
-          <small>${row.ollama_reason || "No Ollama reason stored."}</small>
+          <small>${row.ollama_model_identity || "unknown model"} · profile ${row.ollama_ai_profile_uid || "legacy-profile"} · run ${row.ollama_model_run_id || "not recorded"}</small>
+          <small>${row.ollama_reason || "No AI reason stored."}</small>
         </div>
         <div>
           <span>Analyst</span>
@@ -444,6 +568,7 @@ function renderDecisionEvidence(rows) {
           <small>${row.analyst_action || "No analyst override"} ${row.analyst_name ? `by ${row.analyst_name}` : ""}</small>
         </div>
       </div>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>
     </article>
   `).join("") || `<div class="empty">No ${outcomeLabel} decision evidence rows for this selection yet.</div>`;
 }
@@ -469,41 +594,6 @@ function renderAllowlist(entries) {
       <button class="text-button" type="button" data-allow-remove="${entry.id}">Deactivate</button>
     </div>
   `).join("") || `<div class="empty">No active allowlist entries.</div>`;
-}
-
-function renderReviews(reviews) {
-  els.reviews.innerHTML = reviews.map((review) => `
-    <div class="list-item review ${review.review_status}">
-      <div class="row tight">
-        <strong>${review.original_classification || "Human Review"}</strong>
-        <span>score ${review.original_score}</span>
-      </div>
-      <p>${review.src_ip || "unknown"} -> ${review.dest_ip || "unknown"}</p>
-      <p>${review.signature || detectionLabel(review.detection_type)}</p>
-      <small>Due ${review.due_at} · ${review.review_status}</small>
-      ${review.ollama_reason ? `<small>Ollama: ${review.ollama_reason}</small>` : ""}
-      <div class="review-actions">
-        <input type="text" placeholder="Analyst" data-review-name="${review.detection_id}">
-        <input type="number" min="0" max="100" placeholder="Score" data-review-score="${review.detection_id}">
-        <select data-review-action="${review.detection_id}">
-          <option value="confirm">Confirm original</option>
-          <option value="log_only">Override: log only</option>
-          <option value="human_review">Override: keep review</option>
-          <option value="would_block">Override: would block</option>
-          <option value="temporary_block">Override: temporary block</option>
-        </select>
-        <select data-review-label="${review.detection_id}">
-          <option value="">Tuning label</option>
-          <option value="true_positive">True positive</option>
-          <option value="false_positive">False positive</option>
-          <option value="authorized_test">Authorized test</option>
-          <option value="unknown">Unknown</option>
-        </select>
-        <textarea placeholder="Notes" data-review-notes="${review.detection_id}"></textarea>
-        <button class="wide-button" type="button" data-review-submit="${review.detection_id}">Save Review</button>
-      </div>
-    </div>
-  `).join("") || `<div class="empty">No human-review alerts waiting.</div>`;
 }
 
 function renderAssetTypeOptions(types) {
@@ -552,56 +642,55 @@ function renderAssets(payload) {
 
 async function refresh() {
   try {
-    const detailPath = selectedDetectionType
-      ? `/api/detection-detail?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=50`
-      : "/api/detection-detail?limit=50";
     const pcapPath = selectedDetectionType
       ? `/api/pcap-files?detection_type=${encodeURIComponent(selectedDetectionType)}`
       : "/api/pcap-files";
     const evidencePath = selectedDetectionType
       ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`
       : `/api/decision-evidence?limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`;
-    const [metrics, alerts, ollamaReports, reviews, allowlist, assets, enrichment, events, detail, pcaps, evidence] = await Promise.all([
+    const summaryRequest = getJson("/api/dashboard-summary?limit=12").catch((error) => ({ _error: error.message }));
+    const [metrics, summary, alerts, ollamaReports, allowlist, assets, enrichment, events, pcaps, evidence] = await Promise.all([
       getJson("/api/metrics"),
+      summaryRequest,
       getJson("/api/alerts?limit=50"),
       getJson("/api/ollama-reports?limit=50"),
-      getJson("/api/reviews?limit=25"),
       getJson("/api/allowlist?limit=25"),
       getJson("/api/assets?limit=25"),
       getJson("/api/enrichment-status?limit=25"),
       getJson("/api/events?limit=40"),
-      getJson(detailPath),
       getJson(pcapPath),
       getJson(evidencePath)
     ]);
     renderMetrics(metrics);
+    renderSummary(summary);
     renderAlerts(alerts);
     renderOllamaReports(ollamaReports);
-    renderReviews(reviews);
     renderAllowlist(allowlist);
     renderAssets(assets);
     renderEnrichment(enrichment);
-    renderDetectionDetail(detail);
+    renderEvents(events);
     renderPcapFiles(pcaps);
     renderDecisionEvidence(evidence);
-    renderEvents(events);
     els.updated.textContent = new Date().toLocaleTimeString();
   } catch (error) {
     els.updated.textContent = "Dashboard API error";
     els.alerts.innerHTML = `<div class="empty">${error.message}</div>`;
     els.ollamaReports.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.reviews.innerHTML = `<div class="empty">${error.message}</div>`;
     els.allowlist.innerHTML = `<div class="empty">${error.message}</div>`;
     els.assets.innerHTML = `<div class="empty">${error.message}</div>`;
     els.enrichment.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.events.innerHTML = `<div class="empty">${error.message}</div>`;
     els.pcapFiles.innerHTML = `<div class="empty">${error.message}</div>`;
     els.decisionEvidence.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.events.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.summaryIpPie.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.summaryTimeline.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.summaryOtx.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.summaryModels.innerHTML = `<div class="empty">${error.message}</div>`;
   }
 }
 
 async function checkOllama() {
-  els.updated.textContent = "Checking Ollama";
+  els.updated.textContent = "Checking AI model";
   try {
     await getJson("/api/ollama-status");
   } finally {
@@ -610,7 +699,7 @@ async function checkOllama() {
 }
 
 async function resetLogs() {
-  const confirmText = window.prompt("Type RESET to clear dashboard logs, alerts, detections, Ollama reports, reviews, evidence, and cached threat intel. Assets and allowlist entries are kept.");
+  const confirmText = window.prompt("Type RESET to clear dashboard logs, alerts, detections, AI reports, reviews, evidence, and cached threat intel. Assets and allowlist entries are kept.");
   if (confirmText !== "RESET") return;
   await sendJson("/api/reset-logs", "POST", { confirm: confirmText });
   selectedDetectionType = null;
@@ -737,8 +826,6 @@ async function handleDashboardClick(event) {
   if (allTrafficButton) {
     selectedDetectionType = null;
     writeHashFilters();
-    els.detailTitle.textContent = "Loading All Traffic";
-    document.querySelector("#detection-detail-panel").scrollIntoView({ behavior: "smooth", block: "start" });
     refresh();
     return;
   }
@@ -747,6 +834,14 @@ async function handleDashboardClick(event) {
   const detectionType = detectionButton ? detectionButton.dataset.detectionType : null;
   if (detectionType) {
     window.open(detectionWorkbookUrl(detectionType), "_blank", "noopener");
+    return;
+  }
+
+  const otxReputationButton = event.target.closest ? event.target.closest("[data-otx-reputation]") : null;
+  if (otxReputationButton) {
+    const reputation = otxReputationButton.dataset.otxReputation;
+    selectedOtxReputation = selectedOtxReputation === reputation ? null : reputation;
+    refresh();
     return;
   }
 
@@ -764,20 +859,6 @@ async function handleDashboardClick(event) {
     return;
   }
 
-  const detectionId = event.target.dataset.reviewSubmit;
-  if (detectionId) {
-    const action = document.querySelector(`[data-review-action="${detectionId}"]`).value;
-    const scoreValue = document.querySelector(`[data-review-score="${detectionId}"]`).value;
-    await sendJson(`/api/reviews/${detectionId}`, "POST", {
-      action,
-      analyst_name: document.querySelector(`[data-review-name="${detectionId}"]`).value,
-      notes: document.querySelector(`[data-review-notes="${detectionId}"]`).value,
-      tuning_label: document.querySelector(`[data-review-label="${detectionId}"]`).value,
-      score: action === "confirm" ? null : Number(scoreValue),
-      classification: action === "log_only" ? "Safe" : action === "would_block" || action === "temporary_block" ? "Dangerous" : "Human Review Required"
-    });
-    refresh();
-  }
 }
 
 els.refresh.addEventListener("click", refresh);
