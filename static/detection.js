@@ -67,20 +67,6 @@ function otxText(result) {
   return `OTX ${result.reputation || "unknown"} · malicious ${result.malicious_count ?? 0} · suspicious ${result.suspicious_count ?? 0}`;
 }
 
-function assetText(asset, fallback = "No registered asset") {
-  if (!asset) return fallback;
-  return `${asset.name} · ${label(asset.device_type)} · score ${asset.asset_score} · ${asset.ip_address}`;
-}
-
-function matchedAssetText(row) {
-  const src = row.src_asset;
-  const dest = row.dest_asset;
-  if (src && dest) return `Source ${assetText(src)} · Destination ${assetText(dest)}`;
-  if (src) return `Source asset: ${assetText(src)}`;
-  if (dest) return `Destination asset: ${assetText(dest)}`;
-  return "No registered source or destination asset matched.";
-}
-
 function investigationUrl(detectionId) {
   return `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
@@ -165,7 +151,7 @@ function renderIps(ips) {
     <div class="workbook-row">
       <div>
         <strong>${item.ip_address}</strong>
-        <p>${item.asset ? assetText(item.asset) : item.location}</p>
+        <p>${item.asset ? `${item.asset.name} · ${label(item.asset.device_type)} · score ${item.asset.asset_score}` : item.location}</p>
         <small>${item.scope} · seen ${item.count} · ${otxText(item.otx)}</small>
       </div>
     </div>
@@ -179,7 +165,6 @@ function renderRecent(recent) {
       <div>
         <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
         <p>${item.signature || "Detection"}</p>
-        <small>${matchedAssetText(item)}</small>
         <small>${item.ollama_classification || "no AI opinion"} · ${item.ollama_model_identity || "unknown model"}${item.ollama_ai_profile_uid ? ` · profile ${item.ollama_ai_profile_uid}` : ""}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
         <a class="inline-link" href="${investigationUrl(item.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>
       </div>
@@ -205,12 +190,6 @@ function renderEvidence(rows) {
           <span>Correlation</span>
           <strong>${label(row.detection_type)}</strong>
           <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
-        </div>
-        <div>
-          <span>Assets</span>
-          <strong>${row.src_asset || row.dest_asset ? "Matched inventory" : "No match"}</strong>
-          <small>${matchedAssetText(row)}</small>
-          <small>Asset score is already included in Python score when a match exists.</small>
         </div>
         <div>
           <span>AI Model</span>
