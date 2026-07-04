@@ -6,7 +6,7 @@ The system starts in safe `alert_only` mode. The AI model can recommend actions,
 
 ## Screenshots
 
-Main dashboard with Suricata detections, asset tracking, enrichment status, and visible risk scores:
+Main dashboard with Suricata detections, asset inventory, enrichment status, and visible risk scores:
 
 ![Security VM dashboard overview](docs/images/dashboard-overview.png)
 
@@ -32,6 +32,7 @@ Home AI/GPU usage during triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
 - Detection types and investigation drilldowns
 - Dedicated detection workbook tabs with IP share, AI opinion, timeline, evidence, and PCAP views
 - Dedicated outcome workbook tabs for Safe, Human Review, and Dangerous decisions
+- Dedicated asset inventory workbook for registered internal machines and their matched detections
 - AI opinions for alerts
 - AI model comparison by provider/model identity, classification, average adjustment, and average response time
 - Decision evidence: alert data, correlation, score, AI reason, and final action
@@ -51,6 +52,7 @@ Asset inventory: <mark>Current Goal - Samatar</mark>
 - Add internal machines manually by IP address, name, device type, function, and notes.
 - Device type applies a default asset score.
 - Current lab target is the internal `ens37` network.
+- Open `/asset-inventory` from the dashboard to review registered machines, score distribution, device types, and matching detections.
 - Asset context is shown in detection detail and decision evidence.
 - When alert traffic matches a registered source or destination IP, the asset score is added to Python's initial risk score.
 - The matched asset details and applied score are sent to the AI model as analyst-defined context.
@@ -84,7 +86,7 @@ Dashboard reset:
 
 - The Runtime panel has a reset control for clearing dashboard history during demos.
 - Reset clears alerts, detections, AI reports, responses, review queue, evidence, runtime logs, and cached threat-intel rows.
-- Reset keeps manual assets, allowlist entries, and local configuration.
+- Reset keeps the asset inventory, allowlist entries, and local configuration.
 
 Admin controls:
 
@@ -93,7 +95,7 @@ Admin controls:
 - Set a provider label such as `ollama`, `nvidia`, or `deepseek` so reports can be compared by engine.
 - Suggested model names include `llama3.1:8b`, `llama3.2:latest`, and DeepSeek options for future testing.
 - View and edit registered internal machine IP addresses stored in SQLite.
-- Mark assets inactive to preserve tracking history, or permanently delete mistaken entries from admin controls.
+- Mark inventory records inactive to preserve tracking history, or permanently delete mistaken entries from admin controls.
 - View required system tools and Python packages detected on the Security VM, including version numbers when available.
 - Copy install or update commands from the admin page. Run system package commands in the terminal because they usually require `sudo`.
 - If `dumpcap` is installed but marked permission-limited, add the user to the `wireshark` group or run packet capture with sudo.

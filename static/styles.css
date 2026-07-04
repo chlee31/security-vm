@@ -1017,6 +1017,19 @@ time,
   border-color: rgba(54, 211, 153, 0.45);
 }
 
+.metric[data-asset-inventory] {
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.metric[data-asset-inventory]:hover,
+.metric[data-asset-inventory]:focus {
+  border-color: var(--cyan);
+  background: rgba(32, 39, 43, 0.98);
+  outline: none;
+  transform: translateY(-1px);
+}
+
 .ai-profile.inactive {
   border-left-color: var(--muted);
   background: rgba(32, 39, 43, 0.58);
@@ -1225,6 +1238,95 @@ time,
   .form-grid,
   .review-actions,
   .asset-admin-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+.asset-inventory-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 150px;
+  gap: 10px;
+  width: min(460px, 100%);
+}
+
+.asset-inventory-list {
+  display: grid;
+  gap: 12px;
+  max-height: 760px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.asset-inventory-item {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--cyan);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.asset-inventory-item.inactive {
+  border-left-color: var(--muted);
+  opacity: 0.72;
+}
+
+.asset-record-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.asset-record-main p {
+  margin: 6px 0 0;
+  color: var(--text);
+}
+
+.asset-record-main small,
+.asset-context-grid small {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+
+.asset-context-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.asset-context-grid > div {
+  min-height: 92px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111619;
+}
+
+.asset-context-grid span {
+  color: var(--green);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.asset-context-grid strong {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.asset-match-list {
+  max-height: 220px;
+}
+
+@media (max-width: 640px) {
+  .asset-inventory-filters,
+  .asset-record-main,
+  .asset-context-grid {
     grid-template-columns: 1fr;
   }
 }
