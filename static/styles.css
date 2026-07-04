@@ -1084,7 +1084,7 @@ time,
 }
 
 .enrichment-source.disabled,
-.enrichment-source.wip_disabled {
+.enrichment-source.planned_disabled {
   border-left-color: var(--muted);
 }
 

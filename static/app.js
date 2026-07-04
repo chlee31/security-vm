@@ -628,7 +628,7 @@ function renderAssets(payload) {
         <strong>Tracked inventory records</strong>
         <span>${summary.total || 0}</span>
       </div>
-      <p>Manual inventory for the internal interface, currently used as WIP decision context.</p>
+      <p>Manual inventory for the internal interface, used as decision context.</p>
     </div>
     ${assets.map((asset) => `
       <div class="list-item asset-item">

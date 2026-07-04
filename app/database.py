@@ -1199,8 +1199,8 @@ def enrichment_status(conn, config, limit=50):
             {
                 "name": "virustotal",
                 "enabled": bool(threat_intel.get("virustotal_enabled", False)),
-                "status": "configured" if threat_intel.get("virustotal_enabled", False) else "wip_disabled",
-                "notes": "WIP external reputation source. Python will call the API only when enabled and cache results before the AI model sees them.",
+                "status": "configured" if threat_intel.get("virustotal_enabled", False) else "planned_disabled",
+                "notes": "Optional external reputation source. Python will call the API only when enabled and cache results before the AI model sees them.",
                 "cache_ttl_hours": cache_ttl_hours,
                 "api_key_configured": bool(threat_intel.get("virustotal_api_key")),
             },

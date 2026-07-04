@@ -43,9 +43,9 @@ Home AI/GPU usage during triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
 - Admin controls for registered machine IPs, AI service URL/model settings, and installed tool checks
 - Runtime logs and enrichment status
 
-## Work In Progress Features
+## Feature Status
 
-These sections are visible in the dashboard so the project direction can be demonstrated, but they are still being refined.
+These features are available in the dashboard today. Some still have planned refinements listed in their notes.
 
 Asset inventory:
 
@@ -123,7 +123,7 @@ dumpcap
 curl
 ```
 
-Optional tools / work in progress:
+Optional tools:
 
 ```text
 tailscale      needed if the AI service is reached over Tailscale
@@ -131,7 +131,7 @@ firewalld      needed only for auto_response firewall blocking
 git            needed for cloning and branch workflow
 ```
 
-These are not required for the basic dashboard, ingest, SQLite storage, and Suricata alert viewing flow. Treat optional integrations as work in progress unless the README section for that feature says otherwise.
+These are not required for the basic dashboard, ingest, SQLite storage, and Suricata alert viewing flow. Install them only when using the related optional workflow.
 
 Install common Ubuntu dependencies:
 
@@ -465,7 +465,7 @@ security-vm/
 
 The system still runs as multiple terminal processes. A future launcher should start Suricata checks, PCAP capture, ingest, and dashboard with one command.
 
-Anything not listed in the main run flow should be treated as work in progress until it is documented here with setup and test steps.
+Anything not listed in the main run flow should be treated as an optional or planned workflow until it is documented here with setup and test steps.
 
 ## README Rule
 
