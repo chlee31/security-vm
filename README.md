@@ -266,6 +266,23 @@ sudo ./venv/bin/python -m app.main run-all \
   --pcap-dir /var/log/pcap
 ```
 
+Command-line interface overrides only affect that one run. To make the launcher use different capture interfaces every time, edit `config.yaml`:
+
+```yaml
+pcap:
+  rolling_dir: /var/log/pcap
+  external_interface: ens33
+  internal_interface: ens37
+```
+
+Use the interface names shown by:
+
+```bash
+ip -br link
+```
+
+This project setting only controls which interfaces Security VM captures from. If you need to permanently change the Ubuntu machine's actual interface IP addresses, gateway, DNS, or router behavior, use the bootstrap router setup or edit netplan separately.
+
 If Suricata is managed differently on your machine, skip the service restart:
 
 ```bash
