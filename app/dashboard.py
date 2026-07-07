@@ -313,9 +313,13 @@ def create_app(config_path):
     def ai_comparison_workbook():
         return static_page("compare.html")
 
+    @app.get("/asset-inventory")
+    def asset_inventory_workbook():
+        return static_page("asset_inventory.html")
+
     @app.get("/assets")
-    def asset_workbook():
-        return static_page("assets.html")
+    def legacy_asset_inventory_workbook():
+        return static_page("asset_inventory.html")
 
     @app.get("/admin")
     def admin_controls():
@@ -800,8 +804,8 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/assets-workbook")
-    def api_assets_workbook(limit: int = 500):
+    @app.get("/api/asset-inventory")
+    def api_asset_inventory(limit: int = 500):
         conn = connect(db_path)
         try:
             assets = list_all_assets(conn, limit)
@@ -874,6 +878,7 @@ def create_app(config_path):
                 for ip_address in {item.get("src_ip"), item.get("dest_ip")}:
                     if ip_address:
                         recent_by_ip.setdefault(ip_address, []).append(item)
+
             enriched_assets = []
             for asset in assets:
                 item = dict(asset)
@@ -883,23 +888,27 @@ def create_app(config_path):
                 )
                 item["recent_detections"] = recent_by_ip.get(item["ip_address"], [])[:6]
                 enriched_assets.append(item)
+
             active_assets = [asset for asset in enriched_assets if asset.get("status") == "active"]
             internal_interface = config.get("assets", {}).get("internal_interface", "ens37")
-            return {
-                "types": default_asset_types(config),
-                "default_interface": internal_interface,
-                "summary": {
-                    **asset_summary(conn),
+            summary = asset_summary(conn)
+            summary.update(
+                {
                     "inactive": len([asset for asset in enriched_assets if asset.get("status") == "inactive"]),
                     "high_value": len([asset for asset in active_assets if int(asset.get("asset_score") or 0) >= 8]),
-                    "ens37": len(
+                    "internal_interface_count": len(
                         [
                             asset
                             for asset in active_assets
                             if (asset.get("network_interface") or internal_interface) == internal_interface
                         ]
                     ),
-                },
+                }
+            )
+            return {
+                "types": default_asset_types(config),
+                "default_interface": internal_interface,
+                "summary": summary,
                 "by_type": [dict(row) for row in type_rows],
                 "by_score": [dict(row) for row in score_rows],
                 "assets": enriched_assets,

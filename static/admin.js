@@ -320,7 +320,7 @@ function assetPayloadFromForm() {
 function resetAssetForm() {
   els.assetForm.reset();
   els.assetId.value = "";
-  els.assetSubmit.textContent = "Add Machine";
+  els.assetSubmit.textContent = "Add Inventory Record";
   const selected = els.assetType.selectedOptions[0];
   els.assetScore.value = selected ? selected.dataset.score : "";
   els.assetInterface.placeholder = state.network.internal_interface || "ens37";
@@ -338,7 +338,7 @@ function editAsset(assetId) {
   els.assetStatus.value = asset.status || "active";
   els.assetFunction.value = asset.function || "";
   els.assetNotes.value = asset.notes || "";
-  els.assetSubmit.textContent = "Save Machine Changes";
+  els.assetSubmit.textContent = "Save Inventory Changes";
   els.assetForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 

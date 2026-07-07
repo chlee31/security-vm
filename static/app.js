@@ -81,6 +81,10 @@ function outcomeWorkbookUrl(outcome) {
   return `/outcome?${params.toString()}`;
 }
 
+function assetInventoryUrl() {
+  return "/asset-inventory";
+}
+
 function investigationUrl(detectionId) {
   return `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
@@ -625,10 +629,10 @@ function renderAssets(payload) {
   els.assets.innerHTML = `
     <div class="list-item">
       <div class="row tight">
-        <strong>Tracked assets</strong>
+        <strong>Tracked inventory records</strong>
         <span>${summary.total || 0}</span>
       </div>
-      <p>Manual inventory for the internal interface, currently used as WIP decision context.</p>
+      <p>Manual inventory for the internal interface, used as decision context.</p>
     </div>
     ${assets.map((asset) => `
       <div class="list-item asset-item">
@@ -703,7 +707,7 @@ async function checkOllama() {
 }
 
 async function resetLogs() {
-  const confirmText = window.prompt("Type RESET to clear dashboard logs, alerts, detections, AI reports, reviews, evidence, and cached threat intel. Assets and allowlist entries are kept.");
+  const confirmText = window.prompt("Type RESET to clear dashboard logs, alerts, detections, AI reports, reviews, evidence, and cached threat intel. Asset inventory and allowlist entries are kept.");
   if (confirmText !== "RESET") return;
   await sendJson("/api/reset-logs", "POST", { confirm: confirmText });
   selectedDetectionType = null;
@@ -844,6 +848,12 @@ async function handleDashboardClick(event) {
   const detectionType = detectionButton ? detectionButton.dataset.detectionType : null;
   if (detectionType) {
     window.open(detectionWorkbookUrl(detectionType), "_blank", "noopener");
+    return;
+  }
+
+  const assetInventoryButton = event.target.closest ? event.target.closest("[data-asset-inventory]") : null;
+  if (assetInventoryButton) {
+    window.open(assetInventoryUrl(), "_blank", "noopener");
     return;
   }
 
