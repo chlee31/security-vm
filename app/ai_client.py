@@ -20,12 +20,12 @@ def infer_model_provider(host, model):
 
 
 def model_metadata(config):
-    ollama = config.get("ollama", {})
-    host = (ollama.get("host") or "").rstrip("/")
-    model = ollama.get("model", "llama3.1:8b")
-    provider = ollama.get("provider") or infer_model_provider(host, model)
+    ai_model = config.get("ai_model", {})
+    host = (ai_model.get("host") or "").rstrip("/")
+    model = ai_model.get("model", "llama3.1:8b")
+    provider = ai_model.get("provider") or infer_model_provider(host, model)
     identity = f"{provider}:{model}"
-    profile_uid = ollama.get("active_profile_uid") or ollama.get("profile_uid") or legacy_profile_uid(provider, host, model)
+    profile_uid = ai_model.get("active_profile_uid") or ai_model.get("profile_uid") or legacy_profile_uid(provider, host, model)
     return {
         "ai_profile_uid": profile_uid,
         "model_provider": provider,
@@ -170,12 +170,12 @@ def normalize_report(parsed):
     return parsed
 
 
-def ask_ollama(config, alert, detection, evidence_context=None, pcap_summary=""):
-    ollama = config.get("ollama", {})
+def ask_ai_model(config, alert, detection, evidence_context=None, pcap_summary=""):
+    ai_model = config.get("ai_model", {})
     metadata = model_metadata(config)
     host = metadata["model_endpoint"]
     model = metadata["model_name"]
-    timeout = ollama.get("timeout_seconds", 90)
+    timeout = ai_model.get("timeout_seconds", 90)
     prompt = build_prompt(alert, detection, evidence_context, pcap_summary)
     start = time.monotonic()
 
@@ -207,11 +207,11 @@ def ask_ollama(config, alert, detection, evidence_context=None, pcap_summary="")
     return parsed
 
 
-def check_ollama(config):
-    ollama = config.get("ollama", {})
+def check_ai_model(config):
+    ai_model = config.get("ai_model", {})
     metadata = model_metadata(config)
     host = metadata["model_endpoint"]
-    timeout = min(int(ollama.get("timeout_seconds", 90)), 10)
+    timeout = min(int(ai_model.get("timeout_seconds", 90)), 10)
     start = time.monotonic()
 
     response = requests.get(f"{host}/api/tags", timeout=timeout)
@@ -224,3 +224,4 @@ def check_ollama(config):
         "elapsed_ms": elapsed_ms,
         "models": models,
     }
+

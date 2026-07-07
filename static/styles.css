@@ -489,6 +489,19 @@ textarea {
   min-height: auto;
 }
 
+.checkbox-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+
+.checkbox-field input {
+  width: auto;
+  min-height: auto;
+}
+
 .connection-status {
   grid-column: 1 / -1;
   padding: 10px 12px;
@@ -511,6 +524,18 @@ textarea {
 .connection-status.error {
   border-color: rgba(249, 112, 102, 0.55);
   color: var(--red);
+}
+
+.notification-event.sent {
+  border-left: 4px solid var(--green);
+}
+
+.notification-event.failed {
+  border-left: 4px solid var(--red);
+}
+
+.notification-event.skipped {
+  border-left: 4px solid var(--amber);
 }
 
 .wide-button,
@@ -881,15 +906,15 @@ time,
   margin: 5px 0 0;
 }
 
-.ollama {
+.ai-opinion {
   border-left: 4px solid var(--green);
 }
 
-.ollama.review {
+.ai-opinion.review {
   border-left-color: var(--amber);
 }
 
-.ollama.danger {
+.ai-opinion.danger {
   border-left-color: var(--red);
 }
 
@@ -999,6 +1024,34 @@ time,
 
 .asset-item {
   border-left-color: var(--cyan);
+}
+
+.firewall-block {
+  border-left: 4px solid var(--red);
+}
+
+.firewall-candidate {
+  border-left: 4px solid var(--amber);
+}
+
+.firewall-runtime.active {
+  border-left: 4px solid var(--green);
+}
+
+.firewall-runtime.inactive {
+  border-left: 4px solid var(--muted);
+}
+
+.firewall-history-item.active {
+  border-left: 4px solid var(--red);
+}
+
+.firewall-history-item.released {
+  border-left: 4px solid var(--muted);
+}
+
+.firewall-history-item.safe {
+  border-left: 4px solid var(--green);
 }
 
 .admin-asset.active {

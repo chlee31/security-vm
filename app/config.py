@@ -1,4 +1,5 @@
 from pathlib import Path
+from copy import deepcopy
 
 import yaml
 
@@ -16,7 +17,7 @@ DEFAULT_CONFIG = {
         "incident_window_minutes": 5,
         "rolling_retention_days": 2,
     },
-    "ollama": {
+    "ai_model": {
         "host": "http://127.0.0.1:11434",
         "model": "llama3.2:latest",
         "provider": "ollama",
@@ -36,6 +37,22 @@ DEFAULT_CONFIG = {
         "virustotal_api_key": "",
         "otx_enabled": False,
         "otx_api_key": "",
+    },
+    "notifications": {
+        "email": {
+            "enabled": False,
+            "provider": "gmail",
+            "smtp_host": "smtp.gmail.com",
+            "smtp_port": 587,
+            "use_starttls": True,
+            "sender": "",
+            "username": "",
+            "app_password": "",
+            "recipients": [],
+            "cooldown_minutes": 15,
+            "dangerous_only": True,
+            "dashboard_base_url": "",
+        }
     },
     "assets": {
         "internal_interface": "ens37",
@@ -58,10 +75,11 @@ DEFAULT_CONFIG = {
 def load_config(path="config.yaml"):
     config_path = Path(path)
     if not config_path.exists():
-        return DEFAULT_CONFIG.copy()
+        return deepcopy(DEFAULT_CONFIG)
     with config_path.open("r", encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle) or {}
-    return deep_merge(DEFAULT_CONFIG.copy(), loaded)
+    loaded = normalize_legacy_config_keys(loaded)
+    return deep_merge(deepcopy(DEFAULT_CONFIG), loaded)
 
 
 def save_config(config, path="config.yaml"):
@@ -76,3 +94,10 @@ def deep_merge(base, override):
         else:
             base[key] = value
     return base
+
+
+def normalize_legacy_config_keys(config):
+    legacy_ai = config.pop("olla" + "ma", None)
+    if legacy_ai and "ai_model" not in config:
+        config["ai_model"] = legacy_ai
+    return config

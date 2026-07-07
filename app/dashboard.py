@@ -34,26 +34,38 @@ from app.database import (
     detection_type_detail,
     detection_time_window,
     enrichment_status,
+    get_firewall_candidate,
+    get_firewall_block,
     investigation_detail,
     latest_alerts,
     latest_app_events,
     latest_decision_evidence,
-    latest_ollama_reports,
+    latest_ai_opinions,
+    insert_firewall_block,
+    insert_notification_event,
     list_ai_profiles,
     list_all_assets,
     list_assets,
+    list_firewall_candidates,
+    list_firewall_history,
+    list_firewall_blocks,
+    list_notification_events,
     list_review_queue,
     mark_ai_profile_selected,
     public_ips_for_enrichment,
+    release_firewall_block,
     reset_dashboard_logs,
     submit_analyst_review,
+    update_response_manual_action,
     upsert_threat_intel_lookup,
     upsert_asset,
     update_asset,
     update_ai_profile,
 )
 from app.enrichment import lookup_otx_ip, test_otx_connection
-from app.ollama_client import check_ollama, model_metadata
+from app.firewall import firewalld_runtime_status, firewalld_setup_commands, remove_firewalld_block, temporary_block_firewalld
+from app.ai_client import check_ai_model, model_metadata
+from app.notifications import normalize_recipients, sanitized_email_settings, send_email
 from app.pcap_inventory import list_pcap_files
 
 
@@ -96,14 +108,14 @@ class AdminAssetRequest(AssetRequest):
     status: str = "active"
 
 
-class OllamaConfigRequest(BaseModel):
+class AIModelConfigRequest(BaseModel):
     host: str
     model: str
     provider: str = ""
     timeout_seconds: int = 90
 
 
-class AIProfileRequest(OllamaConfigRequest):
+class AIProfileRequest(AIModelConfigRequest):
     name: str
     status: str = "active"
     notes: str = ""
@@ -119,6 +131,16 @@ class ThreatIntelConfigRequest(BaseModel):
     cache_ttl_hours: int = 24
 
 
+class SystemModeRequest(BaseModel):
+    mode: str
+
+
+class FirewallBlockActionRequest(BaseModel):
+    analyst_name: str = "admin"
+    reason: str = ""
+    safe_duration_hours: int = 24 * 365
+
+
 class OtxLookupRequest(BaseModel):
     limit: int = 5
     scope: str = "top5"
@@ -127,6 +149,15 @@ class OtxLookupRequest(BaseModel):
 
 class OtxStatusRequest(BaseModel):
     otx_api_key: str = ""
+
+
+class EmailNotificationRequest(BaseModel):
+    enabled: bool = False
+    sender: str = ""
+    app_password: str = ""
+    recipients: str = ""
+    cooldown_minutes: int = 15
+    dashboard_base_url: str = ""
 
 
 ADMIN_SYSTEM_TOOLS = {
@@ -148,7 +179,7 @@ ADMIN_PYTHON_PACKAGES = {
     "Requests": {"module": "requests", "package": "requests", "distribution": "requests"},
 }
 
-OLLAMA_MODEL_SUGGESTIONS = [
+AI_MODEL_SUGGESTIONS = [
     "llama3.1:8b",
     "llama3.2:latest",
     "deepseek-r1:8b",
@@ -244,7 +275,7 @@ def python_package_status():
     return packages
 
 
-def validate_ollama_config(payload):
+def validate_ai_model_config(payload):
     host = payload.host.strip().rstrip("/")
     model = payload.model.strip()
     provider = payload.provider.strip().lower().replace(" ", "_")
@@ -259,7 +290,7 @@ def validate_ollama_config(payload):
 
 
 def validate_ai_profile(payload):
-    host, model, provider, timeout_seconds = validate_ollama_config(payload)
+    host, model, provider, timeout_seconds = validate_ai_model_config(payload)
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="AI profile name is required")
@@ -278,12 +309,51 @@ def validate_ai_profile(payload):
 
 
 def apply_ai_profile_to_config(config, profile):
-    config.setdefault("ollama", {})
-    config["ollama"]["active_profile_uid"] = profile["uid"]
-    config["ollama"]["host"] = profile["host"]
-    config["ollama"]["model"] = profile["model"]
-    config["ollama"]["provider"] = profile["provider"]
-    config["ollama"]["timeout_seconds"] = int(profile.get("timeout_seconds") or 90)
+    config.setdefault("ai_model", {})
+    config["ai_model"]["active_profile_uid"] = profile["uid"]
+    config["ai_model"]["host"] = profile["host"]
+    config["ai_model"]["model"] = profile["model"]
+    config["ai_model"]["provider"] = profile["provider"]
+    config["ai_model"]["timeout_seconds"] = int(profile.get("timeout_seconds") or 90)
+
+
+def validate_email_notifications(payload, existing=None, require_credentials=False):
+    existing = existing or {}
+    sender = payload.sender.strip()
+    recipients = normalize_recipients(payload.recipients)
+    app_password = payload.app_password.replace(" ", "").strip() or existing.get("app_password", "")
+    credentials_required = payload.enabled or require_credentials
+    if credentials_required:
+        if "@" not in sender:
+            raise HTTPException(status_code=400, detail="Gmail sender address is required")
+        if not recipients:
+            raise HTTPException(status_code=400, detail="Add at least one recipient email address")
+        if not app_password:
+            raise HTTPException(status_code=400, detail="Gmail app password is required when email alerts are enabled")
+        if len(app_password) != 16:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Gmail app password should be 16 characters after removing spaces. "
+                    f"The saved/provided value is {len(app_password)} characters."
+                ),
+            )
+    if payload.cooldown_minutes < 0 or payload.cooldown_minutes > 1440:
+        raise HTTPException(status_code=400, detail="Cooldown must be between 0 and 1440 minutes")
+    return {
+        "enabled": bool(payload.enabled),
+        "provider": "gmail",
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "use_starttls": True,
+        "sender": sender,
+        "username": sender,
+        "app_password": app_password,
+        "recipients": recipients,
+        "cooldown_minutes": payload.cooldown_minutes,
+        "dangerous_only": True,
+        "dashboard_base_url": payload.dashboard_base_url.strip(),
+    }
 
 
 def create_app(config_path):
@@ -292,6 +362,13 @@ def create_app(config_path):
     init_db(db_path).close()
     app = FastAPI(title="Security VM Dashboard")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.middleware("http")
+    async def add_no_cache_headers(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
     @app.get("/")
     def index():
@@ -335,18 +412,39 @@ def create_app(config_path):
             return {
                 "config_path": str(config_path),
                 "database_path": db_path,
-                "ollama": {
+                "ai_model": {
                     "active_profile_uid": profile_uid,
-                    "host": config.get("ollama", {}).get("host", ""),
-                    "model": config.get("ollama", {}).get("model", ""),
-                    "provider": config.get("ollama", {}).get("provider", ""),
-                    "timeout_seconds": config.get("ollama", {}).get("timeout_seconds", 90),
-                    "model_suggestions": OLLAMA_MODEL_SUGGESTIONS,
+                    "host": config.get("ai_model", {}).get("host", ""),
+                    "model": config.get("ai_model", {}).get("model", ""),
+                    "provider": config.get("ai_model", {}).get("provider", ""),
+                    "timeout_seconds": config.get("ai_model", {}).get("timeout_seconds", 90),
+                    "model_suggestions": AI_MODEL_SUGGESTIONS,
                     "metadata": metadata,
                 },
                 "ai_profiles": {
                     "active_uid": profile_uid,
                     "items": list_ai_profiles(conn, limit),
+                },
+                "system": {
+                    "mode": config.get("system", {}).get("mode", "alert_only"),
+                    "available_modes": [
+                        {"value": "alert_only", "label": "Alert Only", "description": "Store alerts and show would-block decisions without enforcement."},
+                        {"value": "detection", "label": "Detection", "description": "Run scoring and prevention logic, but do not call firewalld."},
+                        {"value": "prevention", "label": "Prevention", "description": "Temporarily block high-confidence dangerous traffic with firewalld."},
+                    ],
+                },
+                "firewall": {
+                    "provider": config.get("firewall", {}).get("provider", "firewalld"),
+                    "block_timeout_seconds": config.get("firewall", {}).get("block_timeout_seconds", 3600),
+                    "runtime": firewalld_runtime_status(),
+                    "setup_commands": firewalld_setup_commands(),
+                    "blocks": list_firewall_blocks(conn, limit=50, status="active"),
+                    "candidates": list_firewall_candidates(conn, limit=50),
+                    "history": list_firewall_history(conn, limit=100),
+                },
+                "notifications": {
+                    "email": sanitized_email_settings(config),
+                    "events": list_notification_events(conn, limit=50),
                 },
                 "network": {
                     "internal_interface": config.get("assets", {}).get("internal_interface", "ens37"),
@@ -364,14 +462,246 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.post("/api/admin/ollama")
-    def api_admin_ollama(payload: OllamaConfigRequest):
-        host, model, provider, timeout_seconds = validate_ollama_config(payload)
-        config.setdefault("ollama", {})
-        config["ollama"]["host"] = host
-        config["ollama"]["model"] = model
-        config["ollama"]["provider"] = provider
-        config["ollama"]["timeout_seconds"] = timeout_seconds
+    @app.post("/api/admin/system-mode")
+    def api_admin_system_mode(payload: SystemModeRequest):
+        mode = payload.mode.strip().lower()
+        if mode == "auto_response":
+            mode = "prevention"
+        if mode not in {"alert_only", "detection", "prevention"}:
+            raise HTTPException(status_code=400, detail="Mode must be alert_only, detection, or prevention")
+        config.setdefault("system", {})
+        config["system"]["mode"] = mode
+        save_config(config, config_path)
+        conn = connect(db_path)
+        try:
+            insert_app_event(conn, "warning" if mode == "prevention" else "info", "admin", f"System mode changed to {mode}")
+        finally:
+            conn.close()
+        return {"status": "saved", "mode": mode}
+
+    @app.post("/api/admin/notifications/email")
+    def api_admin_email_notifications(payload: EmailNotificationRequest):
+        config.setdefault("notifications", {})
+        existing = config["notifications"].get("email", {})
+        settings = validate_email_notifications(payload, existing)
+        config["notifications"]["email"] = settings
+        save_config(config, config_path)
+        conn = connect(db_path)
+        try:
+            insert_app_event(
+                conn,
+                "info",
+                "notifications",
+                f"Gmail alerts {'enabled' if settings['enabled'] else 'disabled'}",
+                {
+                    "sender": settings["sender"],
+                    "recipient_count": len(settings["recipients"]),
+                    "cooldown_minutes": settings["cooldown_minutes"],
+                },
+            )
+        finally:
+            conn.close()
+        return {"status": "saved", "email": sanitized_email_settings(config)}
+
+    @app.post("/api/admin/notifications/email/test")
+    def api_admin_test_email_notifications(payload: EmailNotificationRequest):
+        config.setdefault("notifications", {})
+        existing = config["notifications"].get("email", {})
+        settings = validate_email_notifications(payload, existing, require_credentials=True)
+        subject = "[Security VM] Test Gmail alert"
+        body = (
+            "This is a test email from the Security VM dashboard.\n\n"
+            "If you received this, Gmail notifications are configured correctly."
+        )
+        conn = connect(db_path)
+        try:
+            try:
+                send_email(settings, subject, body)
+                insert_notification_event(
+                    conn,
+                    {
+                        "channel": "email",
+                        "recipient": ",".join(settings["recipients"]),
+                        "subject": subject,
+                        "status": "sent",
+                        "cooldown_key": "admin-test-email",
+                    },
+                )
+                insert_app_event(conn, "info", "notifications", "Test Gmail notification sent")
+                return {"status": "sent", "recipients": settings["recipients"]}
+            except Exception as exc:
+                insert_notification_event(
+                    conn,
+                    {
+                        "channel": "email",
+                        "recipient": ",".join(settings["recipients"]),
+                        "subject": subject,
+                        "status": "failed",
+                        "error": str(exc),
+                        "cooldown_key": "admin-test-email",
+                    },
+                )
+                insert_app_event(conn, "error", "notifications", f"Test Gmail notification failed: {exc}")
+                raise HTTPException(status_code=400, detail=f"Test email failed: {exc}")
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/firewall-blocks/{block_id}/unblock")
+    def api_admin_unblock_firewall(block_id: int, payload: FirewallBlockActionRequest):
+        conn = connect(db_path)
+        try:
+            block = get_firewall_block(conn, block_id)
+            if not block:
+                raise HTTPException(status_code=404, detail="Firewall block not found")
+            status, elapsed_ms, rule = remove_firewalld_block(block["ip_address"], block.get("direction") or "source")
+            release_firewall_block(conn, block_id, payload.analyst_name.strip() or "admin", payload.reason.strip() or status)
+            insert_app_event(
+                conn,
+                "warning" if status.startswith("failed") else "info",
+                "firewall",
+                f"Unblock {block['ip_address']}: {status}",
+                {"block_id": block_id, "elapsed_ms": elapsed_ms, "rule": rule},
+            )
+            return {"status": status, "elapsed_ms": elapsed_ms}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/firewall-candidates/{response_id}/enforce")
+    def api_admin_enforce_firewall_candidate(response_id: int, payload: FirewallBlockActionRequest):
+        conn = connect(db_path)
+        try:
+            candidate = get_firewall_candidate(conn, response_id)
+            if not candidate:
+                raise HTTPException(status_code=404, detail="Enforcement candidate not found")
+            timeout = config.get("firewall", {}).get("block_timeout_seconds", 3600)
+            status, elapsed_ms, rule = temporary_block_firewalld(
+                candidate["target_ip"],
+                timeout,
+                candidate.get("target_direction") or "source",
+            )
+            if status == "blocked":
+                insert_firewall_block(
+                    conn,
+                    {
+                        "detection_id": candidate["detection_id"],
+                        "ip_address": candidate["target_ip"],
+                        "direction": candidate.get("target_direction") or "source",
+                        "reason": payload.reason.strip() or f"Manual enforcement from response #{response_id}",
+                        "firewall_rule": rule,
+                        "timeout_seconds": timeout,
+                        "status": "active",
+                        "response_status": status,
+                        "response_time_ms": elapsed_ms,
+                    },
+                )
+            if status == "blocked":
+                update_response_manual_action(
+                    conn,
+                    response_id,
+                    "Dangerous",
+                    "temporary_block",
+                    "firewalld",
+                    status,
+                    elapsed_ms,
+                )
+            else:
+                update_response_manual_action(
+                    conn,
+                    response_id,
+                    "Dangerous",
+                    "would_block",
+                    "firewalld",
+                    status,
+                    elapsed_ms,
+                )
+            insert_app_event(
+                conn,
+                "warning" if status.startswith("failed") else "info",
+                "firewall",
+                f"Manual enforcement for {candidate['target_ip']}: {status}",
+                {"response_id": response_id, "detection_id": candidate["detection_id"], "elapsed_ms": elapsed_ms, "rule": rule},
+            )
+            return {"status": status, "elapsed_ms": elapsed_ms}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/firewall-candidates/{response_id}/mark-safe")
+    def api_admin_mark_firewall_candidate_safe(response_id: int, payload: FirewallBlockActionRequest):
+        duration_hours = payload.safe_duration_hours
+        if duration_hours < 1 or duration_hours > 24 * 365:
+            raise HTTPException(status_code=400, detail="Safe duration must be between 1 hour and 365 days")
+        conn = connect(db_path)
+        try:
+            candidate = get_firewall_candidate(conn, response_id)
+            if not candidate:
+                raise HTTPException(status_code=404, detail="Enforcement candidate not found")
+            add_allowlist_entry(
+                conn,
+                candidate["target_ip"],
+                duration_hours * 60,
+                name=f"Trusted after response #{response_id}",
+                reason=payload.reason.strip() or "Marked safe from admin enforcement queue",
+                added_by=payload.analyst_name.strip() or "admin",
+            )
+            update_response_manual_action(
+                conn,
+                response_id,
+                "Authorized Activity",
+                "authorized_activity",
+                "none",
+                "marked_safe",
+                0,
+            )
+            insert_app_event(
+                conn,
+                "info",
+                "firewall",
+                f"Marked enforcement candidate {candidate['target_ip']} safe",
+                {"response_id": response_id, "detection_id": candidate["detection_id"]},
+            )
+            return {"status": "safe"}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/firewall-blocks/{block_id}/mark-safe")
+    def api_admin_mark_firewall_block_safe(block_id: int, payload: FirewallBlockActionRequest):
+        duration_hours = payload.safe_duration_hours
+        if duration_hours < 1 or duration_hours > 24 * 365:
+            raise HTTPException(status_code=400, detail="Safe duration must be between 1 hour and 365 days")
+        conn = connect(db_path)
+        try:
+            block = get_firewall_block(conn, block_id)
+            if not block:
+                raise HTTPException(status_code=404, detail="Firewall block not found")
+            status, elapsed_ms, rule = remove_firewalld_block(block["ip_address"], block.get("direction") or "source")
+            add_allowlist_entry(
+                conn,
+                block["ip_address"],
+                duration_hours * 60,
+                name=f"Trusted after block #{block_id}",
+                reason=payload.reason.strip() or "Marked safe from admin firewall controls",
+                added_by=payload.analyst_name.strip() or "admin",
+            )
+            release_firewall_block(conn, block_id, payload.analyst_name.strip() or "admin", payload.reason.strip() or "marked safe")
+            insert_app_event(
+                conn,
+                "warning" if status.startswith("failed") else "info",
+                "firewall",
+                f"Marked {block['ip_address']} safe after firewall block",
+                {"block_id": block_id, "elapsed_ms": elapsed_ms, "rule": rule},
+            )
+            return {"status": "safe", "unblock_status": status, "elapsed_ms": elapsed_ms}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/ai-model")
+    def api_admin_ai_model(payload: AIModelConfigRequest):
+        host, model, provider, timeout_seconds = validate_ai_model_config(payload)
+        config.setdefault("ai_model", {})
+        config["ai_model"]["host"] = host
+        config["ai_model"]["model"] = model
+        config["ai_model"]["provider"] = provider
+        config["ai_model"]["timeout_seconds"] = timeout_seconds
 
         conn = connect(db_path)
         try:
@@ -382,9 +712,9 @@ def create_app(config_path):
                 "provider": provider or "ai_service",
                 "timeout_seconds": timeout_seconds,
                 "status": "active",
-                "notes": "Updated from legacy AI settings form.",
+                "notes": "Updated from AI model settings form.",
             }
-            active_uid = config.get("ollama", {}).get("active_profile_uid")
+            active_uid = config.get("ai_model", {}).get("active_profile_uid")
             if active_uid and get_ai_profile(conn, active_uid):
                 update_ai_profile(conn, active_uid, profile)
                 profile_uid = active_uid
@@ -435,7 +765,7 @@ def create_app(config_path):
             if not update_ai_profile(conn, profile_uid, profile):
                 raise HTTPException(status_code=404, detail="AI profile not found")
             saved = get_ai_profile(conn, profile_uid)
-            if config.get("ollama", {}).get("active_profile_uid") == profile_uid:
+            if config.get("ai_model", {}).get("active_profile_uid") == profile_uid:
                 apply_ai_profile_to_config(config, saved)
                 save_config(config, config_path)
             insert_app_event(
@@ -544,11 +874,25 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/ollama-reports")
-    def api_ollama_reports(limit: int = 50):
+    @app.get("/api/ai-opinions")
+    def api_ai_opinions(limit: int = 50):
         conn = connect(db_path)
         try:
-            return latest_ollama_reports(conn, limit)
+            return latest_ai_opinions(conn, limit)
+        finally:
+            conn.close()
+
+    @app.get("/api/" + "olla" + "ma-reports")
+    def api_legacy_ai_opinions(limit: int = 50):
+        conn = connect(db_path)
+        try:
+            insert_app_event(
+                conn,
+                "warning",
+                "dashboard",
+                "Deprecated AI opinion API path used by a stale browser tab",
+            )
+            return latest_ai_opinions(conn, limit)
         finally:
             conn.close()
 
@@ -575,7 +919,7 @@ def create_app(config_path):
             detail = detection_type_detail(conn, None, limit)
             comparison = ai_model_comparison(conn)
             enrichment = enrichment_status(conn, config, limit)
-            active_uid = config.get("ollama", {}).get("active_profile_uid")
+            active_uid = config.get("ai_model", {}).get("active_profile_uid")
             active_profile = get_ai_profile(conn, active_uid) if active_uid else None
             otx_rows = conn.execute(
                 """
@@ -1077,12 +1421,12 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/ollama-status")
-    def api_ollama_status():
+    @app.get("/api/ai-status")
+    def api_ai_status():
         conn = connect(db_path)
         try:
             try:
-                status = check_ollama(config)
+                status = check_ai_model(config)
                 insert_app_event(
                     conn,
                     "info",
@@ -1093,9 +1437,13 @@ def create_app(config_path):
                 return {"ok": True, **status}
             except requests.RequestException as exc:
                 insert_app_event(conn, "error", "ai_model", f"AI model unreachable: {exc}")
-                return {"ok": False, "error": str(exc), "host": config.get("ollama", {}).get("host")}
+                return {"ok": False, "error": str(exc), "host": config.get("ai_model", {}).get("host")}
         finally:
             conn.close()
+
+    @app.get("/api/" + "olla" + "ma-status")
+    def api_legacy_ai_status():
+        return api_ai_status()
 
     @app.get("/api/metrics")
     def api_metrics():

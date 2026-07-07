@@ -22,6 +22,37 @@
       </section>
 
       <section class="admin-grid">
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Firewall Controls</p>
+              <h2>Detection and Prevention Mode</h2>
+            </div>
+          </div>
+          <form id="system-mode-form" class="form-grid admin-form">
+            <label class="field">
+              <span>System mode</span>
+              <select id="system-mode-select" name="mode">
+                <option value="alert_only">Alert Only</option>
+                <option value="detection">Detection</option>
+                <option value="prevention">Prevention</option>
+              </select>
+              <small id="system-mode-description">Alert Only stores alerts and shows would-block decisions without enforcement.</small>
+            </label>
+            <label class="field">
+              <span>Block timeout</span>
+              <input id="firewall-timeout" type="text" readonly>
+              <small>Configured in config.yaml as firewall.block_timeout_seconds.</small>
+            </label>
+            <button class="wide-button" type="submit">Save Mode</button>
+            <div id="system-mode-status" class="connection-status">Mode not changed.</div>
+          </form>
+          <div id="firewall-commands" class="list admin-list"></div>
+          <div id="firewall-candidates" class="list admin-list"></div>
+          <div id="firewall-blocks" class="list admin-list"></div>
+          <div id="firewall-history" class="list admin-list"></div>
+        </section>
+
         <section class="panel">
           <div class="panel-head">
             <div>
@@ -29,7 +60,7 @@
               <h2>AI Model Settings</h2>
             </div>
           </div>
-          <form id="ollama-form" class="form-grid admin-form">
+          <form id="ai-model-form" class="form-grid admin-form">
             <label class="field">
               <span>AI profile name</span>
               <input id="ai-profile-name" name="name" type="text" placeholder="Example: Home RTX 4070 Ti SUPER" required>
@@ -42,21 +73,21 @@
             </label>
             <label class="field">
               <span>AI service URL</span>
-              <input id="ollama-host" name="host" type="url" placeholder="Example: http://127.0.0.1:11434" required>
+              <input id="ai-model-host" name="host" type="url" placeholder="Example: http://127.0.0.1:11434" required>
               <small>Use the model server address and port.</small>
             </label>
             <label class="field">
               <span>Model name</span>
-              <input id="ollama-model" name="model" list="ollama-models" placeholder="Example: llama3.1:8b" required>
+              <input id="ai-model-name" name="model" list="ai-model-suggestions" placeholder="Example: llama3.1:8b" required>
               <small>This is the model Python asks for each alert.</small>
             </label>
-            <datalist id="ollama-models"></datalist>
+            <datalist id="ai-model-suggestions"></datalist>
             <label class="field">
               <span>Provider label</span>
-              <input id="ollama-provider" name="provider" list="ollama-providers" placeholder="Example: ollama, nvidia, deepseek">
+              <input id="ai-model-provider" name="provider" list="ai-model-providers" placeholder="Example: ollama, nvidia, deepseek">
               <small>Used to compare AI opinions by engine.</small>
             </label>
-            <datalist id="ollama-providers">
+            <datalist id="ai-model-providers">
               <option value="ollama"></option>
               <option value="nvidia"></option>
               <option value="deepseek"></option>
@@ -64,7 +95,7 @@
             </datalist>
             <label class="field">
               <span>Response timeout, seconds</span>
-              <input id="ollama-timeout" name="timeout_seconds" type="number" min="5" max="300" placeholder="Example: 90" required>
+              <input id="ai-model-timeout" name="timeout_seconds" type="number" min="5" max="300" placeholder="Example: 90" required>
               <small>How long Python waits before marking the AI model unavailable.</small>
             </label>
             <label class="field">
@@ -80,11 +111,55 @@
             </label>
             <button id="save-ai-profile" class="wide-button" type="submit">Save Selected AI Profile</button>
             <button id="new-ai-profile" class="wide-button" type="button">Save as New AI Profile</button>
-            <button id="test-ollama-admin" class="wide-button" type="button">Save and Test Selected Profile</button>
-            <div id="ollama-admin-status" class="connection-status">AI model connection not tested.</div>
+            <button id="test-ai-model-admin" class="wide-button" type="button">Save and Test Selected Profile</button>
+            <div id="ai-model-admin-status" class="connection-status">AI model connection not tested.</div>
           </form>
-          <div id="ollama-summary" class="list"></div>
+          <div id="ai-model-summary" class="list"></div>
           <div id="ai-profiles" class="list admin-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Notifications</p>
+              <h2>Gmail Alerts</h2>
+            </div>
+          </div>
+          <form id="email-notification-form" class="form-grid admin-form">
+            <label class="field wide-field checkbox-field">
+              <input id="email-enabled" name="enabled" type="checkbox">
+              <span>Send email for Dangerous decisions</span>
+            </label>
+            <label class="field">
+              <span>Gmail sender address</span>
+              <input id="email-sender" name="sender" type="email" placeholder="Example: securityvm.alerts@gmail.com">
+              <small>Use a dedicated Gmail account for the application.</small>
+            </label>
+            <label class="field">
+              <span>Gmail app password</span>
+              <input id="email-app-password" name="app_password" type="password" placeholder="Leave blank to keep saved password">
+              <small id="email-password-status">No app password saved.</small>
+            </label>
+            <label class="field wide-field">
+              <span>Recipient emails</span>
+              <textarea id="email-recipients" name="recipients" placeholder="admin@example.com, teammate@example.com"></textarea>
+              <small>Comma or line separated list.</small>
+            </label>
+            <label class="field">
+              <span>Cooldown minutes</span>
+              <input id="email-cooldown" name="cooldown_minutes" type="number" min="0" max="1440" placeholder="Example: 15">
+              <small>Prevents repeated emails for the same dangerous target.</small>
+            </label>
+            <label class="field">
+              <span>Dashboard base URL</span>
+              <input id="email-dashboard-url" name="dashboard_base_url" type="url" placeholder="Example: http://192.168.57.134:8000">
+              <small>Optional link included in alert emails.</small>
+            </label>
+            <button id="save-email-notifications" class="wide-button" type="submit">Save Gmail Alerts</button>
+            <button id="test-email-notifications" class="wide-button" type="button">Save and Send Test Email</button>
+            <div id="email-notification-status" class="connection-status">Gmail alerts not tested.</div>
+          </form>
+          <div id="notification-events" class="list admin-list"></div>
         </section>
 
         <section class="panel">
@@ -172,6 +247,6 @@
       </section>
     </main>
 
-    <script src="/static/admin.js?v=20260703-profile-connect"></script>
+    <script src="/static/admin.js?v=20260704-email-diagnostics"></script>
   </body>
 </html>

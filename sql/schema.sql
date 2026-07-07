@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS incident_evidence (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS ollama_reports (
+CREATE TABLE IF NOT EXISTS ai_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,
   ai_profile_uid TEXT,
@@ -136,6 +136,38 @@ CREATE TABLE IF NOT EXISTS responses (
   response_status TEXT,
   response_time_ms INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS firewall_blocks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER,
+  ip_address TEXT NOT NULL,
+  direction TEXT,
+  reason TEXT,
+  firewall_rule TEXT,
+  timeout_seconds INTEGER,
+  status TEXT DEFAULT 'active',
+  response_status TEXT,
+  response_time_ms INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  expires_at TEXT,
+  released_at TEXT,
+  released_by TEXT,
+  release_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notification_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER,
+  response_id INTEGER,
+  channel TEXT NOT NULL,
+  recipient TEXT,
+  subject TEXT,
+  status TEXT NOT NULL,
+  error TEXT,
+  cooldown_key TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  sent_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tuning_labels (

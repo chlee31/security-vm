@@ -11,7 +11,7 @@ const els = {
   reviewCount: document.querySelector("#oc-review-count"),
   ipPie: document.querySelector("#oc-ip-pie"),
   detectionChart: document.querySelector("#oc-detection-chart"),
-  ollamaChart: document.querySelector("#oc-ollama-chart"),
+  aiChart: document.querySelector("#oc-ai-chart"),
   reviewChart: document.querySelector("#oc-review-chart"),
   ipsList: document.querySelector("#oc-ips-list"),
   evidence: document.querySelector("#oc-evidence")
@@ -157,9 +157,9 @@ function renderEvidence(rows) {
         </div>
         <div>
           <span>AI Model</span>
-          <strong>${row.ollama_classification || "No opinion"}</strong>
-          <small>${row.ollama_model_identity || "unknown model"} · profile ${row.ollama_ai_profile_uid || "legacy-profile"} · run ${row.ollama_model_run_id || "not recorded"}</small>
-          <small>${row.ollama_reason || "No AI reason stored."}</small>
+          <strong>${row.ai_classification || "No opinion"}</strong>
+          <small>${row.ai_model_identity || "unknown model"} · profile ${row.ai_profile_uid || "legacy-profile"} · run ${row.ai_model_run_id || "not recorded"}</small>
+          <small>${row.ai_reason || "No AI reason stored."}</small>
         </div>
         <div>
           <span>Analyst</span>
@@ -193,7 +193,7 @@ async function refresh() {
 
     renderIpList(rows);
     renderHorizontalBars(els.detectionChart, countBy(rows, (row) => row.detection_type || "unknown"), "No detection type data.");
-    renderHorizontalBars(els.ollamaChart, countBy(rows, (row) => row.ollama_classification || "No opinion"), "No AI opinion data.");
+    renderHorizontalBars(els.aiChart, countBy(rows, (row) => row.ai_classification || "No opinion"), "No AI opinion data.");
     renderHorizontalBars(els.reviewChart, countBy(rows, (row) => row.review_status || "No review"), "No analyst review data.");
     renderEvidence(rows);
     els.updated.textContent = new Date().toLocaleTimeString();

@@ -44,24 +44,8 @@ def ensure_migrations(conn):
         if "updated_at" not in asset_columns:
             conn.execute("ALTER TABLE assets ADD COLUMN updated_at TEXT")
 
-    report_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(ollama_reports)").fetchall()
-    }
-    if report_columns:
-        report_migrations = {
-            "ai_profile_uid": "ALTER TABLE ollama_reports ADD COLUMN ai_profile_uid TEXT",
-            "model_provider": "ALTER TABLE ollama_reports ADD COLUMN model_provider TEXT",
-            "model_name": "ALTER TABLE ollama_reports ADD COLUMN model_name TEXT",
-            "model_identity": "ALTER TABLE ollama_reports ADD COLUMN model_identity TEXT",
-            "model_endpoint": "ALTER TABLE ollama_reports ADD COLUMN model_endpoint TEXT",
-            "model_run_id": "ALTER TABLE ollama_reports ADD COLUMN model_run_id TEXT",
-            "prompt_version": "ALTER TABLE ollama_reports ADD COLUMN prompt_version TEXT",
-            "elapsed_ms": "ALTER TABLE ollama_reports ADD COLUMN elapsed_ms INTEGER",
-        }
-        for column, statement in report_migrations.items():
-            if column not in report_columns:
-                conn.execute(statement)
+    ensure_ai_report_columns(conn, "ai_reports")
+    migrate_legacy_ai_reports(conn)
 
     conn.execute(
         """
@@ -79,6 +63,94 @@ def ensure_migrations(conn):
           updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
           last_selected_at TEXT
         )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS firewall_blocks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          detection_id INTEGER,
+          ip_address TEXT NOT NULL,
+          direction TEXT,
+          reason TEXT,
+          firewall_rule TEXT,
+          timeout_seconds INTEGER,
+          status TEXT DEFAULT 'active',
+          response_status TEXT,
+          response_time_ms INTEGER,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          expires_at TEXT,
+          released_at TEXT,
+          released_by TEXT,
+          release_reason TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notification_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          detection_id INTEGER,
+          response_id INTEGER,
+          channel TEXT NOT NULL,
+          recipient TEXT,
+          subject TEXT,
+          status TEXT NOT NULL,
+          error TEXT,
+          cooldown_key TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          sent_at TEXT
+        )
+        """
+    )
+
+
+def table_exists(conn, table_name):
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def ensure_ai_report_columns(conn, table_name):
+    if not table_exists(conn, table_name):
+        return
+    report_columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    report_migrations = {
+        "ai_profile_uid": f"ALTER TABLE {table_name} ADD COLUMN ai_profile_uid TEXT",
+        "model_provider": f"ALTER TABLE {table_name} ADD COLUMN model_provider TEXT",
+        "model_name": f"ALTER TABLE {table_name} ADD COLUMN model_name TEXT",
+        "model_identity": f"ALTER TABLE {table_name} ADD COLUMN model_identity TEXT",
+        "model_endpoint": f"ALTER TABLE {table_name} ADD COLUMN model_endpoint TEXT",
+        "model_run_id": f"ALTER TABLE {table_name} ADD COLUMN model_run_id TEXT",
+        "prompt_version": f"ALTER TABLE {table_name} ADD COLUMN prompt_version TEXT",
+        "elapsed_ms": f"ALTER TABLE {table_name} ADD COLUMN elapsed_ms INTEGER",
+    }
+    for column, statement in report_migrations.items():
+        if column not in report_columns:
+            conn.execute(statement)
+
+
+def migrate_legacy_ai_reports(conn):
+    legacy_table = "olla" + "ma_reports"
+    if not table_exists(conn, legacy_table):
+        return
+    ensure_ai_report_columns(conn, legacy_table)
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO ai_reports (
+          id, detection_id, ai_profile_uid, model_provider, model_name,
+          model_identity, model_endpoint, model_run_id, prompt_version,
+          classification, confidence, risk_adjustment, reason,
+          recommended_action, raw_response, elapsed_ms, created_at
+        )
+        SELECT
+          id, detection_id, ai_profile_uid, model_provider, model_name,
+          model_identity, model_endpoint, model_run_id, prompt_version,
+          classification, confidence, risk_adjustment, reason,
+          recommended_action, raw_response, elapsed_ms, created_at
+        FROM {legacy_table}
         """
     )
 
@@ -213,15 +285,15 @@ def mark_ai_profile_selected(conn, uid):
 
 
 def ensure_ai_profile_from_config(conn, config):
-    ollama = config.setdefault("ollama", {})
-    active_uid = ollama.get("active_profile_uid")
+    ai_model = config.setdefault("ai_model", {})
+    active_uid = ai_model.get("active_profile_uid")
     if active_uid and get_ai_profile(conn, active_uid):
         return active_uid
 
-    host = (ollama.get("host") or "").rstrip("/")
-    model = ollama.get("model") or "llama3.1:8b"
-    provider = ollama.get("provider") or "ollama"
-    timeout_seconds = int(ollama.get("timeout_seconds") or 90)
+    host = (ai_model.get("host") or "").rstrip("/")
+    model = ai_model.get("model") or "llama3.1:8b"
+    provider = ai_model.get("provider") or "ollama"
+    timeout_seconds = int(ai_model.get("timeout_seconds") or 90)
     existing = conn.execute(
         """
         SELECT uid
@@ -248,7 +320,7 @@ def ensure_ai_profile_from_config(conn, config):
             },
         )
     mark_ai_profile_selected(conn, uid)
-    ollama["active_profile_uid"] = uid
+    ai_model["active_profile_uid"] = uid
     return uid
 
 
@@ -473,7 +545,7 @@ def insert_detection(conn, detection):
     return cur.lastrowid
 
 
-def insert_ollama_report(conn, detection_id, report):
+def insert_ai_report(conn, detection_id, report):
     def sqlite_value(value):
         if isinstance(value, (dict, list)):
             return json.dumps(value, sort_keys=True)
@@ -487,7 +559,7 @@ def insert_ollama_report(conn, detection_id, report):
 
     conn.execute(
         """
-        INSERT INTO ollama_reports (
+        INSERT INTO ai_reports (
           detection_id, ai_profile_uid, model_provider, model_name, model_identity,
           model_endpoint, model_run_id, prompt_version, classification, confidence,
           risk_adjustment, reason, recommended_action, raw_response, elapsed_ms
@@ -516,7 +588,7 @@ def insert_ollama_report(conn, detection_id, report):
 
 
 def insert_response(conn, response):
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO responses (
           detection_id, final_score, final_classification, final_action,
@@ -536,6 +608,325 @@ def insert_response(conn, response):
         ),
     )
     conn.commit()
+    return cur.lastrowid
+
+
+def insert_notification_event(conn, event):
+    now = utc_now()
+    cur = conn.execute(
+        """
+        INSERT INTO notification_events (
+          detection_id, response_id, channel, recipient, subject, status,
+          error, cooldown_key, created_at, sent_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event.get("detection_id"),
+            event.get("response_id"),
+            event.get("channel", "email"),
+            event.get("recipient"),
+            event.get("subject"),
+            event.get("status"),
+            event.get("error"),
+            event.get("cooldown_key"),
+            now,
+            now if event.get("status") == "sent" else None,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_notification_events(conn, limit=50):
+    rows = conn.execute(
+        """
+        SELECT notification_events.*, detections.src_ip, detections.dest_ip,
+               detections.detection_type, responses.final_score,
+               responses.final_classification
+        FROM notification_events
+        LEFT JOIN detections ON detections.id = notification_events.detection_id
+        LEFT JOIN responses ON responses.id = notification_events.response_id
+        ORDER BY notification_events.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def latest_sent_notification(conn, cooldown_key):
+    row = conn.execute(
+        """
+        SELECT *
+        FROM notification_events
+        WHERE cooldown_key = ?
+          AND status = 'sent'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (cooldown_key,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_firewall_block(conn, block):
+    now = datetime.now(timezone.utc)
+    timeout_seconds = int(block.get("timeout_seconds") or 0)
+    expires_at = now + timedelta(seconds=timeout_seconds) if timeout_seconds else None
+    cur = conn.execute(
+        """
+        INSERT INTO firewall_blocks (
+          detection_id, ip_address, direction, reason, firewall_rule, timeout_seconds,
+          status, response_status, response_time_ms, created_at, expires_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            block.get("detection_id"),
+            normalize_ip(block.get("ip_address")),
+            block.get("direction"),
+            block.get("reason"),
+            block.get("firewall_rule"),
+            timeout_seconds,
+            block.get("status") or "active",
+            block.get("response_status"),
+            block.get("response_time_ms"),
+            now.isoformat(),
+            expires_at.isoformat() if expires_at else None,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_firewall_blocks(conn, limit=100, status="active"):
+    if status == "all":
+        rows = conn.execute(
+            """
+            SELECT firewall_blocks.*, detections.src_ip, detections.dest_ip, detections.detection_type,
+                   alerts.signature
+            FROM firewall_blocks
+            LEFT JOIN detections ON detections.id = firewall_blocks.detection_id
+            LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+            ORDER BY firewall_blocks.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT firewall_blocks.*, detections.src_ip, detections.dest_ip, detections.detection_type,
+                   alerts.signature
+            FROM firewall_blocks
+            LEFT JOIN detections ON detections.id = firewall_blocks.detection_id
+            LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+            WHERE firewall_blocks.status = ?
+            ORDER BY firewall_blocks.id DESC
+            LIMIT ?
+            """,
+            (status, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def firewall_candidate_target(row):
+    item = dict(row)
+    src_ip = item.get("src_ip")
+    dest_ip = item.get("dest_ip")
+    target_ip = item.get("target_ip")
+    direction = "source"
+    try:
+        src = ipaddress.ip_address(src_ip) if src_ip else None
+        dest = ipaddress.ip_address(dest_ip) if dest_ip else None
+        if src and dest and src.is_private and not dest.is_private:
+            target_ip = dest_ip
+            direction = "outbound_destination"
+    except ValueError:
+        pass
+    item["target_ip"] = target_ip
+    item["target_direction"] = direction
+    return item
+
+
+def list_firewall_candidates(conn, limit=50):
+    rows = conn.execute(
+        """
+        SELECT
+          responses.id AS response_id,
+          responses.detection_id,
+          responses.final_score,
+          responses.final_classification,
+          responses.final_action,
+          responses.target_ip,
+          responses.response_status,
+          responses.created_at AS response_created_at,
+          detections.src_ip,
+          detections.dest_ip,
+          detections.detection_type,
+          alerts.signature
+        FROM responses
+        LEFT JOIN detections ON detections.id = responses.detection_id
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        WHERE responses.final_action = 'would_block'
+          AND responses.target_ip IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM firewall_blocks
+            WHERE firewall_blocks.detection_id = responses.detection_id
+              AND firewall_blocks.ip_address = responses.target_ip
+              AND firewall_blocks.status = 'active'
+          )
+        ORDER BY responses.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [firewall_candidate_target(row) for row in rows]
+
+
+def list_firewall_history(conn, limit=100):
+    block_rows = conn.execute(
+        """
+        SELECT
+          'block' AS history_type,
+          firewall_blocks.id AS item_id,
+          firewall_blocks.detection_id,
+          firewall_blocks.ip_address,
+          firewall_blocks.direction,
+          firewall_blocks.reason,
+          firewall_blocks.status,
+          firewall_blocks.response_status,
+          firewall_blocks.created_at,
+          firewall_blocks.released_at,
+          firewall_blocks.released_by,
+          firewall_blocks.release_reason,
+          detections.src_ip,
+          detections.dest_ip,
+          detections.detection_type,
+          alerts.signature
+        FROM firewall_blocks
+        LEFT JOIN detections ON detections.id = firewall_blocks.detection_id
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        ORDER BY firewall_blocks.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    safe_rows = conn.execute(
+        """
+        SELECT
+          'marked_safe' AS history_type,
+          responses.id AS item_id,
+          responses.detection_id,
+          responses.target_ip AS ip_address,
+          NULL AS direction,
+          responses.final_classification AS reason,
+          responses.final_action AS status,
+          responses.response_status,
+          responses.created_at,
+          NULL AS released_at,
+          NULL AS released_by,
+          NULL AS release_reason,
+          detections.src_ip,
+          detections.dest_ip,
+          detections.detection_type,
+          alerts.signature
+        FROM responses
+        LEFT JOIN detections ON detections.id = responses.detection_id
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        WHERE responses.response_status = 'marked_safe'
+           OR responses.final_action = 'authorized_activity'
+        ORDER BY responses.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    rows = [dict(row) for row in block_rows] + [dict(row) for row in safe_rows]
+    rows.sort(key=lambda item: item.get("released_at") or item.get("created_at") or "", reverse=True)
+    return rows[:limit]
+
+
+def get_firewall_candidate(conn, response_id):
+    row = conn.execute(
+        """
+        SELECT
+          responses.id AS response_id,
+          responses.detection_id,
+          responses.final_score,
+          responses.final_classification,
+          responses.final_action,
+          responses.target_ip,
+          responses.response_status,
+          responses.created_at AS response_created_at,
+          detections.src_ip,
+          detections.dest_ip,
+          detections.detection_type,
+          alerts.signature
+        FROM responses
+        LEFT JOIN detections ON detections.id = responses.detection_id
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        WHERE responses.id = ?
+          AND responses.final_action = 'would_block'
+          AND responses.target_ip IS NOT NULL
+        LIMIT 1
+        """,
+        (response_id,),
+    ).fetchone()
+    return firewall_candidate_target(row) if row else None
+
+
+def update_response_manual_action(conn, response_id, final_classification, final_action, response_method, response_status, response_time_ms=0):
+    cur = conn.execute(
+        """
+        UPDATE responses
+        SET final_classification = ?,
+            final_action = ?,
+            response_method = ?,
+            response_status = ?,
+            response_time_ms = ?
+        WHERE id = ?
+        """,
+        (
+            final_classification,
+            final_action,
+            response_method,
+            response_status,
+            response_time_ms,
+            response_id,
+        ),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def get_firewall_block(conn, block_id):
+    row = conn.execute(
+        """
+        SELECT *
+        FROM firewall_blocks
+        WHERE id = ?
+        """,
+        (block_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def release_firewall_block(conn, block_id, released_by="admin", reason="manual unblock"):
+    cur = conn.execute(
+        """
+        UPDATE firewall_blocks
+        SET status = 'released',
+            released_at = ?,
+            released_by = ?,
+            release_reason = ?
+        WHERE id = ?
+        """,
+        (datetime.now(timezone.utc).isoformat(), released_by, reason, block_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def upsert_pending_review(conn, response, review_days=3):
@@ -582,13 +973,14 @@ def reset_dashboard_logs(conn):
     tables = [
         "alerts",
         "detections",
-        "ollama_reports",
+        "ai_reports",
         "responses",
         "incident_evidence",
         "analyst_reviews",
         "tuning_labels",
         "app_events",
         "threat_intel_lookups",
+        "notification_events",
     ]
     counts = {}
     for table in tables:
@@ -618,36 +1010,36 @@ def latest_alerts(conn, limit=50):
     return [dict(row) for row in rows]
 
 
-def latest_ollama_reports(conn, limit=50):
+def latest_ai_opinions(conn, limit=50):
     rows = conn.execute(
         """
         SELECT
-          ollama_reports.id,
-          ollama_reports.detection_id,
-          ollama_reports.ai_profile_uid,
-          ollama_reports.model_provider,
-          ollama_reports.model_name,
-          ollama_reports.model_identity,
-          ollama_reports.model_endpoint,
-          ollama_reports.model_run_id,
-          ollama_reports.prompt_version,
-          ollama_reports.classification,
-          ollama_reports.confidence,
-          ollama_reports.risk_adjustment,
-          ollama_reports.reason,
-          ollama_reports.recommended_action,
-          ollama_reports.elapsed_ms,
-          ollama_reports.created_at,
+          ai_reports.id,
+          ai_reports.detection_id,
+          ai_reports.ai_profile_uid,
+          ai_reports.model_provider,
+          ai_reports.model_name,
+          ai_reports.model_identity,
+          ai_reports.model_endpoint,
+          ai_reports.model_run_id,
+          ai_reports.prompt_version,
+          ai_reports.classification,
+          ai_reports.confidence,
+          ai_reports.risk_adjustment,
+          ai_reports.reason,
+          ai_reports.recommended_action,
+          ai_reports.elapsed_ms,
+          ai_reports.created_at,
           detections.detection_type,
           detections.python_initial_score,
           alerts.timestamp,
           alerts.src_ip,
           alerts.dest_ip,
           alerts.signature
-        FROM ollama_reports
-        LEFT JOIN detections ON detections.id = ollama_reports.detection_id
+        FROM ai_reports
+        LEFT JOIN detections ON detections.id = ai_reports.detection_id
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        ORDER BY ollama_reports.id DESC
+        ORDER BY ai_reports.id DESC
         LIMIT ?
         """,
         (limit,),
@@ -667,7 +1059,7 @@ def ai_model_comparison(conn):
           COUNT(*) AS count,
           AVG(COALESCE(risk_adjustment, 0)) AS avg_risk_adjustment,
           AVG(COALESCE(elapsed_ms, 0)) AS avg_elapsed_ms
-        FROM ollama_reports
+        FROM ai_reports
         GROUP BY ai_profile_uid, model_identity, classification
         ORDER BY ai_profile_uid ASC, count DESC
         """
@@ -904,13 +1296,13 @@ def detection_type_detail(conn, detection_type=None, limit=50):
           detections.mitre_name,
           alerts.signature,
           alerts.category,
-          ollama_reports.classification AS ollama_classification,
-          ollama_reports.confidence AS ollama_confidence,
-          ollama_reports.ai_profile_uid AS ollama_ai_profile_uid,
-          ollama_reports.model_identity AS ollama_model_identity
+          ai_reports.classification AS ai_classification,
+          ai_reports.confidence AS ai_confidence,
+          ai_reports.ai_profile_uid AS ai_profile_uid,
+          ai_reports.model_identity AS ai_model_identity
         FROM detections
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        LEFT JOIN ai_reports ON ai_reports.detection_id = detections.id
         {recent_filter}
         ORDER BY detections.id DESC
         LIMIT ?
@@ -1030,18 +1422,18 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           alerts.signature,
           alerts.category,
           alerts.priority,
-          ollama_reports.classification AS ollama_classification,
-          ollama_reports.confidence AS ollama_confidence,
-          ollama_reports.risk_adjustment AS ollama_risk_adjustment,
-          ollama_reports.reason AS ollama_reason,
-          ollama_reports.recommended_action AS ollama_recommended_action,
-          ollama_reports.ai_profile_uid AS ollama_ai_profile_uid,
-          ollama_reports.model_provider AS ollama_model_provider,
-          ollama_reports.model_name AS ollama_model_name,
-          ollama_reports.model_identity AS ollama_model_identity,
-          ollama_reports.model_run_id AS ollama_model_run_id,
-          ollama_reports.prompt_version AS ollama_prompt_version,
-          ollama_reports.elapsed_ms AS ollama_elapsed_ms,
+          ai_reports.classification AS ai_classification,
+          ai_reports.confidence AS ai_confidence,
+          ai_reports.risk_adjustment AS ai_risk_adjustment,
+          ai_reports.reason AS ai_reason,
+          ai_reports.recommended_action AS ai_recommended_action,
+          ai_reports.ai_profile_uid AS ai_profile_uid,
+          ai_reports.model_provider AS ai_model_provider,
+          ai_reports.model_name AS ai_model_name,
+          ai_reports.model_identity AS ai_model_identity,
+          ai_reports.model_run_id AS ai_model_run_id,
+          ai_reports.prompt_version AS ai_prompt_version,
+          ai_reports.elapsed_ms AS ai_elapsed_ms,
           analyst_reviews.review_status,
           analyst_reviews.analyst_name,
           analyst_reviews.analyst_score,
@@ -1049,7 +1441,7 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
         FROM responses
         LEFT JOIN detections ON detections.id = responses.detection_id
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        LEFT JOIN ai_reports ON ai_reports.detection_id = detections.id
         LEFT JOIN analyst_reviews ON analyst_reviews.detection_id = detections.id
         {filter_sql}
         ORDER BY responses.id DESC
@@ -1093,21 +1485,21 @@ def investigation_detail(conn, detection_id):
           alerts.category,
           alerts.priority,
           alerts.raw_json,
-          ollama_reports.classification AS ai_classification,
-          ollama_reports.confidence AS ai_confidence,
-          ollama_reports.risk_adjustment AS ai_risk_adjustment,
-          ollama_reports.reason AS ai_reason,
-          ollama_reports.recommended_action AS ai_recommended_action,
-          ollama_reports.raw_response AS ai_raw_response,
-          ollama_reports.ai_profile_uid AS ai_profile_uid,
-          ollama_reports.model_provider AS ai_model_provider,
-          ollama_reports.model_name AS ai_model_name,
-          ollama_reports.model_identity AS ai_model_identity,
-          ollama_reports.model_endpoint AS ai_model_endpoint,
-          ollama_reports.model_run_id AS ai_model_run_id,
-          ollama_reports.prompt_version AS ai_prompt_version,
-          ollama_reports.elapsed_ms AS ai_elapsed_ms,
-          ollama_reports.created_at AS ai_created_at,
+          ai_reports.classification AS ai_classification,
+          ai_reports.confidence AS ai_confidence,
+          ai_reports.risk_adjustment AS ai_risk_adjustment,
+          ai_reports.reason AS ai_reason,
+          ai_reports.recommended_action AS ai_recommended_action,
+          ai_reports.raw_response AS ai_raw_response,
+          ai_reports.ai_profile_uid AS ai_profile_uid,
+          ai_reports.model_provider AS ai_model_provider,
+          ai_reports.model_name AS ai_model_name,
+          ai_reports.model_identity AS ai_model_identity,
+          ai_reports.model_endpoint AS ai_model_endpoint,
+          ai_reports.model_run_id AS ai_model_run_id,
+          ai_reports.prompt_version AS ai_prompt_version,
+          ai_reports.elapsed_ms AS ai_elapsed_ms,
+          ai_reports.created_at AS ai_created_at,
           responses.final_score,
           responses.final_classification,
           responses.final_action,
@@ -1125,11 +1517,11 @@ def investigation_detail(conn, detection_id):
           analyst_reviews.reviewed_at
         FROM detections
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        LEFT JOIN ai_reports ON ai_reports.detection_id = detections.id
         LEFT JOIN responses ON responses.detection_id = detections.id
         LEFT JOIN analyst_reviews ON analyst_reviews.detection_id = detections.id
         WHERE detections.id = ?
-        ORDER BY responses.id DESC, ollama_reports.id DESC
+        ORDER BY responses.id DESC, ai_reports.id DESC
         LIMIT 1
         """,
         (detection_id,),
@@ -1308,15 +1700,15 @@ def list_review_queue(conn, limit=50):
           detections.dest_ip,
           alerts.signature,
           alerts.timestamp,
-          ollama_reports.classification AS ollama_classification,
-          ollama_reports.confidence AS ollama_confidence,
-          ollama_reports.reason AS ollama_reason,
-          ollama_reports.ai_profile_uid AS ollama_ai_profile_uid,
-          ollama_reports.model_identity AS ollama_model_identity
+          ai_reports.classification AS ai_classification,
+          ai_reports.confidence AS ai_confidence,
+          ai_reports.reason AS ai_reason,
+          ai_reports.ai_profile_uid AS ai_profile_uid,
+          ai_reports.model_identity AS ai_model_identity
         FROM analyst_reviews
         LEFT JOIN detections ON detections.id = analyst_reviews.detection_id
         LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        LEFT JOIN ollama_reports ON ollama_reports.detection_id = detections.id
+        LEFT JOIN ai_reports ON ai_reports.detection_id = detections.id
         WHERE analyst_reviews.review_status IN ('pending', 'expired')
         ORDER BY
           CASE analyst_reviews.review_status WHEN 'pending' THEN 0 ELSE 1 END,
@@ -1440,14 +1832,14 @@ def submit_analyst_review(
     return True
 
 
-def detections_without_ollama_reports(conn, limit=50, model_identity=None, ai_profile_uid=None):
+def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profile_uid=None):
     join_filters = []
     params = []
     if ai_profile_uid:
-        join_filters.append("AND ollama_reports.ai_profile_uid = ?")
+        join_filters.append("AND ai_reports.ai_profile_uid = ?")
         params.append(ai_profile_uid)
     elif model_identity:
-        join_filters.append("AND ollama_reports.model_identity = ?")
+        join_filters.append("AND ai_reports.model_identity = ?")
         params.append(model_identity)
     join_filter = " ".join(join_filters)
     params.append(limit)
@@ -1484,10 +1876,10 @@ def detections_without_ollama_reports(conn, limit=50, model_identity=None, ai_pr
           detections.status
         FROM detections
         JOIN alerts ON alerts.id = detections.first_alert_id
-        LEFT JOIN ollama_reports
-          ON ollama_reports.detection_id = detections.id
+        LEFT JOIN ai_reports
+          ON ai_reports.detection_id = detections.id
           {join_filter}
-        WHERE ollama_reports.id IS NULL
+        WHERE ai_reports.id IS NULL
         ORDER BY detections.id ASC
         LIMIT ?
         """,

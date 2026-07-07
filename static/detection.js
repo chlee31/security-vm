@@ -9,7 +9,7 @@ const els = {
   maxScore: document.querySelector("#wb-max-score"),
   publicIps: document.querySelector("#wb-public-ips"),
   ipPie: document.querySelector("#wb-ip-pie"),
-  ollamaChart: document.querySelector("#wb-ollama-chart"),
+  aiChart: document.querySelector("#wb-ai-chart"),
   timeline: document.querySelector("#wb-timeline"),
   ips: document.querySelector("#wb-ips"),
   recent: document.querySelector("#wb-recent"),
@@ -104,10 +104,10 @@ function renderPie(ips) {
   `;
 }
 
-function renderOllamaChart(evidence) {
+function renderAiModelChart(evidence) {
   const counts = { Safe: 0, "Human Review Required": 0, Dangerous: 0, "No opinion": 0 };
   evidence.forEach((row) => {
-    const classification = row.ollama_classification || "No opinion";
+    const classification = row.ai_classification || "No opinion";
     if (classification.toLowerCase().includes("safe")) counts.Safe += 1;
     else if (classification.toLowerCase().includes("danger")) counts.Dangerous += 1;
     else if (classification.toLowerCase().includes("human")) counts["Human Review Required"] += 1;
@@ -115,7 +115,7 @@ function renderOllamaChart(evidence) {
   });
   const max = Math.max(1, ...Object.values(counts));
 
-  els.ollamaChart.innerHTML = `
+  els.aiChart.innerHTML = `
     <div class="bar-list">
       ${Object.entries(counts).map(([name, count]) => `
         <div>
@@ -165,7 +165,7 @@ function renderRecent(recent) {
       <div>
         <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
         <p>${item.signature || "Detection"}</p>
-        <small>${item.ollama_classification || "no AI opinion"} · ${item.ollama_model_identity || "unknown model"}${item.ollama_ai_profile_uid ? ` · profile ${item.ollama_ai_profile_uid}` : ""}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
+        <small>${item.ai_classification || "no AI opinion"} · ${item.ai_model_identity || "unknown model"}${item.ai_profile_uid ? ` · profile ${item.ai_profile_uid}` : ""}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
         <a class="inline-link" href="${investigationUrl(item.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>
       </div>
     </div>
@@ -193,9 +193,9 @@ function renderEvidence(rows) {
         </div>
         <div>
           <span>AI Model</span>
-          <strong>${row.ollama_classification || "No opinion"}</strong>
-          <small>${row.ollama_model_identity || "unknown model"} · profile ${row.ollama_ai_profile_uid || "legacy-profile"} · run ${row.ollama_model_run_id || "not recorded"}</small>
-          <small>${row.ollama_reason || "No AI reason stored."}</small>
+          <strong>${row.ai_classification || "No opinion"}</strong>
+          <small>${row.ai_model_identity || "unknown model"} · profile ${row.ai_profile_uid || "legacy-profile"} · run ${row.ai_model_run_id || "not recorded"}</small>
+          <small>${row.ai_reason || "No AI reason stored."}</small>
         </div>
         <div>
           <span>Analyst</span>
@@ -237,7 +237,7 @@ async function refresh() {
     els.avgScore.textContent = Math.round(summary.avg_score || 0);
     els.maxScore.textContent = summary.max_score || 0;
     renderPie(detail.ips || []);
-    renderOllamaChart(evidence || []);
+    renderAiModelChart(evidence || []);
     renderTimeline(detail.timeline || []);
     renderIps(detail.ips || []);
     renderRecent(detail.recent || []);

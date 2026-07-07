@@ -16,7 +16,7 @@ const els = {
   mode: document.querySelector("#mode"),
   updated: document.querySelector("#updated"),
   alerts: document.querySelector("#alerts"),
-  ollamaReports: document.querySelector("#ollama-reports"),
+  aiReports: document.querySelector("#ai-opinions"),
   detections: document.querySelector("#detections"),
   allowlist: document.querySelector("#allowlist"),
   allowlistForm: document.querySelector("#allowlist-form"),
@@ -35,7 +35,7 @@ const els = {
   testOtx: document.querySelector("#test-otx"),
   runOtx: document.querySelector("#run-otx"),
   events: document.querySelector("#events"),
-  checkOllama: document.querySelector("#check-ollama"),
+  checkAiModel: document.querySelector("#check-ai-model"),
   resetLogs: document.querySelector("#reset-logs"),
   refresh: document.querySelector("#refresh")
 };
@@ -404,9 +404,9 @@ function classificationClass(value) {
   return "safe";
 }
 
-function renderOllamaReports(reports) {
-  els.ollamaReports.innerHTML = reports.map((report) => `
-    <a class="alert ollama investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id) : "#"}" target="_blank" rel="noopener">
+function renderAiModelReports(reports) {
+  els.aiReports.innerHTML = reports.map((report) => `
+    <a class="alert ai-opinion investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id) : "#"}" target="_blank" rel="noopener">
       <time>${report.created_at || report.timestamp || ""}</time>
       <div>
         <div class="row tight">
@@ -554,7 +554,7 @@ function renderDecisionEvidence(rows) {
         </div>
         <div>
           <span>Scoring</span>
-          <strong>Python ${row.python_initial_score ?? 0} + AI ${row.ollama_risk_adjustment ?? 0}</strong>
+          <strong>Python ${row.python_initial_score ?? 0} + AI ${row.ai_risk_adjustment ?? 0}</strong>
           <small>
             Final score ${row.final_score ?? 0}
             ${row.src_asset || row.dest_asset ? ` · asset ${row.src_asset?.name || row.dest_asset?.name} score ${row.src_asset?.asset_score ?? row.dest_asset?.asset_score}` : " · no asset score yet"}
@@ -562,9 +562,9 @@ function renderDecisionEvidence(rows) {
         </div>
         <div>
           <span>AI Model</span>
-          <strong>${row.ollama_classification || "No opinion"} ${row.ollama_confidence ? `(${row.ollama_confidence})` : ""}</strong>
-          <small>${row.ollama_model_identity || "unknown model"} · profile ${row.ollama_ai_profile_uid || "legacy-profile"} · run ${row.ollama_model_run_id || "not recorded"}</small>
-          <small>${row.ollama_reason || "No AI reason stored."}</small>
+          <strong>${row.ai_classification || "No opinion"} ${row.ai_confidence ? `(${row.ai_confidence})` : ""}</strong>
+          <small>${row.ai_model_identity || "unknown model"} · profile ${row.ai_profile_uid || "legacy-profile"} · run ${row.ai_model_run_id || "not recorded"}</small>
+          <small>${row.ai_reason || "No AI reason stored."}</small>
         </div>
         <div>
           <span>Analyst</span>
@@ -653,11 +653,11 @@ async function refresh() {
       ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`
       : `/api/decision-evidence?limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`;
     const summaryRequest = getJson("/api/dashboard-summary?limit=12").catch((error) => ({ _error: error.message }));
-    const [metrics, summary, alerts, ollamaReports, allowlist, assets, enrichment, events, pcaps, evidence] = await Promise.all([
+    const [metrics, summary, alerts, aiReports, allowlist, assets, enrichment, events, pcaps, evidence] = await Promise.all([
       getJson("/api/metrics"),
       summaryRequest,
       getJson("/api/alerts?limit=50"),
-      getJson("/api/ollama-reports?limit=50"),
+      getJson("/api/ai-opinions?limit=50"),
       getJson("/api/allowlist?limit=25"),
       getJson("/api/assets?limit=25"),
       getJson("/api/enrichment-status?limit=25"),
@@ -668,7 +668,7 @@ async function refresh() {
     renderMetrics(metrics);
     renderSummary(summary);
     renderAlerts(alerts);
-    renderOllamaReports(ollamaReports);
+    renderAiModelReports(aiReports);
     renderAllowlist(allowlist);
     renderAssets(assets);
     renderEnrichment(enrichment);
@@ -679,7 +679,7 @@ async function refresh() {
   } catch (error) {
     els.updated.textContent = "Dashboard API error";
     els.alerts.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.ollamaReports.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.aiReports.innerHTML = `<div class="empty">${error.message}</div>`;
     els.allowlist.innerHTML = `<div class="empty">${error.message}</div>`;
     els.assets.innerHTML = `<div class="empty">${error.message}</div>`;
     els.enrichment.innerHTML = `<div class="empty">${error.message}</div>`;
@@ -693,10 +693,10 @@ async function refresh() {
   }
 }
 
-async function checkOllama() {
+async function checkAiModel() {
   els.updated.textContent = "Checking AI model";
   try {
-    await getJson("/api/ollama-status");
+    await getJson("/api/ai-status");
   } finally {
     refresh();
   }
@@ -872,7 +872,7 @@ async function handleDashboardClick(event) {
 }
 
 els.refresh.addEventListener("click", refresh);
-els.checkOllama.addEventListener("click", checkOllama);
+els.checkAiModel.addEventListener("click", checkAiModel);
 els.resetLogs.addEventListener("click", resetLogs);
 els.threatIntelForm.addEventListener("submit", saveThreatIntelSettings);
 els.testOtx.addEventListener("click", testOtxConnection);

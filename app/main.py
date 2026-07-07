@@ -8,12 +8,13 @@ from app.correlator import Correlator
 from app.dashboard import create_app
 from app.database import (
     asset_context_for_alert,
-    detections_without_ollama_reports,
+    detections_without_ai_reports,
     init_db,
     insert_alert,
     insert_app_event,
     insert_detection,
-    insert_ollama_report,
+    insert_firewall_block,
+    insert_ai_report,
     insert_response,
     ip_enrichment_profile,
     latest_threat_intel_for_ip,
@@ -22,7 +23,8 @@ from app.database import (
 from app.decision_engine import decide
 from app.firewall import temporary_block_firewalld
 from app.normalizer import normalize_suricata_event
-from app.ollama_client import ask_ollama, check_ollama, model_metadata, model_run_id
+from app.ai_client import ask_ai_model, check_ai_model, model_metadata, model_run_id
+from app.notifications import notify_dangerous_decision
 from app.pcap_inventory import list_pcap_files
 from app.risk_score import cap_score
 from app.suricata_reader import follow_file
@@ -99,7 +101,7 @@ def run_ingest(config_path):
     insert_app_event(conn, "info", "ingest", f"Security VM ingest starting in {mode} mode")
 
     try:
-        status = check_ollama(config)
+        status = check_ai_model(config)
         insert_app_event(
             conn,
             "info",
@@ -123,25 +125,25 @@ def run_ingest(config_path):
         evidence_context = build_ai_evidence_context(conn, runtime_config, alert)
 
         try:
-            ollama_report = ask_ollama(runtime_config, alert, detection, evidence_context=evidence_context)
-            ollama_report = ensure_ai_report_metadata(runtime_config, alert, ollama_report)
+            ai_report = ask_ai_model(runtime_config, alert, detection, evidence_context=evidence_context)
+            ai_report = ensure_ai_report_metadata(runtime_config, alert, ai_report)
             insert_app_event(
                 conn,
                 "info",
                 "ai_model",
-                f"AI model classified alert as {ollama_report.get('classification', 'Unknown')}",
+                f"AI model classified alert as {ai_report.get('classification', 'Unknown')}",
                 {
                     "alert_id": alert_id,
                     "detection_id": detection_id,
-                    "elapsed_ms": ollama_report.get("elapsed_ms"),
-                    "confidence": ollama_report.get("confidence"),
-                    "model_identity": ollama_report.get("model_identity"),
-                    "model_run_id": ollama_report.get("model_run_id"),
+                    "elapsed_ms": ai_report.get("elapsed_ms"),
+                    "confidence": ai_report.get("confidence"),
+                    "model_identity": ai_report.get("model_identity"),
+                    "model_run_id": ai_report.get("model_run_id"),
                 },
             )
         except requests.RequestException as exc:
             metadata = model_metadata(runtime_config)
-            ollama_report = {
+            ai_report = {
                 **metadata,
                 "model_run_id": model_run_id(metadata, alert),
                 "classification": "Human Review Required",
@@ -159,23 +161,55 @@ def run_ingest(config_path):
                 {
                     "alert_id": alert_id,
                     "detection_id": detection_id,
-                    "model_identity": ollama_report.get("model_identity"),
-                    "model_run_id": ollama_report.get("model_run_id"),
+                    "model_identity": ai_report.get("model_identity"),
+                    "model_run_id": ai_report.get("model_run_id"),
                 },
             )
-        insert_ollama_report(conn, detection_id, ollama_report)
+        insert_ai_report(conn, detection_id, ai_report)
 
-        response = decide(conn, runtime_config, alert, detection, ollama_report)
+        response = decide(conn, runtime_config, alert, detection, ai_report)
         response["detection_id"] = detection_id
 
         if response["final_action"] == "temporary_block":
             timeout = runtime_config.get("firewall", {}).get("block_timeout_seconds", 3600)
-            status, elapsed_ms = temporary_block_firewalld(response["target_ip"], timeout)
+            status, elapsed_ms, firewall_rule = temporary_block_firewalld(
+                response["target_ip"],
+                timeout,
+                response.get("target_direction") or "source",
+            )
             response["response_status"] = status
             response["response_time_ms"] = elapsed_ms
+            if status == "blocked":
+                insert_firewall_block(
+                    conn,
+                    {
+                        "detection_id": detection_id,
+                        "ip_address": response["target_ip"],
+                        "direction": response.get("target_direction"),
+                        "reason": f"{response['final_classification']} score={response['final_score']}",
+                        "firewall_rule": firewall_rule,
+                        "timeout_seconds": timeout,
+                        "status": "active",
+                        "response_status": status,
+                        "response_time_ms": elapsed_ms,
+                    },
+                )
 
-        insert_response(conn, response)
+        response_id = insert_response(conn, response)
+        response["response_id"] = response_id
         upsert_pending_review(conn, response)
+        if (
+            response.get("final_classification") == "Dangerous"
+            and runtime_config.get("notifications", {}).get("email", {}).get("enabled")
+        ):
+            notification = notify_dangerous_decision(conn, runtime_config, alert, detection, response, ai_report)
+            insert_app_event(
+                conn,
+                "warning" if notification.get("status") == "failed" else "info",
+                "notifications",
+                f"Email notification {notification.get('status')}",
+                notification,
+            )
         insert_app_event(
             conn,
             "info",
@@ -194,11 +228,11 @@ def run_dashboard(config_path, host, port):
     uvicorn.run(app, host=host, port=port)
 
 
-def run_ollama_backfill(config_path, limit):
+def run_ai_backfill(config_path, limit):
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     metadata = model_metadata(config)
-    rows = detections_without_ollama_reports(
+    rows = detections_without_ai_reports(
         conn,
         limit,
         model_identity=metadata["model_identity"],
@@ -214,7 +248,7 @@ def run_ollama_backfill(config_path, limit):
     )
 
     try:
-        status = check_ollama(config)
+        status = check_ai_model(config)
         insert_app_event(
             conn,
             "info",
@@ -265,9 +299,9 @@ def run_ollama_backfill(config_path, limit):
         evidence_context = build_ai_evidence_context(conn, config, alert)
 
         try:
-            report = ask_ollama(config, alert, detection, evidence_context=evidence_context)
+            report = ask_ai_model(config, alert, detection, evidence_context=evidence_context)
             report = ensure_ai_report_metadata(config, alert, report)
-            insert_ollama_report(conn, row["detection_id"], report)
+            insert_ai_report(conn, row["detection_id"], report)
             insert_app_event(
                 conn,
                 "info",
@@ -310,17 +344,13 @@ def main():
     ai_backfill.add_argument("--config", default="config.yaml")
     ai_backfill.add_argument("--limit", default=50, type=int)
 
-    ollama_backfill = sub.add_parser("ollama-backfill", help="Legacy alias for ai-backfill")
-    ollama_backfill.add_argument("--config", default="config.yaml")
-    ollama_backfill.add_argument("--limit", default=50, type=int)
-
     args = parser.parse_args()
     if args.command == "ingest":
         run_ingest(args.config)
     elif args.command == "dashboard":
         run_dashboard(args.config, args.host, args.port)
-    elif args.command in {"ollama-backfill", "ai-backfill"}:
-        run_ollama_backfill(args.config, args.limit)
+    elif args.command == "ai-backfill":
+        run_ai_backfill(args.config, args.limit)
 
 
 if __name__ == "__main__":

@@ -20,13 +20,13 @@ def enrichment_plan(config):
                 "name": "otx",
                 "enabled": bool(threat_intel.get("otx_enabled")),
                 "live_api": True,
-                "status": "wip",
+                "status": "active" if threat_intel.get("otx_enabled") else "disabled",
             },
             {
                 "name": "virustotal",
                 "enabled": bool(threat_intel.get("virustotal_enabled")),
                 "live_api": True,
-                "status": "wip",
+                "status": "active" if threat_intel.get("virustotal_enabled") else "planned_disabled",
             },
         ],
     }

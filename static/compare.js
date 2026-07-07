@@ -90,7 +90,7 @@ function renderComparison(rows) {
 
 function renderRecent(reports) {
   els.recent.innerHTML = reports.map((report) => `
-    <a class="alert ollama investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id) : "#"}" target="_blank" rel="noopener">
+    <a class="alert ai-opinion investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id) : "#"}" target="_blank" rel="noopener">
       <time>${report.created_at || report.timestamp || ""}</time>
       <div>
         <div class="row tight">
@@ -109,7 +109,7 @@ async function refresh() {
   try {
     const [comparison, reports] = await Promise.all([
       getJson("/api/ai-model-comparison"),
-      getJson("/api/ollama-reports?limit=100")
+      getJson("/api/ai-opinions?limit=100")
     ]);
     renderComparison(comparison);
     renderRecent(reports);
