@@ -226,32 +226,53 @@ Router setup is optional and asks before applying system changes.
 
 ## Run The System
 
-Use separate terminals for now.
-
-Terminal 1: start or watch Suricata
-
-```bash
-sudo systemctl restart suricata
-sudo journalctl -u suricata -f
-```
-
-Terminal 2: start ingest
+Start the full local stack with one command:
 
 ```bash
 cd ~/Documents/security-vm
 source venv/bin/activate
-sudo ./venv/bin/python -m app.main ingest --config config.yaml
+sudo ./venv/bin/python -m app.main run-all --config config.yaml --host 0.0.0.0 --port 8000
+```
+
+This starts:
+
+```text
+Suricata service restart/check
+rolling PCAP capture
+Suricata EVE ingest
+dashboard API and web UI
+```
+
+Normal logs are kept quiet. If a process fails or prints an error, the launcher prints the error line and a short recent log tail in the terminal.
+
+By default, `run-all` uses:
+
+```text
+external interface: ens33
+internal interface: ens37
+pcap directory: /var/log/pcap
+dashboard: http://0.0.0.0:8000/
+```
+
+Override those when needed:
+
+```bash
+sudo ./venv/bin/python -m app.main run-all \
+  --config config.yaml \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --external-interface ens33 \
+  --internal-interface ens37 \
+  --pcap-dir /var/log/pcap
+```
+
+If Suricata is managed differently on your machine, skip the service restart:
+
+```bash
+sudo ./venv/bin/python -m app.main run-all --config config.yaml --skip-suricata-restart
 ```
 
 Use `sudo ./venv/bin/python`, not `sudo python`, so sudo still uses the project virtual environment.
-
-Terminal 3: start dashboard
-
-```bash
-cd ~/Documents/security-vm
-source venv/bin/activate
-python -m app.main dashboard --config config.yaml --host 0.0.0.0 --port 8000
-```
 
 Open:
 
@@ -269,6 +290,31 @@ Admin controls:
 
 ```text
 http://<security-vm-ip>:8000/admin
+```
+
+Fallback manual commands for troubleshooting:
+
+Terminal 1: start or watch Suricata
+
+```bash
+sudo systemctl restart suricata
+sudo journalctl -u suricata -f
+```
+
+Terminal 2: start ingest
+
+```bash
+cd ~/Documents/security-vm
+source venv/bin/activate
+sudo ./venv/bin/python -m app.main ingest --config config.yaml
+```
+
+Terminal 3: start dashboard
+
+```bash
+cd ~/Documents/security-vm
+source venv/bin/activate
+python -m app.main dashboard --config config.yaml --host 0.0.0.0 --port 8000
 ```
 
 Terminal 4: start rolling PCAP capture
@@ -555,9 +601,7 @@ security-vm/
 - `prevention` can call firewalld for high-confidence dangerous decisions.
 - Gmail notifications are only intended for Dangerous decisions and use a cooldown to avoid repeated emails for the same target.
 
-## Current Limitation
-
-The system still runs as multiple terminal processes. A future launcher should start Suricata checks, PCAP capture, ingest, and dashboard with one command.
+## Current Notes
 
 Anything not listed in the main run flow should be treated as an optional or planned workflow until it is documented here with setup and test steps.
 

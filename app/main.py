@@ -1,4 +1,12 @@
 import argparse
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
 
 import requests
 import uvicorn
@@ -28,6 +36,21 @@ from app.notifications import notify_dangerous_decision
 from app.pcap_inventory import list_pcap_files
 from app.risk_score import cap_score
 from app.suricata_reader import follow_file
+
+
+ERROR_MARKERS = (
+    "error",
+    "exception",
+    "traceback",
+    "failed",
+    "failure",
+    "permission denied",
+    "no such file",
+    "address already in use",
+    "cannot",
+    "timed out",
+    "unreachable",
+)
 
 
 def compact_threat_intel(conn, ip_address):
@@ -228,6 +251,192 @@ def run_dashboard(config_path, host, port):
     uvicorn.run(app, host=host, port=port)
 
 
+def should_show_launcher_line(line):
+    lowered = line.lower()
+    return any(marker in lowered for marker in ERROR_MARKERS)
+
+
+def stream_process_output(name, pipe, recent_lines):
+    try:
+        for raw_line in iter(pipe.readline, ""):
+            line = raw_line.rstrip()
+            if not line:
+                continue
+            recent_lines.append(line)
+            if should_show_launcher_line(line):
+                print(f"[{name}] {line}", flush=True)
+    finally:
+        pipe.close()
+
+
+def start_managed_process(name, command, recent_lines):
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    thread = threading.Thread(
+        target=stream_process_output,
+        args=(name, process.stdout, recent_lines),
+        daemon=True,
+    )
+    thread.start()
+    return process, thread
+
+
+def stop_managed_processes(processes):
+    for name, process, _thread, _recent in processes:
+        if process.poll() is None:
+            print(f"[+] Stopping {name}", flush=True)
+            process.terminate()
+    for name, process, _thread, _recent in processes:
+        if process.poll() is None:
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                print(f"[!] Force stopping {name}", flush=True)
+                process.kill()
+
+
+def print_recent_tail(name, recent_lines):
+    if not recent_lines:
+        return
+    print(f"[!] Recent {name} log tail:", flush=True)
+    for line in list(recent_lines)[-12:]:
+        print(f"    {line}", flush=True)
+
+
+def run_quiet_command(name, command, timeout=20):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        print(f"[{name}] {exc}", flush=True)
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"[{name}] command timed out after {timeout} seconds", flush=True)
+        return False
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    if result.returncode != 0:
+        print(f"[{name}] exited with code {result.returncode}", flush=True)
+        if output:
+            for line in output.splitlines()[-12:]:
+                print(f"    {line}", flush=True)
+        return False
+    if output and should_show_launcher_line(output):
+        for line in output.splitlines():
+            if should_show_launcher_line(line):
+                print(f"[{name}] {line}", flush=True)
+    return True
+
+
+def run_all(
+    config_path,
+    host,
+    port,
+    external_interface=None,
+    internal_interface=None,
+    pcap_dir=None,
+    restart_suricata=True,
+):
+    config = load_config(config_path)
+    pcap_config = config.get("pcap", {})
+    external_interface = external_interface or pcap_config.get("external_interface", "ens33")
+    internal_interface = internal_interface or pcap_config.get("internal_interface") or config.get("assets", {}).get(
+        "internal_interface", "ens37"
+    )
+    pcap_dir = pcap_dir or pcap_config.get("rolling_dir", "/var/log/pcap")
+    project_root = Path(__file__).resolve().parents[1]
+    pcap_script = project_root / "scripts" / "start_pcap_capture.sh"
+
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        print(
+            "[!] run-all is not running as root. Ingest and PCAP capture may fail on /var/log paths. "
+            "Use: sudo ./venv/bin/python -m app.main run-all --config config.yaml --host 0.0.0.0 --port 8000",
+            flush=True,
+        )
+
+    commands = [
+        (
+            "pcap",
+            [
+                "bash",
+                str(pcap_script),
+                external_interface,
+                internal_interface,
+                pcap_dir,
+            ],
+        ),
+        ("ingest", [sys.executable, "-m", "app.main", "ingest", "--config", config_path]),
+        (
+            "dashboard",
+            [
+                sys.executable,
+                "-m",
+                "app.main",
+                "dashboard",
+                "--config",
+                config_path,
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ],
+        ),
+    ]
+
+    processes = []
+    shutting_down = False
+
+    def handle_stop(_signum, _frame):
+        nonlocal shutting_down
+        shutting_down = True
+        print("\n[+] Shutdown requested", flush=True)
+        stop_managed_processes(processes)
+
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGINT, handle_stop)
+    signal.signal(signal.SIGTERM, handle_stop)
+
+    print("[+] Security VM launcher starting", flush=True)
+    print(f"[+] Dashboard: http://{host}:{port}/", flush=True)
+    print("[+] Normal logs are quiet. Errors and process exits will print here.", flush=True)
+
+    if restart_suricata:
+        print("[+] Checking Suricata service", flush=True)
+        run_quiet_command("suricata", ["systemctl", "restart", "suricata"])
+        run_quiet_command("suricata", ["systemctl", "is-active", "suricata"])
+
+    try:
+        for name, command in commands:
+            recent_lines = deque(maxlen=40)
+            process, thread = start_managed_process(name, command, recent_lines)
+            processes.append((name, process, thread, recent_lines))
+            print(f"[+] Started {name}", flush=True)
+
+        while not shutting_down:
+            for name, process, _thread, recent_lines in processes:
+                return_code = process.poll()
+                if return_code is not None:
+                    shutting_down = True
+                    if return_code == 0:
+                        print(f"[!] {name} exited", flush=True)
+                    else:
+                        print(f"[!] {name} exited with code {return_code}", flush=True)
+                        print_recent_tail(name, recent_lines)
+                    break
+            if shutting_down:
+                break
+            time.sleep(1)
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        stop_managed_processes(processes)
+
+
 def run_ai_backfill(config_path, limit):
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
@@ -340,6 +549,15 @@ def main():
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", default=8000, type=int)
 
+    run_all_parser = sub.add_parser("run-all", help="Start PCAP capture, ingest, and dashboard together")
+    run_all_parser.add_argument("--config", default="config.yaml")
+    run_all_parser.add_argument("--host", default="0.0.0.0")
+    run_all_parser.add_argument("--port", default=8000, type=int)
+    run_all_parser.add_argument("--external-interface", default=None)
+    run_all_parser.add_argument("--internal-interface", default=None)
+    run_all_parser.add_argument("--pcap-dir", default=None)
+    run_all_parser.add_argument("--skip-suricata-restart", action="store_true")
+
     ai_backfill = sub.add_parser("ai-backfill", help="Ask the AI model for opinions on detections without reports")
     ai_backfill.add_argument("--config", default="config.yaml")
     ai_backfill.add_argument("--limit", default=50, type=int)
@@ -349,6 +567,16 @@ def main():
         run_ingest(args.config)
     elif args.command == "dashboard":
         run_dashboard(args.config, args.host, args.port)
+    elif args.command == "run-all":
+        run_all(
+            args.config,
+            args.host,
+            args.port,
+            external_interface=args.external_interface,
+            internal_interface=args.internal_interface,
+            pcap_dir=args.pcap_dir,
+            restart_suricata=not args.skip_suricata_restart,
+        )
     elif args.command == "ai-backfill":
         run_ai_backfill(args.config, args.limit)
 

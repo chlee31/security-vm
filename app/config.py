@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
         "incident_dir": "/var/log/incidents",
         "incident_window_minutes": 5,
         "rolling_retention_days": 2,
+        "external_interface": "ens33",
+        "internal_interface": "ens37",
     },
     "ai_model": {
         "host": "http://127.0.0.1:11434",
