@@ -87,6 +87,15 @@ CREATE TABLE IF NOT EXISTS incident_evidence (
   incident_end_time TEXT,
   incident_pcap_path TEXT,
   pcap_summary_path TEXT,
+  capture_label TEXT,
+  file_size_bytes INTEGER,
+  pcap_modified_at TEXT,
+  summary_status TEXT,
+  summary_packet_count INTEGER,
+  summary_error TEXT,
+  display_filter TEXT,
+  ai_sent INTEGER DEFAULT 0,
+  ai_model_run_id TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -107,6 +116,11 @@ CREATE TABLE IF NOT EXISTS ollama_reports (
   recommended_action TEXT,
   raw_response TEXT,
   elapsed_ms INTEGER,
+  prompt_sha256 TEXT,
+  prompt_chars INTEGER,
+  pcap_summary_sha256 TEXT,
+  pcap_summary_chars INTEGER,
+  pcap_summary_included INTEGER DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 

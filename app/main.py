@@ -1,4 +1,7 @@
 import argparse
+import subprocess
+from datetime import timedelta
+from pathlib import Path
 
 import requests
 import uvicorn
@@ -13,6 +16,7 @@ from app.database import (
     insert_alert,
     insert_app_event,
     insert_detection,
+    insert_incident_evidence,
     insert_ollama_report,
     insert_response,
     ip_enrichment_profile,
@@ -22,10 +26,11 @@ from app.database import (
 from app.decision_engine import decide
 from app.firewall import temporary_block_firewalld
 from app.normalizer import normalize_suricata_event
-from app.ollama_client import ask_ollama, check_ollama, model_metadata, model_run_id
-from app.pcap_inventory import list_pcap_files
+from app.ollama_client import ask_ollama, build_prompt_audit, check_ollama, model_metadata, model_run_id
+from app.pcap_inventory import list_pcap_files, parse_event_time
 from app.risk_score import cap_score
 from app.suricata_reader import follow_file
+from app.tshark_summary import summarize_pcap
 
 
 def compact_threat_intel(conn, ip_address):
@@ -37,36 +42,184 @@ def compact_threat_intel(conn, ip_address):
     }
 
 
-def compact_pcap_evidence(config, alert):
-    inventory = list_pcap_files(config, alert.get("timestamp"), alert.get("timestamp"))
+def safe_filename(value):
+    return "".join(char if char.isalnum() or char in ".-_" else "_" for char in str(value))[:160]
+
+
+def incident_window(config, alert, detection):
+    pcap_config = config.get("pcap", {})
+    window_minutes = int(pcap_config.get("incident_window_minutes", 5))
+    start = parse_event_time(detection.get("first_seen") or alert.get("timestamp"))
+    end = parse_event_time(detection.get("last_seen") or alert.get("timestamp")) or start
+    if not start:
+        return None, None
+    return (start - timedelta(minutes=window_minutes)).isoformat(), (end + timedelta(minutes=window_minutes)).isoformat()
+
+
+def prepare_pcap_evidence(config, alert, detection, alert_id, detection_id):
+    pcap_config = config.get("pcap", {})
+    inventory = list_pcap_files(
+        config,
+        detection.get("first_seen") or alert.get("timestamp"),
+        detection.get("last_seen") or alert.get("timestamp"),
+    )
     related = [file for file in inventory.get("files", []) if file.get("related")]
+    max_ai_files = max(0, int(pcap_config.get("max_ai_files", 3)))
+    summary_limit = max(1, int(pcap_config.get("summary_packet_limit", 120)))
+    summary_timeout = max(1, int(pcap_config.get("summary_timeout_seconds", 20)))
+    incident_start, incident_end = incident_window(config, alert, detection)
+    summary_dir = Path(pcap_config.get("incident_dir", "/var/log/incidents")) / "summaries" / f"detection-{detection_id}"
+
+    records = []
+    summary_sections = []
+    for index, file in enumerate(related[:max_ai_files], start=1):
+        pcap_path = Path(file.get("path", ""))
+        summary_path = summary_dir / f"{index:02d}_{safe_filename(pcap_path.name)}.summary.csv"
+        record = {
+            "detection_id": detection_id,
+            "alert_id": alert_id,
+            "incident_start_time": incident_start,
+            "incident_end_time": incident_end,
+            "incident_pcap_path": str(pcap_path),
+            "pcap_summary_path": "",
+            "capture_label": file.get("label"),
+            "file_size_bytes": file.get("size_bytes"),
+            "pcap_modified_at": file.get("modified_at"),
+            "summary_status": "not_generated",
+            "summary_packet_count": 0,
+            "summary_error": "",
+            "display_filter": "",
+            "ai_sent": False,
+            "ai_model_run_id": "",
+        }
+
+        try:
+            summary = summarize_pcap(
+                pcap_path,
+                summary_path,
+                limit=summary_limit,
+                alert=alert,
+                timeout=summary_timeout,
+            )
+            summary_text = Path(summary["path"]).read_text(encoding="utf-8", errors="replace")
+            record.update(
+                {
+                    "pcap_summary_path": summary["path"],
+                    "summary_status": summary["status"],
+                    "summary_packet_count": summary["packet_count"],
+                    "display_filter": summary.get("display_filter", ""),
+                }
+            )
+            summary_sections.append(
+                "\n".join(
+                    [
+                        f"PCAP evidence file {index}",
+                        f"capture_label: {file.get('label') or 'capture'}",
+                        f"pcap_path: {pcap_path}",
+                        f"summary_path: {summary['path']}",
+                        f"packet_count: {summary['packet_count']}",
+                        f"display_filter: {summary.get('display_filter') or 'none'}",
+                        "summary_csv:",
+                        summary_text.strip(),
+                    ]
+                )
+            )
+        except FileNotFoundError as exc:
+            record["summary_status"] = "tshark_unavailable"
+            record["summary_error"] = str(exc)
+        except subprocess.TimeoutExpired as exc:
+            record["summary_status"] = "summary_timeout"
+            record["summary_error"] = str(exc)
+        except subprocess.CalledProcessError as exc:
+            record["summary_status"] = "summary_failed"
+            record["summary_error"] = (exc.stderr or exc.stdout or str(exc))[:1000]
+        except OSError as exc:
+            record["summary_status"] = "summary_failed"
+            record["summary_error"] = str(exc)
+
+        records.append(record)
+
+    if summary_sections:
+        prompt_summary = "\n\n---\n\n".join(summary_sections)
+        packet_summary_status = "generated"
+    elif related:
+        prompt_summary = ""
+        packet_summary_status = "failed"
+    else:
+        prompt_summary = ""
+        packet_summary_status = "no_related_pcaps"
+
+    return {
+        "inventory": inventory,
+        "related": related,
+        "records": records,
+        "prompt_summary": prompt_summary,
+        "packet_summary_status": packet_summary_status,
+        "max_ai_files": max_ai_files,
+    }
+
+
+def compact_pcap_evidence(config, alert, detection=None, pcap_package=None):
+    if not pcap_package:
+        inventory = list_pcap_files(config, alert.get("timestamp"), alert.get("timestamp"))
+        related = [file for file in inventory.get("files", []) if file.get("related")]
+        records = []
+        packet_summary_status = "not_generated"
+        max_ai_files = int(config.get("pcap", {}).get("max_ai_files", 3))
+    else:
+        inventory = pcap_package.get("inventory", {})
+        related = pcap_package.get("related", [])
+        records = pcap_package.get("records", [])
+        packet_summary_status = pcap_package.get("packet_summary_status", "not_generated")
+        max_ai_files = pcap_package.get("max_ai_files")
+
+    summarized_by_path = {record.get("incident_pcap_path"): record for record in records}
     return {
         "status": inventory.get("status"),
         "directory": inventory.get("directory"),
         "window_minutes": inventory.get("window_minutes"),
         "related_file_count": len(related),
+        "ai_file_limit": max_ai_files,
+        "summarized_file_count": len([record for record in records if record.get("summary_status") == "generated"]),
         "related_files": [
             {
                 "name": file.get("name"),
                 "label": file.get("label"),
                 "size_bytes": file.get("size_bytes"),
                 "modified_at": file.get("modified_at"),
+                "summary_status": summarized_by_path.get(file.get("path"), {}).get("summary_status"),
+                "summary_packet_count": summarized_by_path.get(file.get("path"), {}).get("summary_packet_count"),
+                "pcap_summary_path": summarized_by_path.get(file.get("path"), {}).get("pcap_summary_path"),
+                "ai_selected": file.get("path") in summarized_by_path,
             }
             for file in related[:5]
         ],
-        "packet_summary": "not_generated",
+        "packet_summary": packet_summary_status,
         "note": "Raw PCAP bytes are not sent to the AI model; related capture files are listed for analyst follow-up.",
     }
 
 
-def build_ai_evidence_context(conn, config, alert):
+def build_ai_evidence_context(conn, config, alert, detection=None, pcap_package=None):
     return {
         "threat_intel": {
             "src_ip": compact_threat_intel(conn, alert.get("src_ip")),
             "dest_ip": compact_threat_intel(conn, alert.get("dest_ip")),
         },
-        "pcap_evidence": compact_pcap_evidence(config, alert),
+        "pcap_evidence": compact_pcap_evidence(config, alert, detection, pcap_package),
     }
+
+
+def store_pcap_evidence(conn, pcap_package, report=None, ai_sent=False):
+    report = report or {}
+    for record in pcap_package.get("records", []):
+        record = dict(record)
+        record_sent = bool(
+            record.get("summary_status") == "generated"
+            and (ai_sent or report.get("pcap_summary_included"))
+        )
+        record["ai_sent"] = record_sent
+        record["ai_model_run_id"] = report.get("model_run_id", "") if record_sent else ""
+        insert_incident_evidence(conn, record)
 
 
 def ensure_ai_report_metadata(config, alert, report):
@@ -120,11 +273,20 @@ def run_ingest(config_path):
         detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
         detection_id = insert_detection(conn, detection)
         runtime_config = load_config(config_path)
-        evidence_context = build_ai_evidence_context(conn, runtime_config, alert)
+        pcap_package = prepare_pcap_evidence(runtime_config, alert, detection, alert_id, detection_id)
+        evidence_context = build_ai_evidence_context(conn, runtime_config, alert, detection, pcap_package)
+        ai_sent = False
 
         try:
-            ollama_report = ask_ollama(runtime_config, alert, detection, evidence_context=evidence_context)
+            ollama_report = ask_ollama(
+                runtime_config,
+                alert,
+                detection,
+                evidence_context=evidence_context,
+                pcap_summary=pcap_package["prompt_summary"],
+            )
             ollama_report = ensure_ai_report_metadata(runtime_config, alert, ollama_report)
+            ai_sent = True
             insert_app_event(
                 conn,
                 "info",
@@ -140,16 +302,22 @@ def run_ingest(config_path):
                 },
             )
         except requests.RequestException as exc:
-            metadata = model_metadata(runtime_config)
+            _, prompt_audit = build_prompt_audit(
+                runtime_config,
+                alert,
+                detection,
+                evidence_context=evidence_context,
+                pcap_summary=pcap_package["prompt_summary"],
+            )
             ollama_report = {
-                **metadata,
-                "model_run_id": model_run_id(metadata, alert),
+                **prompt_audit,
                 "classification": "Human Review Required",
                 "confidence": "Low",
                 "risk_adjustment": 0,
                 "reason": f"AI model unavailable: {exc}",
                 "recommended_action": "human_review",
                 "raw_response": "",
+                "elapsed_ms": int(runtime_config.get("ollama", {}).get("timeout_seconds", 90)) * 1000,
             }
             insert_app_event(
                 conn,
@@ -163,6 +331,7 @@ def run_ingest(config_path):
                     "model_run_id": ollama_report.get("model_run_id"),
                 },
             )
+        store_pcap_evidence(conn, pcap_package, ollama_report, ai_sent=ai_sent)
         insert_ollama_report(conn, detection_id, ollama_report)
 
         response = decide(conn, runtime_config, alert, detection, ollama_report)
@@ -262,11 +431,19 @@ def run_ollama_backfill(config_path, limit):
             "status": row.get("status"),
         }
         detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
-        evidence_context = build_ai_evidence_context(conn, config, alert)
+        pcap_package = prepare_pcap_evidence(config, alert, detection, row["alert_id"], row["detection_id"])
+        evidence_context = build_ai_evidence_context(conn, config, alert, detection, pcap_package)
 
         try:
-            report = ask_ollama(config, alert, detection, evidence_context=evidence_context)
+            report = ask_ollama(
+                config,
+                alert,
+                detection,
+                evidence_context=evidence_context,
+                pcap_summary=pcap_package["prompt_summary"],
+            )
             report = ensure_ai_report_metadata(config, alert, report)
+            store_pcap_evidence(conn, pcap_package, report, ai_sent=True)
             insert_ollama_report(conn, row["detection_id"], report)
             insert_app_event(
                 conn,
@@ -282,6 +459,14 @@ def run_ollama_backfill(config_path, limit):
             )
             print(f"[+] detection {row['detection_id']} -> {report.get('classification', 'Unknown')}")
         except requests.RequestException as exc:
+            _, prompt_audit = build_prompt_audit(
+                config,
+                alert,
+                detection,
+                evidence_context=evidence_context,
+                pcap_summary=pcap_package["prompt_summary"],
+            )
+            store_pcap_evidence(conn, pcap_package, prompt_audit, ai_sent=False)
             insert_app_event(
                 conn,
                 "error",

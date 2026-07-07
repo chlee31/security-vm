@@ -563,6 +563,7 @@ function renderDecisionEvidence(rows) {
             Final score ${row.final_score ?? 0}
             ${row.src_asset || row.dest_asset ? ` · asset ${row.src_asset?.name || row.dest_asset?.name} score ${row.src_asset?.asset_score ?? row.dest_asset?.asset_score}` : " · no asset score yet"}
           </small>
+          <small>PCAP AI evidence ${row.pcap_ai_sent_count ?? 0}/${row.pcap_evidence_count ?? 0} summaries sent</small>
         </div>
         <div>
           <span>AI Model</span>

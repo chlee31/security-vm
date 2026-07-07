@@ -14,6 +14,7 @@ const els = {
   ai: document.querySelector("#inv-ai"),
   scoring: document.querySelector("#inv-scoring"),
   intel: document.querySelector("#inv-intel"),
+  pcapProcess: document.querySelector("#inv-pcap-process"),
   pcaps: document.querySelector("#inv-pcaps"),
   review: document.querySelector("#inv-review"),
   reviewForm: document.querySelector("#inv-review-form"),
@@ -63,6 +64,15 @@ function label(value) {
   return String(value).replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -85,6 +95,22 @@ function row(title, body, meta = "") {
   `;
 }
 
+function processStep(number, title, status, body, meta = "") {
+  return `
+    <div class="process-step ${status || ""}">
+      <div class="process-number">${number}</div>
+      <div class="process-content">
+        <div class="process-titleline">
+          <strong>${escapeHtml(title)}</strong>
+          <span class="process-status">${label(status || "recorded")}</span>
+        </div>
+        <p>${escapeHtml(body || "No detail recorded.")}</p>
+        ${meta ? `<small class="process-meta">${escapeHtml(meta)}</small>` : ""}
+      </div>
+    </div>
+  `;
+}
+
 function intelBlock(title, profile, otx, asset) {
   return `
     <div class="workbook-row">
@@ -100,13 +126,112 @@ function intelBlock(title, profile, otx, asset) {
   `;
 }
 
+function renderPcapProcess(data) {
+  const inventory = data.pcap_files || {};
+  const related = (inventory.files || []).filter((file) => file.related);
+  const evidenceRows = data.incident_evidence || inventory.incident_evidence || [];
+  const generatedRows = evidenceRows.filter((row) => row.summary_status === "generated");
+  const sentRows = evidenceRows.filter((row) => Number(row.ai_sent || 0) === 1);
+  const failedRows = evidenceRows.filter((row) => row.summary_status && row.summary_status !== "generated");
+  const firstSummary = generatedRows[0];
+  const summaryPaths = generatedRows.map((row) => row.pcap_summary_path).filter(Boolean);
+  const pcapPaths = evidenceRows.map((row) => row.incident_pcap_path).filter(Boolean);
+  const modelRuns = [...new Set(sentRows.map((row) => row.ai_model_run_id).filter(Boolean))];
+  const pcapSummaryIncluded = Number(data.ai_pcap_summary_included || 0) === 1;
+  const aiUnavailable = /ai model unavailable|timed out|timeout/i.test(data.ai_reason || "");
+  const pcapPromptProof = pcapSummaryIncluded
+    ? `pcap_summary ${data.ai_pcap_summary_chars || 0} chars · sha256 ${data.ai_pcap_summary_sha256 || "not recorded"} · full prompt ${data.ai_prompt_chars || 0} chars`
+    : "Prompt proof was not recorded for this AI report.";
+  const aiStepStatus = pcapSummaryIncluded
+    ? aiUnavailable ? "attempted" : "complete"
+    : sentRows.length ? "attempted" : "not_sent";
+  const aiStepBody = pcapSummaryIncluded
+    ? `${generatedRows.length}/${evidenceRows.length} packet summaries were included in the Ollama prompt attempt. Raw PCAP files are not uploaded.`
+    : `${sentRows.length}/${evidenceRows.length} summaries marked as included with the Ollama prompt. Raw PCAP files are not uploaded.`;
+  const aiStepMeta = pcapSummaryIncluded
+    ? `${modelRuns.length ? `Model run ID: ${modelRuns.join(", ")}` : `Model run ID: ${data.ai_model_run_id || "recorded in report"}`} · ${data.ai_model_identity || "unknown model"} · ${pcapPromptProof}${aiUnavailable ? ` · Model response: ${data.ai_reason}` : ""}`
+    : aiUnavailable
+      ? `Ollama request failed before prompt audit was stored: ${data.ai_reason}`
+      : "No model run ID linked to packet evidence yet.";
+  const timeStart = evidenceRows[0]?.incident_start_time || data.first_seen || data.timestamp || "unknown";
+  const timeEnd = evidenceRows[0]?.incident_end_time || data.last_seen || data.timestamp || "unknown";
+
+  els.pcapProcess.innerHTML = `
+    ${processStep(
+      1,
+      "Detection selected a packet window",
+      data.detection_id ? "complete" : "pending",
+      `${data.signature || "Suricata alert"} at ${data.timestamp || data.first_seen || "unknown time"}`,
+      `Incident window: ${timeStart} to ${timeEnd}. Configured expansion: ${inventory.window_minutes ?? "unknown"} minutes.`
+    )}
+    ${processStep(
+      2,
+      "Rolling PCAP files matched the window",
+      related.length ? "complete" : "empty",
+      `${related.length} related rolling PCAP files found in ${inventory.directory || "the configured PCAP directory"}.`,
+      pcapPaths.length ? `Selected for AI summary: ${pcapPaths.slice(0, 3).join(" | ")}` : "No PCAP files selected for AI summary yet."
+    )}
+    ${processStep(
+      3,
+      "tshark converted packets into text",
+      generatedRows.length ? "complete" : failedRows.length ? "failed" : "pending",
+      `${generatedRows.length}/${evidenceRows.length} packet summaries generated. Raw PCAP bytes stay local and are not sent to the model.`,
+      firstSummary
+        ? `First summary: ${firstSummary.pcap_summary_path} (${firstSummary.summary_packet_count || 0} packets, filter ${firstSummary.display_filter || "none"})`
+        : failedRows[0]?.summary_error || "No summary file has been generated for this detection."
+    )}
+    ${processStep(
+      4,
+      "Python sent the summary to the AI model",
+      aiStepStatus,
+      aiStepBody,
+      aiStepMeta
+    )}
+    ${processStep(
+      5,
+      "SQLite stored the evidence chain",
+      evidenceRows.length ? "complete" : "pending",
+      `${evidenceRows.length} incident_evidence rows stored for detection #${data.detection_id || "unknown"}.`,
+      summaryPaths.length ? `Summary paths: ${summaryPaths.slice(0, 3).join(" | ")}` : "No summary paths stored yet."
+    )}
+  `;
+}
+
 function renderPcaps(inventory) {
   const related = (inventory.files || []).filter((file) => file.related);
+  const evidenceRows = inventory.incident_evidence || currentInvestigation?.incident_evidence || [];
+  const sentRows = evidenceRows.filter((row) => Number(row.ai_sent || 0) === 1);
   els.pcapCount.textContent = related.length;
   els.pcaps.innerHTML = `
     <div class="pcap-summary">
+      <strong>${sentRows.length}</strong>
+      <span>packet summaries sent to AI · ${evidenceRows.length} evidence rows stored</span>
+    </div>
+    ${evidenceRows.map((row) => `
+      <div class="pcap-item ai-evidence ${Number(row.ai_sent || 0) === 1 ? "sent" : "not-sent"}">
+        <div class="row tight">
+          <strong>${Number(row.ai_sent || 0) === 1 ? "Included in AI Prompt" : "Prepared Evidence"}</strong>
+          <span>${row.summary_status || "unknown"}</span>
+        </div>
+        <p>${escapeHtml(row.incident_pcap_path || "No PCAP path recorded")}</p>
+        <p>${escapeHtml(row.pcap_summary_path || "No packet summary path recorded")}</p>
+        <small>
+          ${formatBytes(row.file_size_bytes)} · ${row.capture_label || "capture"} · packets ${row.summary_packet_count ?? 0}
+          · model run ${row.ai_model_run_id || "not sent"}
+        </small>
+        <small>
+          window ${row.incident_start_time || "unknown"} to ${row.incident_end_time || "unknown"}
+          ${row.display_filter ? ` · filter ${escapeHtml(row.display_filter)}` : ""}
+        </small>
+        ${row.summary_error ? `<small class="error-text">${escapeHtml(row.summary_error)}</small>` : ""}
+        ${row.pcap_summary_preview ? `
+          <pre class="raw-json packet-preview">${escapeHtml(row.pcap_summary_preview)}${row.pcap_summary_truncated ? "\n... truncated in dashboard preview" : ""}</pre>
+        ` : ""}
+      </div>
+    `).join("") || `<div class="empty">No AI packet evidence rows stored for this detection yet.</div>`}
+    <div class="pcap-summary">
       <strong>${related.length}</strong>
-      <span>related files · ${inventory.files?.length || 0} total in ${inventory.directory || "pcap directory"}</span>
+      <span>related rolling files · ${inventory.files?.length || 0} total in ${inventory.directory || "pcap directory"}</span>
     </div>
     ${related.map((file) => `
       <div class="pcap-item ${file.label}">
@@ -141,6 +266,13 @@ function render(data) {
     row("AI Profile UID", data.ai_profile_uid || "legacy-profile", "Selected Admin profile stamped into this report"),
     row("Model Identity", data.ai_model_identity || "unknown model", `provider ${data.ai_model_provider || "unknown"} · name ${data.ai_model_name || "unknown"}`),
     row("Model Run", data.ai_model_run_id || "not recorded", `${data.ai_prompt_version || "unknown prompt"} · ${data.ai_elapsed_ms ?? 0}ms`),
+    row(
+      "Prompt Audit",
+      Number(data.ai_pcap_summary_included || 0) === 1 ? "PCAP summary text included in Ollama prompt" : "No packet summary recorded in prompt audit",
+      Number(data.ai_pcap_summary_included || 0) === 1
+        ? `pcap_summary ${data.ai_pcap_summary_chars || 0} chars · sha256 ${data.ai_pcap_summary_sha256 || "not recorded"}`
+        : "New detections after this update will record prompt hash and summary size."
+    ),
     row("Reason", data.ai_reason || "No AI reason stored."),
     row("Recommended Action", data.ai_recommended_action || "none", `Risk adjustment ${data.ai_risk_adjustment ?? 0}`),
   ].join("");
@@ -174,6 +306,7 @@ function render(data) {
     </div>
   `;
 
+  renderPcapProcess(data);
   renderPcaps(data.pcap_files || {});
   els.updated.textContent = new Date().toLocaleTimeString();
 }

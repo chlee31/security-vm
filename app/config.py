@@ -15,6 +15,9 @@ DEFAULT_CONFIG = {
         "incident_dir": "/var/log/incidents",
         "incident_window_minutes": 5,
         "rolling_retention_days": 2,
+        "max_ai_files": 2,
+        "summary_packet_limit": 20,
+        "summary_timeout_seconds": 20,
     },
     "ollama": {
         "host": "http://127.0.0.1:11434",
@@ -22,6 +25,9 @@ DEFAULT_CONFIG = {
         "provider": "ollama",
         "active_profile_uid": "",
         "timeout_seconds": 90,
+        "num_predict": 192,
+        "num_ctx": 8192,
+        "temperature": 0.1,
     },
     "firewall": {"provider": "firewalld", "block_timeout_seconds": 3600},
     "thresholds": {

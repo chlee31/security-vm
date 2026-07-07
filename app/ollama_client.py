@@ -58,6 +58,10 @@ def model_run_id(metadata, alert):
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
+def text_sha256(value):
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
 def build_prompt(alert, detection, evidence_context=None, pcap_summary=""):
     asset_context = detection.get("asset_context") or {}
     package = {
@@ -137,6 +141,21 @@ Analyze this event package:
     return instructions.strip() + "\n\n" + json.dumps(package, indent=2)
 
 
+def build_prompt_audit(config, alert, detection, evidence_context=None, pcap_summary=""):
+    metadata = model_metadata(config)
+    prompt = build_prompt(alert, detection, evidence_context, pcap_summary)
+    packet_summary_text = pcap_summary or ""
+    return prompt, {
+        **metadata,
+        "model_run_id": model_run_id(metadata, alert),
+        "prompt_sha256": text_sha256(prompt),
+        "prompt_chars": len(prompt),
+        "pcap_summary_sha256": text_sha256(packet_summary_text) if packet_summary_text else "",
+        "pcap_summary_chars": len(packet_summary_text),
+        "pcap_summary_included": 1 if packet_summary_text else 0,
+    }
+
+
 def normalize_risk_adjustment(value):
     try:
         adjustment = int(value)
@@ -172,21 +191,37 @@ def normalize_report(parsed):
 
 def ask_ollama(config, alert, detection, evidence_context=None, pcap_summary=""):
     ollama = config.get("ollama", {})
-    metadata = model_metadata(config)
-    host = metadata["model_endpoint"]
-    model = metadata["model_name"]
+    prompt, audit = build_prompt_audit(config, alert, detection, evidence_context, pcap_summary)
+    host = audit["model_endpoint"]
+    model = audit["model_name"]
     timeout = ollama.get("timeout_seconds", 90)
-    prompt = build_prompt(alert, detection, evidence_context, pcap_summary)
+    options = {
+        "num_predict": int(ollama.get("num_predict", 192)),
+        "num_ctx": int(ollama.get("num_ctx", 8192)),
+        "temperature": float(ollama.get("temperature", 0.1)),
+    }
     start = time.monotonic()
 
-    response = requests.post(
+    response_chunks = []
+    with requests.post(
         f"{host}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False, "format": "json"},
+        json={"model": model, "prompt": prompt, "stream": True, "format": "json", "options": options},
         timeout=timeout,
-    )
-    response.raise_for_status()
+        stream=True,
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            chunk = json.loads(line)
+            if chunk.get("error"):
+                raise requests.RequestException(chunk["error"])
+            response_chunks.append(chunk.get("response", ""))
+            if chunk.get("done"):
+                break
+
     elapsed_ms = int((time.monotonic() - start) * 1000)
-    raw_text = response.json().get("response", "{}")
+    raw_text = "".join(response_chunks) or "{}"
 
     try:
         parsed = json.loads(raw_text)
@@ -200,8 +235,7 @@ def ask_ollama(config, alert, detection, evidence_context=None, pcap_summary="")
         }
 
     parsed = normalize_report(parsed)
-    parsed.update(metadata)
-    parsed["model_run_id"] = model_run_id(metadata, alert)
+    parsed.update(audit)
     parsed["raw_response"] = raw_text
     parsed["elapsed_ms"] = elapsed_ms
     return parsed

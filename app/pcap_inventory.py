@@ -5,10 +5,18 @@ from pathlib import Path
 def parse_event_time(value):
     if not value:
         return None
+    text = str(value)
+    normalized = text.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+        return datetime.fromisoformat(normalized).astimezone(timezone.utc)
     except ValueError:
-        return None
+        pass
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(text, fmt).astimezone(timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 def file_label(path):

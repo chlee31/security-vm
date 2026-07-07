@@ -654,10 +654,146 @@ textarea {
   border-left-color: var(--amber);
 }
 
+.pcap-item.ai-evidence {
+  border-left-color: var(--green);
+}
+
+.pcap-item.ai-evidence.not-sent {
+  border-left-color: var(--red);
+}
+
 .pcap-item p {
   margin: 6px 0;
   overflow-wrap: anywhere;
   color: var(--muted);
+}
+
+.packet-preview {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111619;
+}
+
+.error-text {
+  color: var(--red);
+}
+
+.pcap-process {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.process-step {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--cyan);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.process-step.complete {
+  border-left-color: var(--green);
+}
+
+.process-step.attempted {
+  border-left-color: var(--amber);
+}
+
+.process-step.failed,
+.process-step.not_sent {
+  border-left-color: var(--red);
+}
+
+.process-step.empty,
+.process-step.pending {
+  border-left-color: var(--amber);
+}
+
+.process-number {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-top: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111619;
+  color: var(--green);
+  font-weight: 900;
+}
+
+.process-content {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.process-titleline {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.process-titleline strong {
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.process-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #111619;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.process-step.complete .process-status {
+  border-color: rgba(50, 213, 131, 0.45);
+  color: var(--green);
+}
+
+.process-step.attempted .process-status,
+.process-step.empty .process-status,
+.process-step.pending .process-status {
+  border-color: rgba(253, 176, 34, 0.45);
+  color: var(--amber);
+}
+
+.process-step.failed .process-status,
+.process-step.not_sent .process-status {
+  border-color: rgba(249, 112, 102, 0.45);
+  color: var(--red);
+}
+
+.process-step p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.process-step small {
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.process-meta {
+  display: block;
 }
 
 .evidence-chain {
@@ -1233,6 +1369,19 @@ time,
 
   .score-row {
     grid-template-columns: 1fr;
+  }
+
+  .process-step {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .process-titleline {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .process-status {
+    align-self: flex-start;
   }
 
   .form-grid,

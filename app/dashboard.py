@@ -39,6 +39,7 @@ from app.database import (
     latest_app_events,
     latest_decision_evidence,
     latest_ollama_reports,
+    list_incident_evidence,
     list_ai_profiles,
     list_all_assets,
     list_assets,
@@ -784,11 +785,14 @@ def create_app(config_path):
             detail = investigation_detail(conn, detection_id)
             if not detail:
                 raise HTTPException(status_code=404, detail="Investigation not found")
+            incident_evidence = list_incident_evidence(conn, detection_id)
         finally:
             conn.close()
         pcaps = list_pcap_files(config, detail.get("timestamp") or detail.get("first_seen"), detail.get("last_seen") or detail.get("timestamp"))
         pcaps["detection_id"] = detection_id
+        pcaps["incident_evidence"] = incident_evidence
         detail["pcap_files"] = pcaps
+        detail["incident_evidence"] = incident_evidence
         return detail
 
     @app.get("/api/assets")

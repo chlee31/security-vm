@@ -58,9 +58,34 @@ def ensure_migrations(conn):
             "model_run_id": "ALTER TABLE ollama_reports ADD COLUMN model_run_id TEXT",
             "prompt_version": "ALTER TABLE ollama_reports ADD COLUMN prompt_version TEXT",
             "elapsed_ms": "ALTER TABLE ollama_reports ADD COLUMN elapsed_ms INTEGER",
+            "prompt_sha256": "ALTER TABLE ollama_reports ADD COLUMN prompt_sha256 TEXT",
+            "prompt_chars": "ALTER TABLE ollama_reports ADD COLUMN prompt_chars INTEGER",
+            "pcap_summary_sha256": "ALTER TABLE ollama_reports ADD COLUMN pcap_summary_sha256 TEXT",
+            "pcap_summary_chars": "ALTER TABLE ollama_reports ADD COLUMN pcap_summary_chars INTEGER",
+            "pcap_summary_included": "ALTER TABLE ollama_reports ADD COLUMN pcap_summary_included INTEGER DEFAULT 0",
         }
         for column, statement in report_migrations.items():
             if column not in report_columns:
+                conn.execute(statement)
+
+    evidence_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(incident_evidence)").fetchall()
+    }
+    if evidence_columns:
+        evidence_migrations = {
+            "capture_label": "ALTER TABLE incident_evidence ADD COLUMN capture_label TEXT",
+            "file_size_bytes": "ALTER TABLE incident_evidence ADD COLUMN file_size_bytes INTEGER",
+            "pcap_modified_at": "ALTER TABLE incident_evidence ADD COLUMN pcap_modified_at TEXT",
+            "summary_status": "ALTER TABLE incident_evidence ADD COLUMN summary_status TEXT",
+            "summary_packet_count": "ALTER TABLE incident_evidence ADD COLUMN summary_packet_count INTEGER",
+            "summary_error": "ALTER TABLE incident_evidence ADD COLUMN summary_error TEXT",
+            "display_filter": "ALTER TABLE incident_evidence ADD COLUMN display_filter TEXT",
+            "ai_sent": "ALTER TABLE incident_evidence ADD COLUMN ai_sent INTEGER DEFAULT 0",
+            "ai_model_run_id": "ALTER TABLE incident_evidence ADD COLUMN ai_model_run_id TEXT",
+        }
+        for column, statement in evidence_migrations.items():
+            if column not in evidence_columns:
                 conn.execute(statement)
 
     conn.execute(
@@ -490,9 +515,11 @@ def insert_ollama_report(conn, detection_id, report):
         INSERT INTO ollama_reports (
           detection_id, ai_profile_uid, model_provider, model_name, model_identity,
           model_endpoint, model_run_id, prompt_version, classification, confidence,
-          risk_adjustment, reason, recommended_action, raw_response, elapsed_ms
+          risk_adjustment, reason, recommended_action, raw_response, elapsed_ms,
+          prompt_sha256, prompt_chars, pcap_summary_sha256,
+          pcap_summary_chars, pcap_summary_included
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection_id,
@@ -510,6 +537,11 @@ def insert_ollama_report(conn, detection_id, report):
             sqlite_value(report.get("recommended_action")),
             sqlite_value(report.get("raw_response")),
             sqlite_int(report.get("elapsed_ms", 0)),
+            sqlite_value(report.get("prompt_sha256")),
+            sqlite_int(report.get("prompt_chars", 0)),
+            sqlite_value(report.get("pcap_summary_sha256")),
+            sqlite_int(report.get("pcap_summary_chars", 0)),
+            sqlite_int(report.get("pcap_summary_included", 0)),
         ),
     )
     conn.commit()
@@ -536,6 +568,75 @@ def insert_response(conn, response):
         ),
     )
     conn.commit()
+
+
+def insert_incident_evidence(conn, evidence):
+    conn.execute(
+        """
+        INSERT INTO incident_evidence (
+          detection_id, alert_id, incident_start_time, incident_end_time,
+          incident_pcap_path, pcap_summary_path, capture_label,
+          file_size_bytes, pcap_modified_at, summary_status,
+          summary_packet_count, summary_error, display_filter, ai_sent,
+          ai_model_run_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            evidence.get("detection_id"),
+            evidence.get("alert_id"),
+            evidence.get("incident_start_time"),
+            evidence.get("incident_end_time"),
+            evidence.get("incident_pcap_path"),
+            evidence.get("pcap_summary_path"),
+            evidence.get("capture_label"),
+            evidence.get("file_size_bytes"),
+            evidence.get("pcap_modified_at"),
+            evidence.get("summary_status"),
+            evidence.get("summary_packet_count"),
+            evidence.get("summary_error"),
+            evidence.get("display_filter"),
+            1 if evidence.get("ai_sent") else 0,
+            evidence.get("ai_model_run_id"),
+        ),
+    )
+    conn.commit()
+
+
+def list_incident_evidence(conn, detection_id, preview_chars=6000):
+    rows = conn.execute(
+        """
+        SELECT
+          id, detection_id, alert_id, incident_start_time, incident_end_time,
+          incident_pcap_path, pcap_summary_path, capture_label,
+          file_size_bytes, pcap_modified_at, summary_status,
+          summary_packet_count, summary_error, display_filter, ai_sent,
+          ai_model_run_id, created_at
+        FROM incident_evidence
+        WHERE detection_id = ?
+        ORDER BY id ASC
+        """,
+        (detection_id,),
+    ).fetchall()
+
+    evidence = []
+    for row in rows:
+        item = dict(row)
+        summary_path = item.get("pcap_summary_path")
+        if summary_path:
+            try:
+                text = Path(summary_path).read_text(encoding="utf-8", errors="replace")
+                item["pcap_summary_preview"] = text[:preview_chars]
+                item["pcap_summary_truncated"] = len(text) > preview_chars
+            except OSError as exc:
+                item["pcap_summary_preview"] = ""
+                item["pcap_summary_error"] = str(exc)
+                item["pcap_summary_truncated"] = False
+        else:
+            item["pcap_summary_preview"] = ""
+            item["pcap_summary_truncated"] = False
+        evidence.append(item)
+    return evidence
 
 
 def upsert_pending_review(conn, response, review_days=3):
@@ -637,6 +738,11 @@ def latest_ollama_reports(conn, limit=50):
           ollama_reports.reason,
           ollama_reports.recommended_action,
           ollama_reports.elapsed_ms,
+          ollama_reports.prompt_sha256,
+          ollama_reports.prompt_chars,
+          ollama_reports.pcap_summary_sha256,
+          ollama_reports.pcap_summary_chars,
+          ollama_reports.pcap_summary_included,
           ollama_reports.created_at,
           detections.detection_type,
           detections.python_initial_score,
@@ -1042,6 +1148,22 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           ollama_reports.model_run_id AS ollama_model_run_id,
           ollama_reports.prompt_version AS ollama_prompt_version,
           ollama_reports.elapsed_ms AS ollama_elapsed_ms,
+          ollama_reports.prompt_sha256 AS ollama_prompt_sha256,
+          ollama_reports.prompt_chars AS ollama_prompt_chars,
+          ollama_reports.pcap_summary_sha256 AS ollama_pcap_summary_sha256,
+          ollama_reports.pcap_summary_chars AS ollama_pcap_summary_chars,
+          ollama_reports.pcap_summary_included AS ollama_pcap_summary_included,
+          (
+            SELECT COUNT(*)
+            FROM incident_evidence
+            WHERE incident_evidence.detection_id = detections.id
+          ) AS pcap_evidence_count,
+          (
+            SELECT COUNT(*)
+            FROM incident_evidence
+            WHERE incident_evidence.detection_id = detections.id
+              AND incident_evidence.ai_sent = 1
+          ) AS pcap_ai_sent_count,
           analyst_reviews.review_status,
           analyst_reviews.analyst_name,
           analyst_reviews.analyst_score,
@@ -1107,6 +1229,11 @@ def investigation_detail(conn, detection_id):
           ollama_reports.model_run_id AS ai_model_run_id,
           ollama_reports.prompt_version AS ai_prompt_version,
           ollama_reports.elapsed_ms AS ai_elapsed_ms,
+          ollama_reports.prompt_sha256 AS ai_prompt_sha256,
+          ollama_reports.prompt_chars AS ai_prompt_chars,
+          ollama_reports.pcap_summary_sha256 AS ai_pcap_summary_sha256,
+          ollama_reports.pcap_summary_chars AS ai_pcap_summary_chars,
+          ollama_reports.pcap_summary_included AS ai_pcap_summary_included,
           ollama_reports.created_at AS ai_created_at,
           responses.final_score,
           responses.final_classification,
