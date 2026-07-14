@@ -4,6 +4,10 @@ Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata
 
 The system starts in safe `alert_only` mode. The AI model can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `prevention` mode is explicitly enabled.
 
+## System Workflow
+
+See the [complete Security VM workflow](docs/SECURITY_VM_WORKFLOW.md) for a visual map of bootstrap, network sensors, correlation, threat intelligence, AI triage, scoring, firewall response, and analyst review.
+
 ## Screenshots
 
 Main dashboard with Suricata detections, asset inventory, enrichment status, and visible risk scores:
