@@ -5,7 +5,7 @@ import time
 import requests
 
 
-PROMPT_VERSION = "security-vm-multi-sensor-triage-v3"
+PROMPT_VERSION = "security-vm-case-triage-v4"
 
 
 def infer_model_provider(host, model):
@@ -124,7 +124,7 @@ def build_prompt(alert, detection, evidence_context=None, pcap_summary=""):
                 "connection volume",
                 "Suricata signatures and Zeek notices",
                 "multi-source threat intelligence matches",
-                "packet summary metadata",
+                "sensor-provided connection metadata",
             ],
             "not_visible_without_endpoint_or_tls_decryption": [
                 "encrypted payload contents",
@@ -135,12 +135,12 @@ def build_prompt(alert, detection, evidence_context=None, pcap_summary=""):
             ],
         },
         "evidence_context": evidence_context or {},
-        "pcap_summary": pcap_summary or "No packet-level summary generated for this alert.",
+        "forensic_pcap_policy": "Rolling PCAP is retained locally for analyst forensics and is not sent to the AI model.",
     }
 
     instructions = """
 You are assisting a cybersecurity lab system that triages unified network detections from Suricata and Zeek.
-Python already calculated python_initial_score from deterministic rules. Your job is not to replace that score; your job is to provide a bounded second opinion.
+Python already calculated a deterministic score from six auditable categories with a maximum of 90 points. Your job is not to replace that score; your job is to provide a bounded second opinion.
 
 Return only valid JSON with exactly these keys:
 classification, confidence, risk_adjustment, reason, recommended_action.
@@ -148,16 +148,16 @@ classification, confidence, risk_adjustment, reason, recommended_action.
 Allowed values:
 - classification: Safe, Human Review Required, Dangerous
 - confidence: Low, Medium, High
-- risk_adjustment: integer from -20 to 20
+- risk_adjustment: integer from -10 to 10
 - recommended_action: log_only, human_review, would_block, temporary_block
 
 Scoring guidance:
 - Use risk_adjustment to tune Python's score, not to create a new score.
-- -20 to -11: strong evidence this is benign, expected, noisy, or normal software behavior.
-- -10 to -1: somewhat lower risk than Python estimated.
+- -10 to -6: strong evidence this is benign, expected, noisy, or normal software behavior.
+- -5 to -1: somewhat lower risk than Python estimated.
 - 0: Python score looks reasonable, or evidence is insufficient.
 - 1 to 10: suspicious context raises risk.
-- 11 to 20: strong malicious indicators, high-confidence attack behavior, or critical asset impact.
+- 6 to 10: strong malicious indicators, high-confidence attack behavior, or critical asset impact.
 
 Classification guidance:
 - Safe: likely benign or routine activity. Usually recommend log_only.
@@ -176,12 +176,12 @@ Evidence rules:
 - When sensor_state is multi_sensor, use Community ID or flow/time correlation metadata to understand why findings were grouped. Corroborating independent findings should increase confidence, but should not automatically mean Dangerous.
 - Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
 - Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
-- If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, Zeek metadata, or packet summary evidence, choose Human Review Required and describe the disputed evidence.
+- If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Human Review Required and describe the disputed evidence.
 - Treat DNS tunneling, port scans, repeated connections, many destination ports, or MITRE-mapped behavior as more suspicious.
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
 - Use threat_intel in evidence_context when present. Treat matches from independent sources as corroborating evidence, consider confidence/category/freshness, and name the sources in the reason. No match or an inactive provider does not make an alert safe.
-- Use pcap_evidence in evidence_context as supporting context only. Related capture files mean packet data exists for analyst follow-up, but raw packet contents are not included unless a packet_summary is present.
-- If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, asset context, correlation, and packet summaries.
+- Do not claim to have examined raw PCAP data. Packet captures remain local and are not part of this model request.
+- If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, asset context, correlation, and sensor metadata.
 - For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent, prefer Human Review Required or Safe with clear low-confidence wording.
 - If context is missing, prefer Human Review Required with Low or Medium confidence instead of guessing.
 - The reason must briefly explain the main evidence and why the adjustment was chosen.
@@ -193,16 +193,15 @@ Analyze this event package:
 
 def build_prompt_audit(config, alert, detection, evidence_context=None, pcap_summary=""):
     metadata = model_metadata(config)
-    prompt = build_prompt(alert, detection, evidence_context, pcap_summary)
-    packet_summary_text = pcap_summary or ""
+    prompt = build_prompt(alert, detection, evidence_context)
     return prompt, {
         **metadata,
         "model_run_id": model_run_id(metadata, alert),
         "prompt_sha256": text_sha256(prompt),
         "prompt_chars": len(prompt),
-        "pcap_summary_sha256": text_sha256(packet_summary_text) if packet_summary_text else "",
-        "pcap_summary_chars": len(packet_summary_text),
-        "pcap_summary_included": 1 if packet_summary_text else 0,
+        "pcap_summary_sha256": "",
+        "pcap_summary_chars": 0,
+        "pcap_summary_included": 0,
     }
 
 
@@ -219,7 +218,7 @@ def normalize_risk_adjustment(value):
             adjustment = 0
         else:
             adjustment = 0
-    return max(-20, min(20, adjustment))
+    return max(-10, min(10, adjustment))
 
 
 def normalize_text(value, fallback=""):

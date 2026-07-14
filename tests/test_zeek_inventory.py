@@ -1,8 +1,10 @@
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.zeek_inventory import log_file_status
+from app.zeek_inventory import log_file_status, running_zeek_pids
 
 
 class ZeekInventoryTests(unittest.TestCase):
@@ -21,6 +23,23 @@ class ZeekInventoryTests(unittest.TestCase):
         self.assertFalse(status["exists"])
         self.assertFalse(status["accessible"])
         self.assertIn("Permission denied", status["error"])
+
+    def test_running_pid_is_verified_from_proc_without_signal_permission_probe(self):
+        process = subprocess.Popen(["bash", "-c", "exec -a zeek sleep 10"])
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                zeekctl = root / "bin" / "zeekctl"
+                pid_file = root / "spool" / "zeek" / ".pid"
+                zeekctl.parent.mkdir(parents=True)
+                pid_file.parent.mkdir(parents=True)
+                zeekctl.touch()
+                pid_file.write_text(str(process.pid), encoding="utf-8")
+
+                self.assertEqual(running_zeek_pids(str(zeekctl)), [process.pid])
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
 
 
 if __name__ == "__main__":

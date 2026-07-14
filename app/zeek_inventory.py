@@ -58,9 +58,8 @@ def running_zeek_pids(zeekctl_path):
     for pid_path in pid_paths:
         try:
             pid = int(pid_path.read_text(encoding="utf-8").strip())
-            os.kill(pid, 0)
             cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
-        except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, OSError):
+        except (FileNotFoundError, PermissionError, ValueError, OSError):
             continue
         if "zeek" in cmdline.lower():
             running.append(pid)

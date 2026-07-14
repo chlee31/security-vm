@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
         "include_zeek": True,
         "include_threat_intel": True,
         "include_asset_context": True,
-        "include_pcap_summary": True,
+        "include_pcap_summary": False,
     },
     "correlation": {"sensor_time_tolerance_seconds": 10},
     "ai_model": {
@@ -68,7 +68,12 @@ DEFAULT_CONFIG = {
         "num_ctx": 8192,
         "temperature": 0.1,
     },
-    "firewall": {"provider": "firewalld", "block_timeout_seconds": 3600},
+    "firewall": {
+        "provider": "firewalld",
+        "block_timeout_seconds": 3600,
+        "external_zone": "external",
+        "internal_zone": "internal",
+    },
     "thresholds": {
         "safe_max": 29,
         "human_review_min": 30,

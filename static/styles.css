@@ -190,6 +190,26 @@ h2 {
   max-width: 1500px;
 }
 
+.case-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 220px)) minmax(220px, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.case-actions .connection-status {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+}
+
+@media (max-width: 850px) {
+  .case-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
 .workbook-metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -455,6 +475,167 @@ h2 {
   color: var(--cyan);
 }
 
+.telemetry-open-link {
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  border: 1px solid rgba(103, 232, 249, 0.5);
+  border-radius: 8px;
+  color: var(--cyan);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.telemetry-open-link:hover {
+  border-color: var(--cyan);
+  background: rgba(103, 232, 249, 0.06);
+}
+
+.toolbar-button {
+  width: auto;
+  min-width: 84px;
+  height: 34px;
+  padding: 0 12px;
+}
+
+.dot.offline {
+  background: var(--red);
+  box-shadow: 0 0 18px var(--red);
+}
+
+.zeek-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.8fr) minmax(0, 1.2fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.zeek-overview-grid .wide-panel {
+  grid-column: 1 / -1;
+}
+
+.telemetry-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(24, 29, 32, 0.94);
+}
+
+.telemetry-tab {
+  width: 100%;
+  height: auto;
+  min-height: 44px;
+  padding: 8px 12px;
+  white-space: normal;
+}
+
+.telemetry-tab.selected {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  box-shadow: inset 0 -3px 0 var(--cyan);
+}
+
+.zeek-view {
+  margin-bottom: 14px;
+}
+
+.telemetry-list {
+  display: grid;
+  gap: 10px;
+  max-height: 620px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.telemetry-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, auto);
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--cyan);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.telemetry-row > div,
+.telemetry-facts {
+  min-width: 0;
+}
+
+.telemetry-row strong,
+.telemetry-row small,
+.telemetry-row time,
+.telemetry-facts span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.telemetry-row small,
+.telemetry-row time,
+.telemetry-facts span {
+  margin-top: 5px;
+  color: var(--muted);
+}
+
+.telemetry-facts {
+  text-align: right;
+}
+
+.telemetry-facts .fact-warning {
+  color: var(--amber);
+}
+
+.telemetry-event-row {
+  align-items: start;
+}
+
+.telemetry-event-row .sensor-badges {
+  margin-bottom: 8px;
+}
+
+.telemetry-callout {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111619;
+}
+
+.telemetry-callout strong {
+  color: var(--cyan);
+  font-size: 1.7rem;
+}
+
+.telemetry-callout span,
+.compact-filter {
+  color: var(--muted);
+}
+
+.chart-panel h3 {
+  margin: 18px 0 8px;
+  font-size: 0.9rem;
+}
+
+.compact-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+
+.compact-filter select {
+  min-width: 160px;
+}
+
 .split-mini-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -578,6 +759,32 @@ button:hover {
 .panel-actions {
   display: flex;
   gap: 8px;
+}
+
+.alert-panel-controls {
+  display: grid;
+  justify-items: end;
+  gap: 9px;
+}
+
+.sensor-filter {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(64px, auto));
+  gap: 6px;
+}
+
+.sensor-filter-button {
+  width: auto;
+  min-width: 64px;
+  height: 34px;
+  padding: 0 10px;
+  color: var(--muted);
+}
+
+.sensor-filter-button.selected {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(103, 232, 249, 0.06);
 }
 
 .danger-button {
@@ -1017,9 +1224,24 @@ textarea {
 }
 
 .unified-alert {
-  grid-template-columns: minmax(190px, 0.3fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(165px, 0.28fr) minmax(280px, 1fr) 124px;
   align-items: stretch;
   min-height: 150px;
+}
+
+.unified-alert > .score-badge {
+  width: 124px;
+  min-width: 0;
+}
+
+.unified-alert > .score-badge span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.unified-alert.multi-sensor-alert {
+  border-color: rgba(103, 232, 249, 0.65);
+  box-shadow: inset 4px 0 0 var(--cyan);
 }
 
 .alert-time-block {
@@ -1098,16 +1320,32 @@ textarea {
 
 .sensor-finding-row {
   display: grid;
-  grid-template-columns: 82px minmax(0, 1fr) minmax(190px, auto);
+  grid-template-columns: 82px minmax(0, 1fr);
   gap: 8px;
-  align-items: center;
+  align-items: start;
   padding-top: 5px;
   border-top: 1px solid var(--line);
   font-size: 0.82rem;
 }
 
-.sensor-finding-row time {
-  text-align: right;
+.sensor-finding-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sensor-finding-copy strong,
+.sensor-finding-copy span {
+  overflow-wrap: anywhere;
+}
+
+.sensor-finding-copy span {
+  color: var(--muted);
+}
+
+.sensor-finding-copy time {
+  color: var(--muted);
+  font-size: 0.76rem;
 }
 
 .timestamp-metric strong {
@@ -1542,7 +1780,8 @@ time,
 
   .workbook-metrics,
   .workbook-grid,
-  .admin-grid {
+  .admin-grid,
+  .zeek-overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1571,12 +1810,44 @@ time,
     display: none;
   }
 
+  .panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .alert-panel-controls {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .alert-panel-controls .panel-hint {
+    max-width: none;
+    text-align: left;
+  }
+
+  .sensor-filter {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sensor-filter-button {
+    width: 100%;
+  }
+
   .admin-tabs {
     grid-template-columns: 1fr;
   }
 
+  .telemetry-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .alert {
     grid-template-columns: 1fr;
+  }
+
+  .unified-alert > .score-badge {
+    width: 100%;
   }
 
   .alert-time-block {
@@ -1589,10 +1860,6 @@ time,
     grid-template-columns: 1fr;
   }
 
-  .sensor-finding-row time {
-    text-align: left;
-  }
-
   .detail-grid,
   .evidence-chain,
   .insight-grid,
@@ -1600,8 +1867,20 @@ time,
   .workbook-grid,
   .admin-grid,
   .selected-investigation-grid,
-  .pie-layout {
+  .pie-layout,
+  .zeek-overview-grid,
+  .telemetry-row {
     grid-template-columns: 1fr;
+  }
+
+  .telemetry-facts {
+    text-align: left;
+  }
+
+  .compact-filter {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .wide-panel {

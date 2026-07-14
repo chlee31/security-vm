@@ -1,5 +1,4 @@
 import argparse
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -9,7 +8,6 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime, timedelta, timezone
 
 import requests
 import uvicorn
@@ -28,8 +26,9 @@ from app.database import (
     insert_app_event,
     insert_detection,
     insert_firewall_block,
-    insert_incident_evidence,
+    insert_ai_assessment,
     insert_ai_report,
+    insert_score_breakdown,
     insert_response,
     insert_sensor_finding,
     ip_enrichment_profile,
@@ -38,25 +37,24 @@ from app.database import (
     sensor_findings_for_detection,
     sensor_finding_detection_id,
     threat_intel_matches,
-    upsert_threat_intel_lookup,
+    update_detection_python_score,
     upsert_pending_review,
     zeek_context_for_detection,
     zeek_flow_for_uid,
 )
-from app.decision_engine import decide
+from app.decision_engine import decide, safe_risk_adjustment
 from app.firewall import temporary_block_firewalld
 from app.normalizer import detection_type_from_alert, normalize_suricata_event
 from app.ai_client import ask_ai_model, build_prompt_audit, check_ai_model, model_metadata, model_run_id
 from app.notifications import notify_dangerous_decision
-from app.pcap_inventory import list_pcap_files, parse_event_time
-from app.risk_score import cap_score
+from app.risk_score import cap_score, deterministic_score
 from app.suricata_reader import follow_file, permission_help
 from app.sensor_fusion import suricata_finding, zeek_detection, zeek_finding
-from app.tshark_summary import summarize_pcap
-from app.threat_intel import PRE_AI_PROVIDERS, PROVIDERS, lookup_virustotal_ip, provider_config
+from app.threat_intel import FETCHERS, PRE_AI_PROVIDERS, PROVIDERS, provider_config
 from app.threat_intel_worker import run_threat_intel_worker
 from app.zeek_ingest import run_zeek_ingest_loop
 from app.zeek_inventory import zeek_status
+from app.virustotal import verify_dangerous as verify_dangerous_with_virustotal
 
 
 ERROR_MARKERS = (
@@ -190,225 +188,7 @@ def record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_cont
             )
 
 
-def parse_lookup_time(value):
-    try:
-        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def verify_dangerous_with_virustotal(conn, config, alert, detection_id, alert_id, ai_report):
-    if str(ai_report.get("classification") or "").strip().lower() != "dangerous":
-        return []
-    settings = provider_config(config, "virustotal")
-    if not settings["enabled"] or not settings["api_key"]:
-        return []
-
-    ttl_hours = max(1, int(config.get("threat_intel", {}).get("cache_ttl_hours", 24)))
-    results = []
-    for value in dict.fromkeys([alert.get("src_ip"), alert.get("dest_ip")]):
-        if not value:
-            continue
-        try:
-            if not ipaddress.ip_address(value).is_global:
-                continue
-        except ValueError:
-            continue
-
-        cached = latest_threat_intel_for_ip(conn, value, "virustotal")
-        cached_at = parse_lookup_time((cached or {}).get("lookup_time"))
-        if cached and cached_at and (datetime.now(timezone.utc) - cached_at) < timedelta(hours=ttl_hours):
-            result = {**cached, "indicator": value, "source": "virustotal", "cached": True}
-        else:
-            result = lookup_virustotal_ip(settings, value)
-            upsert_threat_intel_lookup(
-                conn,
-                result["indicator"],
-                "virustotal",
-                result["reputation"],
-                malicious_count=result["malicious_count"],
-                suspicious_count=result["suspicious_count"],
-                lookup_result=result["lookup_result"],
-                raw_response=result["raw_response"],
-                alert_id=alert_id,
-                detection_id=detection_id,
-            )
-            result["cached"] = False
-        record_threat_intel_usage(
-            conn,
-            detection_id,
-            alert_id,
-            value,
-            "ip",
-            "virustotal",
-            "post_ai_verification",
-            result,
-        )
-        results.append(result)
-    return results
-
-
-def safe_filename(value):
-    return "".join(char if char.isalnum() or char in ".-_" else "_" for char in str(value))[:160]
-
-
-def incident_window(config, alert, detection):
-    pcap_config = config.get("pcap", {})
-    window_minutes = int(pcap_config.get("incident_window_minutes", 5))
-    start = parse_event_time(detection.get("first_seen") or alert.get("timestamp"))
-    end = parse_event_time(detection.get("last_seen") or alert.get("timestamp")) or start
-    if not start:
-        return None, None
-    return (start - timedelta(minutes=window_minutes)).isoformat(), (end + timedelta(minutes=window_minutes)).isoformat()
-
-
-def prepare_pcap_evidence(config, alert, detection, alert_id, detection_id):
-    pcap_config = config.get("pcap", {})
-    inventory = list_pcap_files(
-        config,
-        detection.get("first_seen") or alert.get("timestamp"),
-        detection.get("last_seen") or alert.get("timestamp"),
-    )
-    related = [file for file in inventory.get("files", []) if file.get("related")]
-    max_ai_files = max(0, int(pcap_config.get("max_ai_files", 2)))
-    summary_limit = max(1, int(pcap_config.get("summary_packet_limit", 20)))
-    summary_timeout = max(1, int(pcap_config.get("summary_timeout_seconds", 20)))
-    incident_start, incident_end = incident_window(config, alert, detection)
-    summary_dir = Path(pcap_config.get("incident_dir", "/var/log/incidents")) / "summaries" / f"detection-{detection_id}"
-
-    records = []
-    summary_sections = []
-    for index, file in enumerate(related[:max_ai_files], start=1):
-        pcap_path = Path(file.get("path", ""))
-        summary_path = summary_dir / f"{index:02d}_{safe_filename(pcap_path.name)}.summary.csv"
-        record = {
-            "detection_id": detection_id,
-            "alert_id": alert_id,
-            "incident_start_time": incident_start,
-            "incident_end_time": incident_end,
-            "incident_pcap_path": str(pcap_path),
-            "pcap_summary_path": "",
-            "capture_label": file.get("label"),
-            "file_size_bytes": file.get("size_bytes"),
-            "pcap_modified_at": file.get("modified_at"),
-            "summary_status": "not_generated",
-            "summary_packet_count": 0,
-            "summary_error": "",
-            "display_filter": "",
-            "ai_sent": False,
-            "ai_model_run_id": "",
-        }
-
-        try:
-            summary = summarize_pcap(
-                pcap_path,
-                summary_path,
-                limit=summary_limit,
-                alert=alert,
-                timeout=summary_timeout,
-            )
-            summary_text = Path(summary["path"]).read_text(encoding="utf-8", errors="replace")
-            record.update(
-                {
-                    "pcap_summary_path": summary["path"],
-                    "summary_status": summary["status"],
-                    "summary_packet_count": summary["packet_count"],
-                    "display_filter": summary.get("display_filter", ""),
-                }
-            )
-            summary_sections.append(
-                "\n".join(
-                    [
-                        f"PCAP evidence file {index}",
-                        f"capture_label: {file.get('label') or 'capture'}",
-                        f"pcap_path: {pcap_path}",
-                        f"summary_path: {summary['path']}",
-                        f"packet_count: {summary['packet_count']}",
-                        f"display_filter: {summary.get('display_filter') or 'none'}",
-                        "summary_csv:",
-                        summary_text.strip(),
-                    ]
-                )
-            )
-        except FileNotFoundError as exc:
-            record["summary_status"] = "tshark_unavailable"
-            record["summary_error"] = str(exc)
-        except subprocess.TimeoutExpired as exc:
-            record["summary_status"] = "summary_timeout"
-            record["summary_error"] = str(exc)
-        except subprocess.CalledProcessError as exc:
-            record["summary_status"] = "summary_failed"
-            record["summary_error"] = (exc.stderr or exc.stdout or str(exc))[:1000]
-        except OSError as exc:
-            record["summary_status"] = "summary_failed"
-            record["summary_error"] = str(exc)
-
-        records.append(record)
-
-    if summary_sections:
-        prompt_summary = "\n\n---\n\n".join(summary_sections)
-        packet_summary_status = "generated"
-    elif related:
-        prompt_summary = ""
-        packet_summary_status = "failed"
-    else:
-        prompt_summary = ""
-        packet_summary_status = "no_related_pcaps"
-
-    return {
-        "inventory": inventory,
-        "related": related,
-        "records": records,
-        "prompt_summary": prompt_summary,
-        "packet_summary_status": packet_summary_status,
-        "max_ai_files": max_ai_files,
-    }
-
-
-def compact_pcap_evidence(config, alert, detection=None, pcap_package=None):
-    if not pcap_package:
-        inventory = list_pcap_files(config, alert.get("timestamp"), alert.get("timestamp"))
-        related = [file for file in inventory.get("files", []) if file.get("related")]
-        records = []
-        packet_summary_status = "not_generated"
-        max_ai_files = int(config.get("pcap", {}).get("max_ai_files", 2))
-    else:
-        inventory = pcap_package.get("inventory", {})
-        related = pcap_package.get("related", [])
-        records = pcap_package.get("records", [])
-        packet_summary_status = pcap_package.get("packet_summary_status", "not_generated")
-        max_ai_files = pcap_package.get("max_ai_files")
-
-    summarized_by_path = {record.get("incident_pcap_path"): record for record in records}
-    return {
-        "status": inventory.get("status"),
-        "directory": inventory.get("directory"),
-        "window_minutes": inventory.get("window_minutes"),
-        "related_file_count": len(related),
-        "ai_file_limit": max_ai_files,
-        "summarized_file_count": len([record for record in records if record.get("summary_status") == "generated"]),
-        "related_files": [
-            {
-                "name": file.get("name"),
-                "label": file.get("label"),
-                "size_bytes": file.get("size_bytes"),
-                "modified_at": file.get("modified_at"),
-                "summary_status": summarized_by_path.get(file.get("path"), {}).get("summary_status"),
-                "summary_packet_count": summarized_by_path.get(file.get("path"), {}).get("summary_packet_count"),
-                "pcap_summary_path": summarized_by_path.get(file.get("path"), {}).get("pcap_summary_path"),
-                "ai_selected": file.get("path") in summarized_by_path,
-            }
-            for file in related[:5]
-        ],
-        "packet_summary": packet_summary_status,
-        "note": "Raw PCAP bytes are not sent to the AI model; tshark text summaries are sent when generated.",
-    }
-
-
-def build_ai_evidence_context(conn, config, alert, detection=None, pcap_package=None, detection_id=None):
+def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=None):
     findings = sensor_findings_for_detection(conn, detection_id) if detection_id else []
     findings = [
         {
@@ -458,21 +238,7 @@ def build_ai_evidence_context(conn, config, alert, detection=None, pcap_package=
             "dest_ip": compact_threat_intel(conn, config, alert.get("dest_ip")),
             "alert_observables": compact_observable_threat_intel(conn, config, alert),
         },
-        "pcap_evidence": compact_pcap_evidence(config, alert, detection, pcap_package),
     }
-
-
-def store_pcap_evidence(conn, pcap_package, report=None, ai_sent=False):
-    report = report or {}
-    for record in pcap_package.get("records", []):
-        record = dict(record)
-        record_sent = bool(
-            record.get("summary_status") == "generated"
-            and (ai_sent or report.get("pcap_summary_included"))
-        )
-        record["ai_sent"] = record_sent
-        record["ai_model_run_id"] = report.get("model_run_id", "") if record_sent else ""
-        insert_incident_evidence(conn, record)
 
 
 def ensure_ai_report_metadata(config, alert, report):
@@ -503,27 +269,34 @@ def attach_asset_context(detection, asset_context):
 
 def assess_detection(conn, config_path, alert, detection, alert_id, detection_id):
     runtime_config = load_config(config_path)
-    pcap_package = prepare_pcap_evidence(runtime_config, alert, detection, alert_id, detection_id)
     evidence_context = build_ai_evidence_context(
         conn,
         runtime_config,
         alert,
         detection,
-        pcap_package,
         detection_id=detection_id,
     )
+    findings = sensor_findings_for_detection(conn, detection_id)
+    score_breakdown = deterministic_score(
+        alert,
+        detection,
+        findings=findings,
+        evidence_context=evidence_context,
+    )
+    update_detection_python_score(conn, detection_id, score_breakdown["python_score"])
+    detection["python_initial_score"] = score_breakdown["python_score"]
+    detection["forced_review"] = score_breakdown["forced_review"]
+    detection["forced_review_reason"] = score_breakdown["forced_review_reason"]
+    evidence_context["deterministic_scoring"] = score_breakdown
     record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_context)
-    ai_sent = False
     try:
         ai_report = ask_ai_model(
             runtime_config,
             alert,
             detection,
             evidence_context=evidence_context,
-            pcap_summary=pcap_package["prompt_summary"],
         )
         ai_report = ensure_ai_report_metadata(runtime_config, alert, ai_report)
-        ai_sent = True
         insert_app_event(
             conn,
             "info",
@@ -545,7 +318,6 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             alert,
             detection,
             evidence_context=evidence_context,
-            pcap_summary=pcap_package["prompt_summary"],
         )
         ai_report = {
             **prompt_audit,
@@ -570,6 +342,30 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
                 "model_run_id": ai_report.get("model_run_id"),
             },
         )
+    ai_report_id = insert_ai_report(conn, detection_id, ai_report)
+    insert_ai_assessment(
+        conn,
+        detection_id,
+        ai_report,
+        assessment_type="initial",
+        evidence_sources={
+            "sensor_findings": [item.get("event_uid") for item in findings],
+            "score_breakdown": score_breakdown,
+            "raw_pcap_sent": False,
+        },
+    )
+    response = decide(conn, runtime_config, alert, detection, ai_report)
+    response["detection_id"] = detection_id
+    insert_score_breakdown(
+        conn,
+        detection_id,
+        score_breakdown,
+        ai_report_id=ai_report_id,
+        assessment_type="initial",
+        llm_adjustment_raw=ai_report.get("risk_adjustment", 0),
+        llm_adjustment_applied=safe_risk_adjustment(ai_report),
+        provisional_score=response["final_score"],
+    )
     try:
         ai_report["virustotal_verification"] = verify_dangerous_with_virustotal(
             conn,
@@ -578,46 +374,26 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             detection_id,
             alert_id,
             ai_report,
+            ai_report_id=ai_report_id,
+            stage="initial",
         )
-        if ai_report["virustotal_verification"]:
-            insert_app_event(
-                conn,
-                "info",
-                "threat_intel",
-                f"VirusTotal verified {len(ai_report['virustotal_verification'])} public IP(s) after a Dangerous AI classification",
-                {
-                    "detection_id": detection_id,
-                    "results": [
-                        {
-                            "indicator": item.get("indicator"),
-                            "reputation": item.get("reputation"),
-                            "malicious_count": item.get("malicious_count"),
-                            "suspicious_count": item.get("suspicious_count"),
-                            "cached": item.get("cached"),
-                        }
-                        for item in ai_report["virustotal_verification"]
-                    ],
-                },
-            )
-    except (requests.RequestException, ValueError) as exc:
+    except ValueError as exc:
         ai_report["virustotal_verification"] = []
         insert_app_event(
             conn,
             "error",
             "threat_intel",
-            f"VirusTotal post-AI verification failed for detection {detection_id}: {exc}",
+            f"VirusTotal verification could not be completed for detection {detection_id}: {type(exc).__name__}",
         )
-    store_pcap_evidence(conn, pcap_package, ai_report, ai_sent=ai_sent)
-    insert_ai_report(conn, detection_id, ai_report)
-
-    response = decide(conn, runtime_config, alert, detection, ai_report)
-    response["detection_id"] = detection_id
     if response["final_action"] == "temporary_block":
         timeout = runtime_config.get("firewall", {}).get("block_timeout_seconds", 3600)
-        status, elapsed_ms, firewall_rule = temporary_block_firewalld(
+        firewall_config = runtime_config.get("firewall", {})
+        status, elapsed_ms, firewall_rule, firewall_zone = temporary_block_firewalld(
             response["target_ip"],
             timeout,
             response.get("target_direction") or "source",
+            external_zone=firewall_config.get("external_zone", "external"),
+            internal_zone=firewall_config.get("internal_zone", "internal"),
         )
         response["response_status"] = status
         response["response_time_ms"] = elapsed_ms
@@ -628,6 +404,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
                     "detection_id": detection_id,
                     "ip_address": response["target_ip"],
                     "direction": response.get("target_direction"),
+                    "zone": firewall_zone,
                     "reason": f"{response['final_classification']} score={response['final_score']}",
                     "firewall_rule": firewall_rule,
                     "timeout_seconds": timeout,
@@ -721,6 +498,12 @@ def run_ingest(config_path):
 
 
 def run_dashboard(config_path, host, port):
+    if host == "0.0.0.0":
+        print(
+            "[!] Dashboard is exposed on every interface and has no built-in authentication. "
+            "Restrict access to a trusted management network.",
+            flush=True,
+        )
     app = create_app(config_path)
     uvicorn.run(app, host=host, port=port)
 
@@ -752,12 +535,20 @@ def run_zeek_ingest(config_path):
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     status = zeek_status(config)
     if not config.get("zeek", {}).get("enabled", True):
-        print("[+] Zeek ingestion disabled in config")
-        insert_app_event(conn, "info", "zeek", "Zeek ingestion disabled in config")
-        return
+        message = "Zeek ingestion is required and cannot be disabled. Set zeek.enabled to true."
+        insert_app_event(conn, "error", "zeek", message)
+        conn.close()
+        raise RuntimeError(message)
     if not status.get("installed"):
-        print("[!] Zeek or zeekctl is not installed. Dashboard will show Zeek unavailable.")
-        insert_app_event(conn, "error", "zeek", "Zeek ingestion unavailable: zeek/zeekctl not found", status)
+        message = "Zeek ingestion is required, but zeek/zeekctl was not found. Run bootstrap to install Zeek."
+        insert_app_event(conn, "error", "zeek", message, status)
+        conn.close()
+        raise RuntimeError(message)
+    if not status.get("running"):
+        message = "Zeek ingestion is required, but the Zeek sensor is not running."
+        insert_app_event(conn, "error", "zeek", message, status)
+        conn.close()
+        raise RuntimeError(message)
     print(f"[+] Zeek ingest reading JSON logs from {config.get('zeek', {}).get('log_directory')}")
 
     def process_zeek_event(event_id, event):
@@ -840,11 +631,11 @@ def start_managed_process(name, command, recent_lines):
 
 
 def stop_managed_processes(processes):
-    for name, process, _thread, _recent in processes:
+    for name, process, _thread, _recent, _required in processes:
         if process.poll() is None:
             print(f"[+] Stopping {name}", flush=True)
             process.terminate()
-    for name, process, _thread, _recent in processes:
+    for name, process, _thread, _recent, _required in processes:
         if process.poll() is None:
             try:
                 process.wait(timeout=8)
@@ -927,8 +718,24 @@ def run_all(
             return
         privileged_prefix = ["sudo", "-n"]
 
-    commands = [
-        (
+    zeek_enabled = bool(config.get("zeek", {}).get("enabled", True))
+    if not zeek_enabled:
+        print(
+            "[!] Cannot start: Zeek is a required sensor. Set zeek.enabled to true and run bootstrap.",
+            flush=True,
+        )
+        return
+    zeek_runtime_status = zeek_status(config)
+    if not zeek_runtime_status.get("installed"):
+        print(
+            "[!] Cannot start: Zeek and zeekctl are required but were not found. Run python -m app.bootstrap.",
+            flush=True,
+        )
+        return
+
+    commands = []
+    if pcap_config.get("enabled", True):
+        commands.append((
             "pcap",
             [
                 "bash",
@@ -937,10 +744,28 @@ def run_all(
                 internal_interface,
                 pcap_dir,
             ],
-        ),
-        ("ingest", [sys.executable, "-m", "app.main", "ingest", "--config", config_path]),
-        ("zeek-ingest", [sys.executable, "-m", "app.main", "zeek-ingest", "--config", config_path]),
-        ("threat-intel", [sys.executable, "-m", "app.main", "threat-intel", "--config", config_path]),
+            False,
+        ))
+    commands.append((
+        "ingest",
+        [sys.executable, "-m", "app.main", "ingest", "--config", config_path],
+        True,
+    ))
+    commands.append((
+        "zeek-ingest",
+        [sys.executable, "-m", "app.main", "zeek-ingest", "--config", config_path],
+        True,
+    ))
+    threat_worker_enabled = any(
+        provider_config(config, name).get("enabled") for name in FETCHERS
+    )
+    if threat_worker_enabled:
+        commands.append((
+            "threat-intel",
+            [sys.executable, "-m", "app.main", "threat-intel", "--config", config_path],
+            False,
+        ))
+    commands.append(
         (
             "dashboard",
             [
@@ -955,8 +780,9 @@ def run_all(
                 "--port",
                 str(port),
             ],
-        ),
-    ]
+            True,
+        )
+    )
 
     processes = []
     shutting_down = False
@@ -974,6 +800,12 @@ def run_all(
 
     print("[+] Security VM launcher starting", flush=True)
     print(f"[+] Dashboard: http://{host}:{port}/", flush=True)
+    if host == "0.0.0.0":
+        print(
+            "[!] Dashboard is listening on every interface without built-in authentication. "
+            "Use a trusted management network and host firewall rules.",
+            flush=True,
+        )
     print("[+] Normal logs are quiet. Errors and process exits will print here.", flush=True)
 
     if restart_suricata:
@@ -986,39 +818,46 @@ def run_all(
             run_quiet_command(
                 "suricata", privileged_prefix + ["systemctl", "start", "suricata"], timeout=60
             )
-            run_quiet_command(
+            suricata_active = run_quiet_command(
                 "suricata", privileged_prefix + ["systemctl", "is-active", "suricata"], timeout=10
             )
+        if not suricata_active:
+            print("[!] Cannot start: Suricata is a required sensor and is not active.", flush=True)
+            return
 
-    if config.get("zeek", {}).get("enabled", True):
-        print("[+] Checking Zeek", flush=True)
-        status = zeek_status(config)
-        if status.get("installed"):
-            zeekctl = status.get("binaries", {}).get("zeekctl") or "zeekctl"
-            if not status.get("running"):
-                run_quiet_command("zeek", privileged_prefix + [zeekctl, "deploy"], timeout=30)
-            run_quiet_command("zeek", privileged_prefix + [zeekctl, "status"], timeout=10)
-        else:
-            print("[zeek] zeek/zeekctl not found; continuing without Zeek", flush=True)
+    print("[+] Checking required Zeek sensor", flush=True)
+    zeekctl = zeek_runtime_status.get("binaries", {}).get("zeekctl") or "zeekctl"
+    if not zeek_runtime_status.get("running"):
+        if not run_quiet_command("zeek", privileged_prefix + [zeekctl, "deploy"], timeout=30):
+            print("[!] Cannot start: Zeek deploy failed.", flush=True)
+            return
+    run_quiet_command("zeek", privileged_prefix + [zeekctl, "status"], timeout=10)
+    zeek_runtime_status = zeek_status(config)
+    if not zeek_runtime_status.get("running"):
+        print("[!] Cannot start: Zeek is required but is not running after deploy.", flush=True)
+        return
 
     try:
-        for name, command in commands:
+        for name, command, required in commands:
             recent_lines = deque(maxlen=40)
             process, thread = start_managed_process(name, command, recent_lines)
-            processes.append((name, process, thread, recent_lines))
-            print(f"[+] Started {name}", flush=True)
+            processes.append((name, process, thread, recent_lines, required))
+            print(f"[+] Started {name}{' (required)' if required else ' (optional)'}", flush=True)
 
         while not shutting_down:
-            for name, process, _thread, recent_lines in processes:
+            for name, process, _thread, recent_lines, required in list(processes):
                 return_code = process.poll()
                 if return_code is not None:
-                    shutting_down = True
-                    if return_code == 0:
-                        print(f"[!] {name} exited", flush=True)
-                    else:
-                        print(f"[!] {name} exited with code {return_code}", flush=True)
+                    if required:
+                        shutting_down = True
+                        print(f"[!] Required worker {name} exited with code {return_code}", flush=True)
+                        if return_code != 0:
+                            print_recent_tail(name, recent_lines)
+                        break
+                    print(f"[!] Optional worker {name} exited with code {return_code}; core services remain running", flush=True)
+                    if return_code != 0:
                         print_recent_tail(name, recent_lines)
-                    break
+                    processes.remove((name, process, _thread, recent_lines, required))
             if shutting_down:
                 break
             time.sleep(1)
@@ -1104,16 +943,21 @@ def run_ai_backfill(config_path, limit):
             "python_initial_score": row.get("python_initial_score"),
             "status": row.get("status"),
         }
-        detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
-        pcap_package = prepare_pcap_evidence(config, alert, detection, row["alert_id"], row["detection_id"])
+        detection = attach_asset_context(detection, asset_context_for_alert(conn, alert))
         evidence_context = build_ai_evidence_context(
             conn,
             config,
             alert,
             detection,
-            pcap_package,
             detection_id=row["detection_id"],
         )
+        findings = sensor_findings_for_detection(conn, row["detection_id"])
+        breakdown = deterministic_score(alert, detection, findings, evidence_context)
+        detection["python_initial_score"] = breakdown["python_score"]
+        detection["forced_review"] = breakdown["forced_review"]
+        detection["forced_review_reason"] = breakdown["forced_review_reason"]
+        evidence_context["deterministic_scoring"] = breakdown
+        update_detection_python_score(conn, row["detection_id"], breakdown["python_score"])
         record_pre_ai_threat_intel_usage(
             conn,
             row["detection_id"],
@@ -1127,9 +971,25 @@ def run_ai_backfill(config_path, limit):
                 alert,
                 detection,
                 evidence_context=evidence_context,
-                pcap_summary=pcap_package["prompt_summary"],
             )
             report = ensure_ai_report_metadata(config, alert, report)
+            report_id = insert_ai_report(conn, row["detection_id"], report)
+            insert_ai_assessment(
+                conn,
+                row["detection_id"],
+                report,
+                assessment_type="backfill",
+                evidence_sources={"raw_pcap_sent": False, "score_breakdown": breakdown},
+            )
+            insert_score_breakdown(
+                conn,
+                row["detection_id"],
+                breakdown,
+                ai_report_id=report_id,
+                assessment_type="backfill",
+                llm_adjustment_raw=report.get("risk_adjustment", 0),
+                llm_adjustment_applied=safe_risk_adjustment(report),
+            )
             try:
                 report["virustotal_verification"] = verify_dangerous_with_virustotal(
                     conn,
@@ -1138,8 +998,10 @@ def run_ai_backfill(config_path, limit):
                     row["detection_id"],
                     row.get("alert_id"),
                     report,
+                    ai_report_id=report_id,
+                    stage="backfill",
                 )
-            except (requests.RequestException, ValueError) as exc:
+            except ValueError as exc:
                 report["virustotal_verification"] = []
                 insert_app_event(
                     conn,
@@ -1147,8 +1009,6 @@ def run_ai_backfill(config_path, limit):
                     "threat_intel",
                     f"VirusTotal post-AI verification failed during backfill for detection {row['detection_id']}: {exc}",
                 )
-            store_pcap_evidence(conn, pcap_package, report, ai_sent=True)
-            insert_ai_report(conn, row["detection_id"], report)
             insert_app_event(
                 conn,
                 "info",
@@ -1168,9 +1028,7 @@ def run_ai_backfill(config_path, limit):
                 alert,
                 detection,
                 evidence_context=evidence_context,
-                pcap_summary=pcap_package["prompt_summary"],
             )
-            store_pcap_evidence(conn, pcap_package, prompt_audit, ai_sent=False)
             insert_app_event(
                 conn,
                 "error",
@@ -1197,7 +1055,7 @@ def main():
 
     run_all_parser = sub.add_parser("run-all", help="Start PCAP capture, ingest, and dashboard together")
     run_all_parser.add_argument("--config", default="config.yaml")
-    run_all_parser.add_argument("--host", default="0.0.0.0")
+    run_all_parser.add_argument("--host", default="127.0.0.1")
     run_all_parser.add_argument("--port", default=8000, type=int)
     run_all_parser.add_argument("--external-interface", default=None)
     run_all_parser.add_argument("--internal-interface", default=None)

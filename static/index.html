@@ -51,6 +51,11 @@
           <strong id="review-count">0</strong>
           <small>Open review queue</small>
         </article>
+        <article class="metric outcome review" data-outcome-filter="high_risk" role="button" tabindex="0" title="Open high-risk decisions in a new tab">
+          <span>High Risk</span>
+          <strong id="high-risk-count">0</strong>
+          <small>Open prioritized review</small>
+        </article>
         <article class="metric outcome danger" data-outcome-filter="dangerous" role="button" tabindex="0" title="Open dangerous decisions in a new tab">
           <span>Dangerous</span>
           <strong id="danger-count">0</strong>
@@ -160,7 +165,15 @@
                 <p class="eyebrow">Event Stream</p>
                 <h2>Latest Alerts</h2>
               </div>
-              <small class="panel-hint">Combined sensor findings by detection</small>
+              <div class="alert-panel-controls">
+                <small class="panel-hint">Combined sensor findings by detection</small>
+                <div class="sensor-filter" role="group" aria-label="Filter alerts by sensor">
+                  <button class="sensor-filter-button selected" type="button" data-sensor-filter="all">All</button>
+                  <button class="sensor-filter-button" type="button" data-sensor-filter="suricata">Suricata</button>
+                  <button class="sensor-filter-button" type="button" data-sensor-filter="zeek">Zeek</button>
+                  <button class="sensor-filter-button" type="button" data-sensor-filter="both">Both</button>
+                </div>
+              </div>
             </div>
             <div id="alerts" class="alerts"></div>
           </section>
@@ -282,6 +295,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260714-unified-alerts"></script>
+    <script src="/static/app.js?v=20260714-alert-layout"></script>
   </body>
 </html>

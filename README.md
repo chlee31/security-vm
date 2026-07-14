@@ -1,6 +1,6 @@
 # Security VM
 
-Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts, Zeek behavioral logs, and rolling PCAP evidence, stores them in SQLite, asks a configured AI model for a second opinion, and shows analyst review information in a browser dashboard.
+Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts and Zeek behavioral logs, preserves optional rolling PCAP evidence locally, stores cases in SQLite, asks a configured AI model for a bounded second opinion, and shows analyst review information in a browser dashboard.
 
 The system starts in safe `alert_only` mode. The AI model can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `prevention` mode is explicitly enabled.
 
@@ -36,11 +36,11 @@ Home AI/GPU usage during triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
 - Zeek notice, weird, and protocol context logs
 - Detection types and investigation drilldowns
 - Dedicated detection workbook tabs with IP share, AI opinion, timeline, and evidence
-- Dedicated outcome workbook tabs for Safe, Human Review, and Dangerous decisions
+- Dedicated outcome workbook tabs for Safe, Human Review, High Risk, and Dangerous decisions
 - Dedicated asset inventory workbook for registered internal machines and their matched detections
 - AI opinions for alerts
 - AI model comparison by provider/model identity, classification, average adjustment, and average response time
-- Decision evidence: alert data, correlation, score, AI reason, and final action
+- Case-centered decision evidence: event UIDs, timestamps, sensor findings, deterministic score breakdown, AI reason, verification, and final action
 - Zeek sensor status, correlated findings, and incident evidence paths
 - Human-review queue
 - Temporary allowlist entries
@@ -59,7 +59,7 @@ Asset inventory:
 - Current lab target is the internal `ens37` network.
 - Open `/asset-inventory` from the dashboard to review registered machines, score distribution, device types, and matching detections.
 - Asset context is shown in detection detail and decision evidence.
-- When alert traffic matches a registered source or destination IP, the asset score is added to Python's initial risk score.
+- When alert traffic matches a registered source or destination IP, the asset score contributes to the bounded asset-criticality and traffic-direction category.
 - The matched asset details and applied score are sent to the AI model as analyst-defined context.
 
 Human review tuning:
@@ -69,6 +69,16 @@ Human review tuning:
 - Labels are stored in SQLite for later tuning work.
 - The model does not automatically learn from those labels yet.
 
+Case identity and scoring:
+
+- Every correlated detection receives a stable `CASE-YYYYMMDD-NNNNNN` UID.
+- Suricata alerts receive `SUR-YYYYMMDD-NNNNNN` UIDs and Zeek findings receive `ZEK-YYYYMMDD-NNNNNN` UIDs.
+- A case keeps its Suricata findings, Zeek findings and context, threat-intelligence usage, AI assessments, score history, analyst feedback, response history, and VirusTotal verification together.
+- Python calculates a deterministic score from 0 to 90: sensor severity 0-20, behavior/time correlation 0-20, cached threat intelligence 0-20, MITRE relevance 0-10, asset/direction 0-10, and Suricata-Zeek corroboration 0-10.
+- The AI model can adjust the score by only -10 to +10. Python clamps the final score to 0-100 and retains control of the outcome and response.
+- Outcomes are `Safe` 0-29, `Human Review Required` 30-69, `High Risk` 70-84, and `Dangerous` 85-100.
+- Materially disputed sensor findings force `Human Review Required`, regardless of the numerical score.
+
 Threat enrichment:
 
 - Local IP classification works now.
@@ -76,6 +86,8 @@ Threat enrichment:
 - Supported cached feeds are ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, and Feodo Tracker.
 - OTX remains a live API provider with connection testing and a manual top-10 public-IP lookup from Admin.
 - VirusTotal is a post-AI verification provider. Python queries public source/destination IPs only after the AI model returns `Dangerous`, then caches and stores the result.
+- VirusTotal never adds or subtracts score points and a no-detection result never lowers a classification.
+- Private, loopback, link-local, multicast, reserved, and Tailscale `100.64.0.0/10` addresses are never sent to VirusTotal.
 - Active bulk feeds are refreshed on their configured schedule and normalized into SQLite. A failed refresh keeps the last successful cache.
 - API keys are saved only in the local `config.yaml`; never commit that file or paste keys into issues or screenshots.
 - Python sends matching cached intelligence to the AI model. The model does not browse or call provider APIs itself.
@@ -84,10 +96,10 @@ Threat enrichment:
 
 PCAP evidence:
 
-- Rolling PCAP capture remains a backend evidence source and is not displayed as a dashboard panel.
-- The AI model receives related PCAP file metadata as evidence context, including capture label, file size, and modified time.
-- Python selects a small number of related PCAP files, converts them into compact `tshark` CSV summaries, and includes those text summaries in the AI prompt.
-- Raw PCAP bytes are not sent to the AI model.
+- Rolling PCAP capture remains an optional local forensic source and is not displayed as a dashboard panel.
+- PCAP files and packet summaries are not included in initial AI triage or reassessment prompts.
+- Analysts can preserve an explicit incident evidence package for later packet-level review when rolling capture is enabled.
+- Raw PCAP bytes and threat-intelligence API keys are never sent to the AI model.
 
 Zeek evidence:
 
@@ -99,6 +111,7 @@ Zeek evidence:
 - Zeek `conn`, `dns`, `http`, `ssl`, `files`, `ssh`, and `x509` logs are treated as supporting context.
 - The dashboard combines Zeek and Suricata findings under the same latest-alert and decision-evidence rows.
 - Investigation pages can create a server-generated evidence folder with filtered Zeek context and a manifest.
+- Investigation pages open by case UID, show all related sensor records and score history, and provide explicit reassessment and VirusTotal refresh controls.
 - Zeek community detections are managed through `zkg` packages, not Suricata-style rule files.
 - The default reviewed community package list contains `ncsa/bro-simple-scan` and `jbaggs/anomalous-dns`. Bootstrap asks before installing either package with `zkg`.
 
@@ -121,13 +134,10 @@ Load matching Community ID policies from `/opt/zeek/share/zeek/site/local.zeek`:
 Then validate and restart both sensors:
 
 ```bash
-sudo suricata -T -c /etc/suricata/suricata.yaml
-sudo systemctl restart suricata
-sudo /opt/zeek/bin/zeekctl check
-sudo /opt/zeek/bin/zeekctl deploy
+sudo ./scripts/enable_community_id.sh
 ```
 
-Both sensors must use the same Community ID seed. When Community ID is unavailable, Security VM falls back to flow fields and overlapping event timestamps.
+The script backs up both sensor configurations, sets seed `0`, validates both configurations, and only then restarts Suricata and deploys Zeek. Both sensors must use the same Community ID seed. New events receive Community IDs; existing SQLite rows are not rewritten. When Community ID is unavailable, Security VM falls back to flow fields and overlapping event timestamps.
 
 Dashboard reset:
 
@@ -287,7 +297,7 @@ Run bootstrap:
 python -m app.bootstrap
 ```
 
-Bootstrap preserves an existing `config.yaml` unless you approve changes, initializes or migrates `security_vm.db`, checks the Ubuntu version and required tools, and tests the AI model endpoint. It also offers official Zeek installation, interface selection, `node.cfg`, JSON logging, and optional reviewed `zkg` community-package installation.
+Bootstrap preserves an existing `config.yaml` unless you approve changes, initializes or migrates `security_vm.db`, checks the Ubuntu version and required tools, and tests the AI model endpoint. Zeek is a required sensor: bootstrap provides its official installation, interface selection, `node.cfg`, and JSON logging setup. Installation of reviewed `zkg` community packages remains optional.
 
 Bootstrap can also guide router setup:
 
@@ -309,7 +319,7 @@ Start the full local stack with one command:
 ```bash
 cd ~/Documents/security-vm
 source venv/bin/activate
-sudo ./venv/bin/python -m app.main run-all --config config.yaml --host 0.0.0.0 --port 8000
+sudo ./venv/bin/python -m app.main run-all --config config.yaml --port 8000
 ```
 
 This starts:
@@ -323,6 +333,8 @@ scheduled threat-intelligence feed refresh
 dashboard API and web UI
 ```
 
+Suricata ingest, Zeek ingest, and the dashboard are required workers. `run-all` stops instead of operating with only one sensor when Zeek is disabled, missing, cannot start, or its ingest worker exits. Rolling PCAP capture and scheduled bulk threat-intelligence refresh are optional workers and start only when configured.
+
 Normal logs are kept quiet. If a process fails or prints an error, the launcher prints the error line and a short recent log tail in the terminal.
 
 The dashboard loads once and updates only when you press **Refresh**. This prevents new ingest data from moving the page while an analyst is reading evidence.
@@ -335,10 +347,19 @@ internal interface: ens37
 pcap directory: /var/log/pcap
 Zeek interface: selected during bootstrap (default ens37)
 Zeek log directory: /opt/zeek/logs/current
-dashboard: http://0.0.0.0:8000/
+dashboard: http://127.0.0.1:8000/
 ```
 
-Override those when needed:
+The localhost binding is the safe default because the dashboard does not yet provide built-in authentication. To make it reachable from a trusted management network, bind it deliberately to that management IP:
+
+```bash
+sudo ./venv/bin/python -m app.main run-all \
+  --config config.yaml \
+  --host 192.168.57.134 \
+  --port 8000
+```
+
+Binding to `0.0.0.0` exposes the dashboard on every VM interface and prints a security warning. Use it only on a controlled lab network:
 
 ```bash
 sudo ./venv/bin/python -m app.main run-all \
@@ -354,12 +375,10 @@ Command-line interface overrides only affect that one run. To make the launcher 
 
 ```yaml
 pcap:
+  enabled: true
   rolling_dir: /var/log/pcap
   external_interface: ens33
   internal_interface: ens37
-  max_ai_files: 2
-  summary_packet_limit: 20
-  summary_timeout_seconds: 20
 
 zeek:
   enabled: true
@@ -376,13 +395,36 @@ python -m app.main zeek-status --config config.yaml
 python -m app.main zeek-ingest --config config.yaml
 ```
 
-The PCAP AI settings mean:
+Open `http://127.0.0.1:8000/zeek` or select **Open Zeek Telemetry** from the dashboard's Zeek panel. This page shows whether Zeek is running, the SQLite event total, the latest ingested timestamp, per-log reader checkpoints, hourly volume, TLS and certificate metadata, file observations, DNS and HTTP summaries, and recent Zeek records. Use its **Refresh** button to load new data without moving the page while you inspect it.
 
-```text
-max_ai_files              maximum related PCAP files summarized per detection
-summary_packet_limit      maximum packets included in each tshark text summary
-summary_timeout_seconds   timeout for each tshark summary command
+To verify the complete Zeek path manually, check all three layers:
+
+```bash
+# 1. Sensor process and source log files
+python -m app.main zeek-status --config config.yaml
+sudo /opt/zeek/bin/zeekctl status
+sudo ls -lh /opt/zeek/logs/current/{conn,dns,ssl,files,x509,notice,weird}.log
+
+# 2. Live JSON records written by Zeek
+sudo tail -f /opt/zeek/logs/current/ssl.log
+
+# 3. Records stored by zeek-ingest in SQLite
+sqlite3 security_vm.db \
+  "SELECT log_type, COUNT(*), MAX(timestamp) FROM zeek_events GROUP BY log_type ORDER BY COUNT(*) DESC;"
+sqlite3 security_vm.db \
+  "SELECT log_type, offset, updated_at FROM zeek_ingest_checkpoints ORDER BY log_type;"
 ```
+
+An advancing log-file size proves the sensor is observing traffic. An advancing checkpoint offset and `updated_at` value prove `zeek-ingest` is reading that file. A rising `zeek_events` count and recent `MAX(timestamp)` prove the records reached SQLite and the dashboard API. `files.log` describes file metadata, hashes, MIME types, and observed byte counts; it does not mean Zeek retained every transferred file's contents.
+
+PCAP capture can be disabled without changing the sensor and dashboard pipeline:
+
+```yaml
+pcap:
+  enabled: false
+```
+
+When disabled, `run-all` does not start the optional capture worker. When enabled, captures remain local forensic evidence and are not sent to the AI model.
 
 Use the interface names shown by:
 
@@ -391,6 +433,20 @@ ip -br link
 ```
 
 This project setting only controls which interfaces Security VM captures from. If you need to permanently change the Ubuntu machine's actual interface IP addresses, gateway, DNS, or router behavior, use the bootstrap router setup or edit netplan separately.
+
+If the Security VM itself has internet but an internal Windows machine does not, verify that firewalld has an explicit internal-to-external forwarding policy. Modern firewalld does not permit cross-zone forwarding merely because masquerading is enabled:
+
+```bash
+sudo firewall-cmd --permanent --new-policy=security-vm-route
+sudo firewall-cmd --permanent --policy=security-vm-route --add-ingress-zone=internal
+sudo firewall-cmd --permanent --policy=security-vm-route --add-egress-zone=external
+sudo firewall-cmd --permanent --policy=security-vm-route --set-target=ACCEPT
+sudo firewall-cmd --permanent --zone=external --add-masquerade
+sudo firewall-cmd --reload
+sudo firewall-cmd --info-policy=security-vm-route
+```
+
+Run `--new-policy` only when `security-vm-route` is not already listed by `sudo firewall-cmd --permanent --get-policies`. Bootstrap now performs that check automatically. The Windows machine must use the Security VM's internal address as its default gateway; for example, when `ens37` is `192.168.11.40/24`, use gateway `192.168.11.40` and a DNS server such as `1.1.1.1`.
 
 If Suricata is managed differently on your machine, skip the service restart:
 
@@ -440,7 +496,7 @@ Terminal 3: start dashboard
 ```bash
 cd ~/Documents/security-vm
 source venv/bin/activate
-python -m app.main dashboard --config config.yaml --host 0.0.0.0 --port 8000
+python -m app.main dashboard --config config.yaml --host 127.0.0.1 --port 8000
 ```
 
 Terminal 4: start rolling PCAP capture
@@ -600,7 +656,7 @@ The default model used during development:
 llama3.2:latest
 ```
 
-Ingest asks the configured AI model for an opinion on every normalized Suricata alert. If the model service is unavailable, the alert is still stored and the dashboard records the failure.
+Ingest asks the configured AI model for an opinion whenever Suricata or an alert-like Zeek finding starts or updates a case. If the model service is unavailable, the sensor records and deterministic score are still stored and the dashboard records the failure.
 
 Each AI report stores:
 
@@ -614,11 +670,25 @@ prompt_version   prompt template version used for the request
 prompt_sha256    hash of the full prompt sent to the AI model
 prompt_chars     prompt size in characters
 pcap_summary_sha256 / pcap_summary_chars / pcap_summary_included
-                 audit fields showing whether packet summaries were included
+                 retained audit fields; new triage and reassessment reports keep these empty/false
 elapsed_ms       model response time
 ```
 
 Use the Admin page to create AI profiles such as `Home GPU`, `Local Llama 3.1`, `NVIDIA NIM`, or `DeepSeek`. Selecting a profile writes it to `config.yaml`, and every new AI report is stamped with that profile UID plus a unique run ID so different engines can be compared later.
+
+## Investigation And Reassessment
+
+Open an investigation from any dashboard alert or decision. The URL uses the stable case UID, for example:
+
+```text
+http://127.0.0.1:8000/investigation?case=CASE-20260714-000001
+```
+
+The case workspace shows the complete Suricata and Zeek timeline, sensor event UIDs, deterministic category breakdown, AI assessment history, cached/bulk threat intelligence, VirusTotal verification, analyst feedback, and response history.
+
+**Reassess Case** recalculates the current deterministic score and sends one new evidence package to the selected AI profile. An existing VirusTotal result is included as verification evidence. If the reassessment AI classification becomes `Dangerous`, Python performs the post-reassessment VirusTotal check after that response and does not make a third AI request.
+
+**Refresh VirusTotal** is an explicit analyst action. It refreshes eligible global case IPs without triggering an AI request. API keys are not returned by dashboard APIs, written into evidence, or sent to the model.
 
 ## Useful Commands
 
@@ -722,13 +792,15 @@ security-vm/
 - Default mode is `alert_only`.
 - Python makes final decisions.
 - The AI model does not execute firewall actions.
-- Raw PCAP files are not sent to the AI model.
+- PCAP files and packet summaries are not sent to the AI model.
+- VirusTotal is verification evidence only and never changes the numerical score.
 - Alerts and evidence are stored before any action.
 - Allowlist and safelist checks happen before blocking.
 - Temporary firewall blocks only happen in explicit `prevention` mode.
 - `alert_only` stores alerts and shows dangerous decisions without enforcement.
 - `detection` runs the same scoring path as prevention, but queues dangerous would-block decisions for analyst approval instead of calling firewalld automatically.
 - `prevention` can call firewalld for high-confidence dangerous decisions.
+- firewalld operations always name the configured external or internal zone explicitly.
 - Gmail notifications are only intended for Dangerous decisions and use a cooldown to avoid repeated emails for the same target.
 
 ## Current Notes

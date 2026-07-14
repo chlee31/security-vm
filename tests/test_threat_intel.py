@@ -11,7 +11,8 @@ from app.database import (
 )
 from app.threat_intel import sanitized_provider_status
 from app.main import alert_observables, verify_dangerous_with_virustotal
-from app.decision_engine import virustotal_adjustment
+from app.decision_engine import decide
+from app.virustotal import eligible_ip
 
 
 class ThreatIntelTests(unittest.TestCase):
@@ -97,7 +98,7 @@ class ThreatIntelTests(unittest.TestCase):
         self.assertIn(("aabb", "sha1_certificate"), values)
         self.assertIn(("abc123", "sha256"), values)
 
-    @patch("app.main.lookup_virustotal_ip")
+    @patch("app.virustotal.lookup_virustotal_ip")
     def test_virustotal_runs_only_after_dangerous_ai_result(self, lookup):
         lookup.return_value = {
             "indicator": "8.8.8.8",
@@ -126,28 +127,35 @@ class ThreatIntelTests(unittest.TestCase):
             self.conn, config, alert, 10, 20, {"classification": "Dangerous"}
         )
 
-        self.assertEqual(safe, [])
+        self.assertEqual(safe[0]["request_state"], "not_requested")
         self.assertEqual(len(dangerous), 1)
         lookup.assert_called_once()
         usage = self.conn.execute(
             "SELECT source, stage FROM threat_intel_usage WHERE detection_id = 10"
         ).fetchone()
-        self.assertEqual(dict(usage), {"source": "virustotal", "stage": "post_ai_verification"})
+        self.assertEqual(dict(usage), {"source": "virustotal", "stage": "post_initial_verification"})
 
-    def test_virustotal_can_raise_but_not_lower_the_python_score(self):
-        self.assertEqual(virustotal_adjustment({"virustotal_verification": []}), 0)
-        self.assertEqual(
-            virustotal_adjustment(
-                {"virustotal_verification": [{"malicious_count": 3, "suspicious_count": 1}]}
-            ),
-            7,
+    def test_virustotal_never_changes_the_score(self):
+        alert = {"src_ip": "192.168.11.50", "dest_ip": "8.8.8.8"}
+        detection = {"python_initial_score": 60}
+        base = decide(self.conn, {"system": {"mode": "alert_only"}}, alert, detection, {"risk_adjustment": 4})
+        verified = decide(
+            self.conn,
+            {"system": {"mode": "alert_only"}},
+            alert,
+            detection,
+            {
+                "risk_adjustment": 4,
+                "virustotal_verification": [{"malicious_count": 50, "suspicious_count": 10}],
+            },
         )
-        self.assertEqual(
-            virustotal_adjustment(
-                {"virustotal_verification": [{"malicious_count": 0, "suspicious_count": 2}]}
-            ),
-            3,
-        )
+        self.assertEqual(base["final_score"], verified["final_score"])
+
+    def test_virustotal_rejects_non_global_and_shared_space(self):
+        self.assertFalse(eligible_ip("192.168.11.50"))
+        self.assertFalse(eligible_ip("100.99.223.100"))
+        self.assertFalse(eligible_ip("127.0.0.1"))
+        self.assertTrue(eligible_ip("8.8.8.8"))
 
 
 if __name__ == "__main__":

@@ -117,8 +117,8 @@ function renderPie(container, rows, emptyText) {
   `;
 }
 
-function investigationUrl(detectionId) {
-  return `/investigation?id=${encodeURIComponent(detectionId)}`;
+function investigationUrl(detectionId, caseUid = "") {
+  return caseUid ? `/investigation?case=${encodeURIComponent(caseUid)}` : `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
 
 function renderIpList(rows) {
@@ -167,7 +167,7 @@ function renderEvidence(rows) {
           <small>${row.analyst_action || "No analyst override"}</small>
         </div>
       </div>
-      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id)}" target="_blank" rel="noopener">Investigate / Give Feedback</a>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Investigate / Give Feedback</a>
     </article>
   `).join("") || `<div class="empty">No matching decisions.</div>`;
 }

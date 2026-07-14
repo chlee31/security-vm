@@ -45,6 +45,9 @@ TOOL_PATH_CANDIDATES = {
     "zkg": ["zkg", "/usr/bin/zkg", "/usr/local/bin/zkg", "/opt/zeek/bin/zkg"],
 }
 
+ROUTER_FIREWALL_POLICY = "security-vm-route"
+COMMUNITY_ID_SEED = 0
+
 
 def yes_no(prompt, default=False):
     suffix = "Y/n" if default else "y/N"
@@ -196,6 +199,43 @@ def router_netplan(external_interface, internal_interface, internal_cidr):
     }
 
 
+def ensure_router_firewall_policy(
+    policy_name=ROUTER_FIREWALL_POLICY,
+    internal_zone="internal",
+    external_zone="external",
+):
+    """Persist the explicit cross-zone policy required by modern firewalld."""
+    base = ["sudo", "firewall-cmd", "--permanent"]
+    result = subprocess.run(
+        [*base, "--get-policies"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if policy_name not in result.stdout.split():
+        subprocess.run([*base, f"--new-policy={policy_name}"], check=True)
+
+    bindings = (
+        ("ingress", internal_zone),
+        ("egress", external_zone),
+    )
+    for direction, zone in bindings:
+        query = subprocess.run(
+            [*base, f"--policy={policy_name}", f"--query-{direction}-zone={zone}"],
+            capture_output=True,
+            text=True,
+        )
+        if query.returncode != 0:
+            subprocess.run(
+                [*base, f"--policy={policy_name}", f"--add-{direction}-zone={zone}"],
+                check=True,
+            )
+    subprocess.run(
+        [*base, f"--policy={policy_name}", "--set-target=ACCEPT"],
+        check=True,
+    )
+
+
 def write_temp_yaml(data):
     handle = tempfile.NamedTemporaryFile("w", delete=False, suffix=".yaml", encoding="utf-8")
     with handle:
@@ -280,10 +320,23 @@ def router_setup_wizard():
         ["sudo", "firewall-cmd", "--permanent", "--zone=external", f"--add-interface={external_interface}"],
         ["sudo", "firewall-cmd", "--permanent", "--zone=internal", f"--add-interface={internal_interface}"],
         ["sudo", "firewall-cmd", "--permanent", "--zone=external", "--add-masquerade"],
-        ["sudo", "firewall-cmd", "--reload"],
     ]
     for command in commands:
         print("  " + " ".join(command))
+    print(f"  sudo firewall-cmd --permanent --new-policy={ROUTER_FIREWALL_POLICY}  # if missing")
+    print(
+        f"  sudo firewall-cmd --permanent --policy={ROUTER_FIREWALL_POLICY} "
+        "--add-ingress-zone=internal"
+    )
+    print(
+        f"  sudo firewall-cmd --permanent --policy={ROUTER_FIREWALL_POLICY} "
+        "--add-egress-zone=external"
+    )
+    print(
+        f"  sudo firewall-cmd --permanent --policy={ROUTER_FIREWALL_POLICY} "
+        "--set-target=ACCEPT"
+    )
+    print("  sudo firewall-cmd --reload")
 
     if not yes_no("Apply router configuration now?", default=False):
         print(f"[+] Router files left for review: {netplan_temp}, {sysctl_temp}")
@@ -291,6 +344,8 @@ def router_setup_wizard():
 
     for command in commands:
         subprocess.run(command, check=True)
+    ensure_router_firewall_policy()
+    subprocess.run(["sudo", "firewall-cmd", "--reload"], check=True)
     print("[+] Router configuration applied.")
     print("[!] If your SSH/browser connection drops, reconnect using the interface address that still reaches this VM.")
 
@@ -410,6 +465,7 @@ interface={interface}
     local_lines = [
         "@load policy/protocols/conn/community-id-logging",
         "@load policy/frameworks/notice/community-id",
+        f"redef CommunityID::seed = {COMMUNITY_ID_SEED};",
     ]
     if json_logs:
         local_lines.insert(0, "@load policy/tuning/json-logs")
@@ -431,8 +487,22 @@ interface={interface}
         for command in commands:
             subprocess.run(command, check=True)
         local_path = config_dir / "local.zeek"
-        append_cmd = ["sudo", "tee", "-a", str(local_path)]
-        subprocess.run(append_cmd, input=local_extra, text=True, check=True)
+        existing_lines = set()
+        try:
+            existing_lines = {
+                line.strip()
+                for line in local_path.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            }
+        except OSError:
+            pass
+        missing_lines = [line for line in local_lines if line not in existing_lines]
+        if missing_lines:
+            append_cmd = ["sudo", "tee", "-a", str(local_path)]
+            missing_text = "\n" + "\n".join(missing_lines) + "\n"
+            subprocess.run(append_cmd, input=missing_text, text=True, check=True)
+        else:
+            print("[+] Zeek local policies already configured.")
 
     zeek = resolve_tool_path("zeek", "zeek")
     zeekctl = resolve_tool_path("zeekctl", "zeekctl")
@@ -499,6 +569,12 @@ def main():
     config["ai_model"]["host"] = ai_model_host
     config["ai_model"]["model"] = ai_model_name
     zeek_setup_wizard(config)
+
+    community_id_script = Path(__file__).resolve().parent.parent / "scripts" / "enable_community_id.sh"
+    if config.get("zeek", {}).get("enabled") and community_id_script.exists() and yes_no(
+        "Enable matching Community ID correlation in Suricata and Zeek?", default=True
+    ):
+        subprocess.run(["sudo", str(community_id_script)], check=True)
 
     if config_path.exists() and not yes_no("Update the existing config.yaml with these bootstrap settings?", default=True):
         print("[+] Keeping existing config.yaml")

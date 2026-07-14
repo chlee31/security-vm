@@ -3,6 +3,7 @@ const els = {
   totalDetections: document.querySelector("#total-detections"),
   safeCount: document.querySelector("#safe-count"),
   reviewCount: document.querySelector("#review-count"),
+  highRiskCount: document.querySelector("#high-risk-count"),
   dangerCount: document.querySelector("#danger-count"),
   totalAssets: document.querySelector("#total-assets"),
   topDetection: document.querySelector("#top-detection"),
@@ -36,6 +37,7 @@ const els = {
 
 let selectedDetectionType = null;
 let selectedOutcome = null;
+let selectedSensorFilter = "all";
 
 function readHashFilters() {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -78,8 +80,10 @@ function assetInventoryUrl() {
   return "/asset-inventory";
 }
 
-function investigationUrl(detectionId) {
-  return `/investigation?id=${encodeURIComponent(detectionId)}`;
+function investigationUrl(detectionId, caseUid = "") {
+  return caseUid
+    ? `/investigation?case=${encodeURIComponent(caseUid)}`
+    : `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
 
 function ipWorkbookUrl(ipAddress) {
@@ -357,6 +361,7 @@ function renderSummary(summary) {
         </div>
       </div>
       <small>Community packages: ${(zeek.community_packages || []).length || 0} configured through zkg.</small>
+      <a class="telemetry-open-link" href="/zeek" target="_blank" rel="noopener">Open Zeek Telemetry</a>
     </div>
   `;
 }
@@ -367,6 +372,7 @@ function renderMetrics(metrics) {
   els.totalDetections.textContent = metrics.total_detections ?? 0;
   els.safeCount.textContent = metrics.outcome_counts?.safe ?? 0;
   els.reviewCount.textContent = metrics.outcome_counts?.human_review ?? 0;
+  els.highRiskCount.textContent = metrics.outcome_counts?.high_risk ?? 0;
   els.dangerCount.textContent = metrics.outcome_counts?.dangerous ?? 0;
   els.totalAssets.textContent = metrics.total_assets ?? 0;
   els.zeekNoticeCount.textContent = metrics.zeek_notice_count ?? 0;
@@ -421,11 +427,11 @@ function renderAlerts(alerts) {
     const sensors = [...new Set(findings.map((finding) => String(finding.sensor || "unknown").toLowerCase()))];
     const timestamp = alert.timestamp || findings[0]?.finding_timestamp;
     return `
-      <a class="alert unified-alert investigation-link" href="${alert.detection_id ? investigationUrl(alert.detection_id) : "#"}" target="_blank" rel="noopener">
+      <a class="alert unified-alert investigation-link ${sensors.length > 1 ? "multi-sensor-alert" : ""}" href="${alert.detection_id ? investigationUrl(alert.detection_id, alert.case_uid) : "#"}" target="_blank" rel="noopener">
         <div class="alert-time-block">
           <span>Detected</span>
           <time>${escapeHtml(displayTimestamp(timestamp))}</time>
-          <small>#${alert.detection_id || "unlinked"}</small>
+          <small>${escapeHtml(alert.case_uid || alert.event_uid || `#${alert.detection_id || "unlinked"}`)}</small>
         </div>
         <div class="alert-main">
           <div class="sensor-badges">
@@ -443,8 +449,11 @@ function renderAlerts(alerts) {
             ${findings.map((finding) => `
               <div class="sensor-finding-row">
                 <span class="sensor-badge ${escapeHtml(String(finding.sensor || "unknown").toLowerCase())}">${escapeHtml(String(finding.sensor || "unknown").toUpperCase())}</span>
-                <strong>${escapeHtml(finding.finding_name || finding.finding_type || "Finding")}</strong>
-                <time>${escapeHtml(displayTimestamp(finding.finding_timestamp))}</time>
+                <div class="sensor-finding-copy">
+                  <strong>${escapeHtml(finding.event_uid || "No event UID")}</strong>
+                  <span>${escapeHtml(finding.finding_name || finding.finding_type || "Finding")}</span>
+                  <time>${escapeHtml(displayTimestamp(finding.finding_timestamp))}</time>
+                </div>
               </div>
             `).join("") || `<small>No linked sensor findings stored.</small>`}
           </div>
@@ -464,7 +473,7 @@ function classificationClass(value) {
 
 function renderAiModelReports(reports) {
   els.aiReports.innerHTML = reports.map((report) => `
-    <a class="alert ai-opinion investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id) : "#"}" target="_blank" rel="noopener">
+    <a class="alert ai-opinion investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id, report.case_uid) : "#"}" target="_blank" rel="noopener">
       <time>${report.created_at || report.timestamp || ""}</time>
       <div>
         <div class="row tight">
@@ -538,7 +547,7 @@ function renderDecisionEvidence(rows) {
           <small>${row.analyst_action || "No analyst override"} ${row.analyst_name ? `by ${row.analyst_name}` : ""}</small>
         </div>
       </div>
-      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Investigation</a>
     </article>
   `).join("") || `<div class="empty">No ${outcomeLabel} decision evidence rows for this selection yet.</div>`;
 }
@@ -624,7 +633,7 @@ async function refresh(options = {}) {
     const [metrics, summary, alerts, aiReports, allowlist, assets, events, evidence] = await Promise.all([
       getJson("/api/metrics"),
       summaryRequest,
-      getJson("/api/latest-alerts?limit=50"),
+      getJson(`/api/latest-alerts?limit=50&sensor=${encodeURIComponent(selectedSensorFilter)}`),
       getJson("/api/ai-opinions?limit=50"),
       getJson("/api/allowlist?limit=25"),
       getJson("/api/assets?limit=25"),
@@ -716,6 +725,16 @@ async function addAsset(event) {
 }
 
 async function handleDashboardClick(event) {
+  const sensorFilterButton = event.target.closest ? event.target.closest("[data-sensor-filter]") : null;
+  if (sensorFilterButton) {
+    selectedSensorFilter = sensorFilterButton.dataset.sensorFilter || "all";
+    document.querySelectorAll("[data-sensor-filter]").forEach((button) => {
+      button.classList.toggle("selected", button === sensorFilterButton);
+    });
+    refresh({ preserveScroll: true });
+    return;
+  }
+
   const outcomeAll = event.target.closest ? event.target.closest("[data-outcome-all]") : null;
   if (outcomeAll) {
     window.open(outcomeWorkbookUrl("all"), "_blank", "noopener");

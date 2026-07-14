@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_uid TEXT UNIQUE,
   suricata_event_id TEXT,
   timestamp TEXT,
   src_ip TEXT,
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE TABLE IF NOT EXISTS detections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_uid TEXT UNIQUE,
   first_alert_id INTEGER,
   first_seen TEXT,
   last_seen TEXT,
@@ -188,6 +190,7 @@ CREATE TABLE IF NOT EXISTS incident_evidence (
 
 CREATE TABLE IF NOT EXISTS zeek_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_uid TEXT UNIQUE,
   zeek_uid TEXT,
   log_type TEXT NOT NULL,
   timestamp TEXT NOT NULL,
@@ -259,6 +262,48 @@ CREATE TABLE IF NOT EXISTS ai_assessments (
   FOREIGN KEY (incident_evidence_id) REFERENCES incident_evidence(id)
 );
 
+CREATE TABLE IF NOT EXISTS score_breakdowns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER NOT NULL,
+  ai_report_id INTEGER,
+  assessment_type TEXT NOT NULL DEFAULT 'initial',
+  sensor_severity INTEGER NOT NULL DEFAULT 0,
+  behavior_correlation INTEGER NOT NULL DEFAULT 0,
+  threat_intelligence INTEGER NOT NULL DEFAULT 0,
+  mitre_relevance INTEGER NOT NULL DEFAULT 0,
+  asset_direction INTEGER NOT NULL DEFAULT 0,
+  sensor_corroboration INTEGER NOT NULL DEFAULT 0,
+  python_score INTEGER NOT NULL DEFAULT 0,
+  llm_adjustment_raw INTEGER NOT NULL DEFAULT 0,
+  llm_adjustment_applied INTEGER NOT NULL DEFAULT 0,
+  provisional_score INTEGER NOT NULL DEFAULT 0,
+  forced_review INTEGER NOT NULL DEFAULT 0,
+  forced_review_reason TEXT,
+  details_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (detection_id) REFERENCES detections(id),
+  FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
+);
+
+CREATE TABLE IF NOT EXISTS virustotal_verifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER NOT NULL,
+  ai_report_id INTEGER,
+  assessment_stage TEXT NOT NULL DEFAULT 'initial',
+  ip_address TEXT,
+  request_state TEXT NOT NULL,
+  verdict TEXT NOT NULL DEFAULT 'unknown',
+  interpretation TEXT NOT NULL DEFAULT 'unavailable',
+  malicious_count INTEGER NOT NULL DEFAULT 0,
+  suspicious_count INTEGER NOT NULL DEFAULT 0,
+  cached INTEGER NOT NULL DEFAULT 0,
+  details_json TEXT,
+  error TEXT,
+  checked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (detection_id) REFERENCES detections(id),
+  FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
+);
+
 CREATE TABLE IF NOT EXISTS ai_profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   uid TEXT NOT NULL UNIQUE,
@@ -292,6 +337,7 @@ CREATE TABLE IF NOT EXISTS firewall_blocks (
   detection_id INTEGER,
   ip_address TEXT NOT NULL,
   direction TEXT,
+  zone TEXT,
   reason TEXT,
   firewall_rule TEXT,
   timeout_seconds INTEGER,
@@ -361,7 +407,17 @@ CREATE INDEX IF NOT EXISTS idx_zeek_events_uid
 ON zeek_events(zeek_uid);
 
 CREATE INDEX IF NOT EXISTS idx_zeek_events_src_dst
-ON zeek_events(source_ip, destination_ip);
+  ON zeek_events(source_ip, destination_ip);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_event_uid
+  ON alerts(event_uid);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_case_uid
+  ON detections(case_uid);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_zeek_events_event_uid
+  ON zeek_events(event_uid);
+CREATE INDEX IF NOT EXISTS idx_score_breakdowns_detection
+  ON score_breakdowns(detection_id, assessment_type);
+CREATE INDEX IF NOT EXISTS idx_vt_verifications_detection
+  ON virustotal_verifications(detection_id, assessment_stage);
 
 CREATE INDEX IF NOT EXISTS idx_incident_evidence_detection
 ON incident_evidence(detection_id);

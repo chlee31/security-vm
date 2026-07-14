@@ -8,6 +8,7 @@ from app.database import (
     init_db,
     insert_detection,
     insert_sensor_finding,
+    latest_sensor_alerts,
     sensor_findings_for_detection,
 )
 from app.normalizer import normalize_suricata_event
@@ -126,8 +127,8 @@ class SensorFusionTests(unittest.TestCase):
 
         self.assertEqual(method, "community_id")
         self.assertEqual(fused["sensor_state"], "multi_sensor")
-        self.assertEqual(fused["python_initial_score"], 30)
-        self.assertEqual(fused_again["python_initial_score"], 30)
+        self.assertEqual(fused["python_initial_score"], 20)
+        self.assertEqual(fused_again["python_initial_score"], 20)
         self.assertEqual(len(sensor_findings_for_detection(self.conn, detection_id)), 2)
 
     def test_zeek_notice_can_create_standalone_detection(self):
@@ -147,6 +148,65 @@ class SensorFusionTests(unittest.TestCase):
         self.assertEqual(alert["sensor_state"], "zeek_only")
         self.assertEqual(detection["sensor_state"], "zeek_only")
         self.assertGreater(detection["python_initial_score"], 0)
+
+    def test_latest_alerts_can_filter_suricata_zeek_and_combined_cases(self):
+        suricata_id = insert_detection(
+            self.conn, self.base_detection(sensor_state="suricata_only", community_id=None)
+        )
+        zeek_id = insert_detection(
+            self.conn,
+            self.base_detection(
+                sensor_state="zeek_only",
+                community_id=None,
+                src_port=50001,
+            ),
+        )
+        combined_id = insert_detection(
+            self.conn,
+            self.base_detection(
+                sensor_state="multi_sensor",
+                agreement_state="supporting",
+                community_id=None,
+                src_port=50002,
+            ),
+        )
+        findings = (
+            (suricata_id, "suricata", 101),
+            (zeek_id, "zeek", 102),
+            (combined_id, "suricata", 103),
+            (combined_id, "zeek", 104),
+        )
+        for detection_id, sensor, event_id in findings:
+            insert_sensor_finding(
+                self.conn,
+                detection_id,
+                {
+                    "sensor": sensor,
+                    "sensor_event_id": event_id,
+                    "finding_type": "notice" if sensor == "zeek" else "signature_alert",
+                    "finding_name": f"{sensor} finding",
+                    "severity": 2,
+                    "confidence": 0.8,
+                    "raw_event": {},
+                },
+            )
+
+        suricata_rows = latest_sensor_alerts(self.conn, sensor_filter="suricata")
+        zeek_rows = latest_sensor_alerts(self.conn, sensor_filter="zeek")
+        both_rows = latest_sensor_alerts(self.conn, sensor_filter="both")
+
+        self.assertEqual(
+            {row["detection_id"] for row in suricata_rows},
+            {suricata_id, combined_id},
+        )
+        self.assertEqual(
+            {row["detection_id"] for row in zeek_rows},
+            {zeek_id, combined_id},
+        )
+        self.assertEqual(
+            [row["detection_id"] for row in both_rows],
+            [combined_id],
+        )
 
     def test_prompt_contains_multi_sensor_policy_and_evidence(self):
         alert = {

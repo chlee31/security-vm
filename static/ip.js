@@ -43,8 +43,8 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-function investigationUrl(detectionId) {
-  return `/investigation?id=${encodeURIComponent(detectionId)}`;
+function investigationUrl(detectionId, caseUid = "") {
+  return caseUid ? `/investigation?case=${encodeURIComponent(caseUid)}` : `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
 
 function ipWorkbookUrl(address) {
@@ -175,7 +175,7 @@ function renderDetections(rows) {
           <small>${escapeHtml(row.analyst_action || "No analyst override")}</small>
         </div>
       </div>
-      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Investigation</a>
     </article>
   `).join("") || `<div class="empty">No correlated detections found for this IP.</div>`;
 }

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Zeek Telemetry</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Network Metadata</p>
+          <h1>Zeek Telemetry</h1>
+        </div>
+        <div class="status">
+          <span id="zeek-dot" class="dot"></span>
+          <span id="zeek-updated">Loading</span>
+          <span class="divider"></span>
+          <button id="zeek-refresh" class="toolbar-button" type="button">Refresh</button>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/outcome?type=human_review">Investigate</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/admin">Admin</a>
+        </div>
+      </section>
+
+      <section class="workbook-metrics">
+        <article class="metric sensor-metric">
+          <span>Sensor</span>
+          <strong id="zeek-state">Checking</strong>
+          <small id="zeek-interface">Interface unknown</small>
+        </article>
+        <article class="metric">
+          <span>Ingested Events</span>
+          <strong id="zeek-total">0</strong>
+          <small>Stored in SQLite</small>
+        </article>
+        <article class="metric">
+          <span>Active Log Types</span>
+          <strong id="zeek-log-types">0</strong>
+          <small>With stored records</small>
+        </article>
+        <article class="metric timestamp-metric">
+          <span>Latest Event</span>
+          <strong id="zeek-latest">None</strong>
+          <small>Latest ingested timestamp</small>
+        </article>
+      </section>
+
+      <section class="zeek-overview-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Ingest Health</p>
+              <h2>Log Checkpoints</h2>
+            </div>
+            <small class="panel-hint">Reader position and last update</small>
+          </div>
+          <div id="zeek-checkpoints" class="telemetry-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Volume</p>
+              <h2>Events by Log Type</h2>
+            </div>
+          </div>
+          <div id="zeek-counts" class="chart-panel"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Timeline</p>
+              <h2>Ingested Activity</h2>
+            </div>
+            <small class="panel-hint">Hourly event volume</small>
+          </div>
+          <div id="zeek-activity" class="chart-panel compact-chart"></div>
+        </section>
+      </section>
+
+      <nav class="telemetry-tabs" aria-label="Zeek telemetry views">
+        <button class="telemetry-tab selected" type="button" data-zeek-view="tls">TLS and Certificates</button>
+        <button class="telemetry-tab" type="button" data-zeek-view="files">File Observations</button>
+        <button class="telemetry-tab" type="button" data-zeek-view="dns">DNS</button>
+        <button class="telemetry-tab" type="button" data-zeek-view="http">HTTP</button>
+        <button class="telemetry-tab" type="button" data-zeek-view="events">Recent Events</button>
+      </nav>
+
+      <section id="zeek-view-tls" class="zeek-view">
+        <section class="workbook-grid">
+          <section class="panel">
+            <div class="panel-head"><div><p class="eyebrow">Encrypted Sessions</p><h2>TLS Summary</h2></div></div>
+            <div id="zeek-tls-summary" class="chart-panel"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><p class="eyebrow">Certificate Checks</p><h2>Validation Results</h2></div></div>
+            <div id="zeek-tls-validation" class="chart-panel"></div>
+          </section>
+          <section class="panel wide-panel">
+            <div class="panel-head"><div><p class="eyebrow">Latest TLS</p><h2>Session Metadata</h2></div></div>
+            <div id="zeek-tls-recent" class="telemetry-list"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="zeek-view-files" class="zeek-view" hidden>
+        <section class="workbook-grid">
+          <section class="panel">
+            <div class="panel-head"><div><p class="eyebrow">Metadata</p><h2>Observed File Types</h2></div></div>
+            <div id="zeek-file-summary" class="chart-panel"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><p class="eyebrow">Sources</p><h2>File Protocols</h2></div></div>
+            <div id="zeek-file-sources" class="chart-panel"></div>
+          </section>
+          <section class="panel wide-panel">
+            <div class="panel-head">
+              <div><p class="eyebrow">Latest Files</p><h2>File Observations</h2></div>
+              <small class="panel-hint">Metadata and observed bytes, not extracted file contents</small>
+            </div>
+            <div id="zeek-file-recent" class="telemetry-list"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="zeek-view-dns" class="zeek-view" hidden>
+        <section class="workbook-grid">
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Queries</p><h2>Top DNS Names</h2></div></div><div id="zeek-dns-queries" class="chart-panel"></div></section>
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Responses</p><h2>Types and Codes</h2></div></div><div id="zeek-dns-types" class="chart-panel"></div></section>
+        </section>
+      </section>
+
+      <section id="zeek-view-http" class="zeek-view" hidden>
+        <section class="workbook-grid">
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Destinations</p><h2>Top HTTP Hosts</h2></div></div><div id="zeek-http-hosts" class="chart-panel"></div></section>
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Requests</p><h2>Methods and Status</h2></div></div><div id="zeek-http-methods" class="chart-panel"></div></section>
+        </section>
+      </section>
+
+      <section id="zeek-view-events" class="zeek-view" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <div><p class="eyebrow">Raw Metadata</p><h2>Recent Zeek Events</h2></div>
+            <label class="compact-filter">Log type
+              <select id="zeek-event-filter"><option value="">All logs</option></select>
+            </label>
+          </div>
+          <div id="zeek-events" class="telemetry-list"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/zeek.js?v=20260714-telemetry"></script>
+  </body>
+</html>

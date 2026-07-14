@@ -4,6 +4,11 @@ from app.allowlist import is_allowlisted
 from app.risk_score import cap_score
 
 
+HUMAN_REVIEW_MIN = 30
+HIGH_RISK_MIN = 70
+DANGEROUS_MIN = 85
+
+
 def confidence_adjustment(report):
     classification = str(report.get("classification", "")).lower()
     confidence = str(report.get("confidence", "")).lower()
@@ -21,20 +26,21 @@ def confidence_adjustment(report):
 def safe_risk_adjustment(report):
     value = report.get("risk_adjustment")
     try:
-        return int(value)
+        adjustment = int(value)
     except (TypeError, ValueError):
-        return confidence_adjustment(report)
+        adjustment = confidence_adjustment(report)
+    return max(-10, min(10, adjustment))
 
 
-def virustotal_adjustment(report):
-    results = report.get("virustotal_verification") or []
-    malicious = sum(int(item.get("malicious_count") or 0) for item in results)
-    suspicious = sum(int(item.get("suspicious_count") or 0) for item in results)
-    if malicious:
-        return min(10, 4 + malicious)
-    if suspicious:
-        return min(5, 1 + suspicious)
-    return 0
+def classify_score(score):
+    score = cap_score(score)
+    if score >= DANGEROUS_MIN:
+        return "Dangerous"
+    if score >= HIGH_RISK_MIN:
+        return "High Risk"
+    if score >= HUMAN_REVIEW_MIN:
+        return "Human Review Required"
+    return "Safe"
 
 
 def is_private_ip(ip_address):
@@ -56,9 +62,6 @@ def decide(conn, config, alert, detection, ai_report=None):
     mode = config.get("system", {}).get("mode", "alert_only")
     if mode == "auto_response":
         mode = "prevention"
-    thresholds = config.get("thresholds", {})
-    dangerous_min = thresholds.get("dangerous_min", 85)
-    human_review_min = thresholds.get("human_review_min", 30)
     src_ip = alert.get("src_ip")
     target_ip, target_direction = response_target(alert)
     safelist = set(config.get("safelist", []))
@@ -78,19 +81,25 @@ def decide(conn, config, alert, detection, ai_report=None):
     score = detection.get("python_initial_score", 0)
     if ai_report:
         score += safe_risk_adjustment(ai_report)
-        score += virustotal_adjustment(ai_report)
     score = cap_score(score)
 
     ai_class = str((ai_report or {}).get("classification", "")).lower()
     ai_conf = str((ai_report or {}).get("confidence", "")).lower()
 
-    if mode == "prevention" and target_ip and score >= dangerous_min and ai_class == "dangerous" and ai_conf == "high" and target_ip not in safelist:
+    forced_review = bool(detection.get("forced_review"))
+    if forced_review:
+        action = "human_review"
+        classification = "Human Review Required"
+    elif mode == "prevention" and target_ip and score >= DANGEROUS_MIN and ai_class == "dangerous" and ai_conf == "high" and target_ip not in safelist:
         action = "temporary_block"
         classification = "Dangerous"
-    elif mode in {"alert_only", "detection"} and score >= dangerous_min:
+    elif score >= DANGEROUS_MIN:
         action = "would_block"
         classification = "Dangerous"
-    elif score >= human_review_min:
+    elif score >= HIGH_RISK_MIN:
+        action = "human_review"
+        classification = "High Risk"
+    elif score >= HUMAN_REVIEW_MIN:
         action = "human_review"
         classification = "Human Review Required"
     else:
@@ -106,4 +115,7 @@ def decide(conn, config, alert, detection, ai_report=None):
         "response_method": "firewalld" if action == "temporary_block" else "none",
         "response_status": "pending" if action == "temporary_block" else action,
         "response_time_ms": 0,
+        "forced_review": forced_review,
+        "forced_review_reason": detection.get("forced_review_reason") if forced_review else "",
+        "llm_adjustment": safe_risk_adjustment(ai_report or {}),
     }

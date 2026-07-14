@@ -21,6 +21,13 @@
         </div>
       </section>
 
+      <section class="case-actions" aria-label="Case actions">
+        <button id="inv-reassess" type="button">Reassess Case</button>
+        <button id="inv-refresh-vt" type="button">Refresh VirusTotal</button>
+        <button id="inv-refresh" type="button">Refresh Evidence</button>
+        <span id="inv-action-status" class="connection-status">Case evidence loaded on request.</span>
+      </section>
+
       <section class="workbook-metrics">
         <article class="metric">
           <span>Final Score</span>
@@ -120,7 +127,7 @@
           <div class="panel-head">
             <div>
               <p class="eyebrow">Evidence</p>
-              <h2>Scoring & Correlation</h2>
+              <h2>Deterministic Score Breakdown</h2>
             </div>
           </div>
           <div id="inv-scoring" class="workbook-list"></div>
@@ -130,7 +137,7 @@
           <div class="panel-head">
             <div>
               <p class="eyebrow">Enrichment</p>
-              <h2>Assets & Threat Intel</h2>
+              <h2>Assets, Threat Intel & VirusTotal</h2>
             </div>
           </div>
           <div id="inv-intel" class="workbook-list"></div>
@@ -140,9 +147,9 @@
           <div class="panel-head">
             <div>
               <p class="eyebrow">Zeek Sensor</p>
-              <h2>Related Behavior Logs</h2>
+              <h2>Related Behavior Logs & Forensics</h2>
             </div>
-            <button id="inv-create-evidence" type="button">Create Evidence</button>
+            <button id="inv-create-evidence" type="button">Preserve Forensic Evidence</button>
           </div>
           <div id="inv-zeek" class="workbook-list"></div>
         </section>
@@ -159,6 +166,6 @@
       </section>
     </main>
 
-    <script src="/static/investigation.js?v=20260714-unified-alerts"></script>
+    <script src="/static/investigation.js?v=20260714-case-workspace"></script>
   </body>
 </html>

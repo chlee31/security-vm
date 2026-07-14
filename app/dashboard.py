@@ -22,6 +22,7 @@ from app.config import load_config, save_config
 from app.database import (
     ai_model_comparison,
     asset_summary,
+    case_workspace,
     connect,
     create_ai_profile,
     deactivate_asset,
@@ -68,6 +69,7 @@ from app.database import (
     update_ai_profile,
     zeek_context_for_detection,
     zeek_event_counts,
+    zeek_telemetry_summary,
 )
 from app.bootstrap import detect_os_release, zeek_os_recommendation
 from app.enrichment import lookup_otx_ip, test_otx_connection
@@ -75,7 +77,9 @@ from app.threat_intel import PROVIDERS, provider_config, refresh_provider, sanit
 from app.firewall import firewalld_runtime_status, firewalld_setup_commands, remove_firewalld_block, temporary_block_firewalld
 from app.incident_evidence import create_incident_evidence
 from app.ai_client import check_ai_model, model_metadata
+from app.case_assessment import reassess_case, refresh_case_virustotal
 from app.notifications import normalize_recipients, sanitized_email_settings, send_email
+from app.security import redact_secrets
 from app.pcap_inventory import list_pcap_files
 from app.zeek_inventory import zeek_status
 
@@ -542,6 +546,10 @@ def create_app(config_path):
     def ai_comparison_workbook():
         return static_page("compare.html")
 
+    @app.get("/zeek")
+    def zeek_telemetry_workbook():
+        return static_page("zeek.html")
+
     @app.get("/asset-inventory")
     def asset_inventory_workbook():
         return static_page("asset_inventory.html")
@@ -588,7 +596,10 @@ def create_app(config_path):
                 "firewall": {
                     "provider": config.get("firewall", {}).get("provider", "firewalld"),
                     "block_timeout_seconds": config.get("firewall", {}).get("block_timeout_seconds", 3600),
-                    "runtime": firewalld_runtime_status(),
+                    "runtime": firewalld_runtime_status(
+                        config.get("firewall", {}).get("external_zone", "external"),
+                        config.get("firewall", {}).get("internal_zone", "internal"),
+                    ),
                     "setup_commands": firewalld_setup_commands(),
                     "blocks": list_firewall_blocks(conn, limit=50, status="active"),
                     "candidates": list_firewall_candidates(conn, limit=50),
@@ -656,8 +667,9 @@ def create_app(config_path):
                 insert_app_event(conn, "info", "threat_intel", f"Refreshed {source}", result)
                 return result
             except Exception as exc:
-                insert_app_event(conn, "error", "threat_intel", f"{source} refresh failed: {exc}")
-                raise HTTPException(status_code=400, detail=str(exc))
+                error = redact_secrets(exc, config)
+                insert_app_event(conn, "error", "threat_intel", f"{source} refresh failed: {error}")
+                raise HTTPException(status_code=400, detail=error)
         finally:
             conn.close()
 
@@ -673,7 +685,7 @@ def create_app(config_path):
                 try:
                     results.append(refresh_provider(conn, config, source))
                 except Exception as exc:
-                    results.append({"source": source, "status": "failed", "error": str(exc)})
+                    results.append({"source": source, "status": "failed", "error": redact_secrets(exc, config)})
             return {"status": "complete", "results": results}
         finally:
             conn.close()
@@ -769,14 +781,20 @@ def create_app(config_path):
             block = get_firewall_block(conn, block_id)
             if not block:
                 raise HTTPException(status_code=404, detail="Firewall block not found")
-            status, elapsed_ms, rule = remove_firewalld_block(block["ip_address"], block.get("direction") or "source")
+            status, elapsed_ms, rule, zone = remove_firewalld_block(
+                block["ip_address"],
+                block.get("direction") or "source",
+                zone=block.get("zone"),
+                external_zone=config.get("firewall", {}).get("external_zone", "external"),
+                internal_zone=config.get("firewall", {}).get("internal_zone", "internal"),
+            )
             release_firewall_block(conn, block_id, payload.analyst_name.strip() or "admin", payload.reason.strip() or status)
             insert_app_event(
                 conn,
                 "warning" if status.startswith("failed") else "info",
                 "firewall",
                 f"Unblock {block['ip_address']}: {status}",
-                {"block_id": block_id, "elapsed_ms": elapsed_ms, "rule": rule},
+                {"block_id": block_id, "elapsed_ms": elapsed_ms, "rule": rule, "zone": zone},
             )
             return {"status": status, "elapsed_ms": elapsed_ms}
         finally:
@@ -790,10 +808,12 @@ def create_app(config_path):
             if not candidate:
                 raise HTTPException(status_code=404, detail="Enforcement candidate not found")
             timeout = config.get("firewall", {}).get("block_timeout_seconds", 3600)
-            status, elapsed_ms, rule = temporary_block_firewalld(
+            status, elapsed_ms, rule, zone = temporary_block_firewalld(
                 candidate["target_ip"],
                 timeout,
                 candidate.get("target_direction") or "source",
+                external_zone=config.get("firewall", {}).get("external_zone", "external"),
+                internal_zone=config.get("firewall", {}).get("internal_zone", "internal"),
             )
             if status == "blocked":
                 insert_firewall_block(
@@ -802,6 +822,7 @@ def create_app(config_path):
                         "detection_id": candidate["detection_id"],
                         "ip_address": candidate["target_ip"],
                         "direction": candidate.get("target_direction") or "source",
+                        "zone": zone,
                         "reason": payload.reason.strip() or f"Manual enforcement from response #{response_id}",
                         "firewall_rule": rule,
                         "timeout_seconds": timeout,
@@ -889,7 +910,13 @@ def create_app(config_path):
             block = get_firewall_block(conn, block_id)
             if not block:
                 raise HTTPException(status_code=404, detail="Firewall block not found")
-            status, elapsed_ms, rule = remove_firewalld_block(block["ip_address"], block.get("direction") or "source")
+            status, elapsed_ms, rule, zone = remove_firewalld_block(
+                block["ip_address"],
+                block.get("direction") or "source",
+                zone=block.get("zone"),
+                external_zone=config.get("firewall", {}).get("external_zone", "external"),
+                internal_zone=config.get("firewall", {}).get("internal_zone", "internal"),
+            )
             add_allowlist_entry(
                 conn,
                 block["ip_address"],
@@ -1118,10 +1145,10 @@ def create_app(config_path):
             conn.close()
 
     @app.get("/api/latest-alerts")
-    def api_latest_sensor_alerts(limit: int = 50):
+    def api_latest_sensor_alerts(limit: int = 50, sensor: str = "all"):
         conn = connect(db_path)
         try:
-            return latest_sensor_alerts(conn, limit)
+            return latest_sensor_alerts(conn, limit, sensor)
         finally:
             conn.close()
 
@@ -1267,6 +1294,16 @@ def create_app(config_path):
             status = zeek_status(config)
             status["event_counts"] = zeek_event_counts(conn)
             return status
+        finally:
+            conn.close()
+
+    @app.get("/api/zeek/telemetry")
+    def api_zeek_telemetry(limit: int = 50):
+        conn = connect(db_path)
+        try:
+            summary = zeek_telemetry_summary(conn, limit)
+            summary["runtime"] = zeek_status(config)
+            return summary
         finally:
             conn.close()
 
@@ -1450,11 +1487,13 @@ def create_app(config_path):
                     )
                     results.append({"ip_address": ip_address, "status": "ok", "reputation": result["reputation"]})
                 except requests.RequestException as exc:
-                    insert_app_event(conn, "error", "enrichment", f"OTX lookup failed for {ip_address}: {exc}")
-                    results.append({"ip_address": ip_address, "status": "error", "error": str(exc)})
+                    error = redact_secrets(exc, config)
+                    insert_app_event(conn, "error", "enrichment", f"OTX lookup failed for {ip_address}: {error}")
+                    results.append({"ip_address": ip_address, "status": "error", "error": error})
                 except Exception as exc:
-                    insert_app_event(conn, "error", "enrichment", f"OTX lookup failed for {ip_address}: {exc}")
-                    results.append({"ip_address": ip_address, "status": "error", "error": str(exc)})
+                    error = redact_secrets(exc, config)
+                    insert_app_event(conn, "error", "enrichment", f"OTX lookup failed for {ip_address}: {error}")
+                    results.append({"ip_address": ip_address, "status": "error", "error": error})
             insert_app_event(conn, "info", "enrichment", f"Completed OTX lookups for {len(results)} public IPs", results)
             return {"status": "done", "results": results}
         finally:
@@ -1479,8 +1518,9 @@ def create_app(config_path):
                 )
                 return {"ok": True, **status}
             except requests.RequestException as exc:
-                insert_app_event(conn, "error", "enrichment", f"OTX API connection test failed: {exc}")
-                return {"ok": False, "status": "failed", "error": str(exc)}
+                error = redact_secrets(exc, config)
+                insert_app_event(conn, "error", "enrichment", f"OTX API connection test failed: {error}")
+                return {"ok": False, "status": "failed", "error": error}
             except ValueError as exc:
                 return {"ok": False, "status": "missing_key", "error": str(exc)}
         finally:
@@ -1500,7 +1540,7 @@ def create_app(config_path):
 
     @app.get("/api/decision-evidence")
     def api_decision_evidence(limit: int = 25, detection_type: str = None, outcome: str = None):
-        if outcome and outcome not in {"safe", "human_review", "dangerous"}:
+        if outcome and outcome not in {"safe", "human_review", "high_risk", "dangerous"}:
             raise HTTPException(status_code=400, detail="Unsupported outcome filter")
         conn = connect(db_path)
         try:
@@ -1523,6 +1563,56 @@ def create_app(config_path):
             conn.close()
         detail["zeek_context"] = zeek_context
         return detail
+
+    @app.get("/api/cases/{case_uid}")
+    def api_case_workspace(case_uid: str):
+        conn = connect(db_path)
+        try:
+            detail = case_workspace(conn, case_uid)
+            if not detail:
+                raise HTTPException(status_code=404, detail="Case not found")
+            runtime_config = load_config(config_path)
+            providers = sanitized_provider_status(runtime_config, conn)
+            detail["src_threat_intel"] = threat_intel_provider_results(
+                conn, detail.get("src_ip"), providers
+            )
+            detail["dest_threat_intel"] = threat_intel_provider_results(
+                conn, detail.get("dest_ip"), providers
+            )
+            return detail
+        finally:
+            conn.close()
+
+    @app.post("/api/cases/{case_uid}/reassess")
+    def api_reassess_case(case_uid: str):
+        conn = connect(db_path)
+        try:
+            return reassess_case(conn, load_config(config_path), case_uid)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except requests.RequestException as exc:
+            insert_app_event(
+                conn,
+                "error",
+                "reassessment",
+                f"AI reassessment failed for case {case_uid}: {type(exc).__name__}",
+            )
+            raise HTTPException(status_code=502, detail="AI model reassessment failed")
+        finally:
+            conn.close()
+
+    @app.post("/api/cases/{case_uid}/virustotal/refresh")
+    def api_refresh_case_virustotal(case_uid: str):
+        conn = connect(db_path)
+        try:
+            return {
+                "case_uid": case_uid,
+                "results": refresh_case_virustotal(conn, load_config(config_path), case_uid),
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            conn.close()
 
     @app.get("/api/ip-detail")
     def api_ip_detail(address: str, limit: int = 100):
@@ -1886,6 +1976,7 @@ def create_app(config_path):
             outcome_counts = {
                 "safe": 0,
                 "human_review": 0,
+                "high_risk": 0,
                 "dangerous": 0,
             }
             for row in by_classification:
@@ -1894,6 +1985,8 @@ def create_app(config_path):
                 count = row["count"]
                 if "dangerous" in classification or action in {"would_block", "temporary_block"}:
                     outcome_counts["dangerous"] += count
+                elif "high risk" in classification:
+                    outcome_counts["high_risk"] += count
                 elif "human" in classification or action == "human_review":
                     outcome_counts["human_review"] += count
                 else:

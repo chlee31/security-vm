@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from app.config import load_config
 from app.database import init_db, insert_app_event, threat_intel_source_rows
 from app.threat_intel import FETCHERS, provider_config, refresh_provider
+from app.security import redact_secrets
 
 
 def parse_time(value):
@@ -36,7 +37,7 @@ def refresh_due_providers(conn, config):
             results.append(result)
         except Exception as exc:
             insert_app_event(conn, "error", "threat_intel", f"Scheduled {source} refresh failed: {exc}")
-            results.append({"source": source, "status": "failed", "error": str(exc)})
+            results.append({"source": source, "status": "failed", "error": redact_secrets(exc, config)})
     return results
 
 

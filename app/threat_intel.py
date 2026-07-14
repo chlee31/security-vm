@@ -6,6 +6,8 @@ from urllib.parse import urlsplit
 
 import requests
 
+from app.security import redact_secrets
+
 from app.database import (
     replace_threat_intel_indicators,
     threat_intel_source_rows,
@@ -350,5 +352,5 @@ def refresh_provider(conn, config, source):
         count = replace_threat_intel_indicators(conn, source, indicators)
         return {"source": source, "status": "ready", "indicator_count": count}
     except Exception as exc:
-        update_threat_intel_source(conn, source, "failed", str(exc))
+        update_threat_intel_source(conn, source, "failed", redact_secrets(exc, config))
         raise

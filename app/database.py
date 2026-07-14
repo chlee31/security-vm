@@ -2,6 +2,7 @@ import sqlite3
 import json
 import ipaddress
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -30,12 +31,25 @@ def init_db(db_path):
 
 def ensure_pre_schema_columns(conn):
     """Add columns required by schema indexes before CREATE IF NOT EXISTS runs."""
-    if not table_exists(conn, "zeek_events"):
-        return
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(zeek_events)").fetchall()}
-    for column in ("source_ip", "destination_ip"):
-        if column not in columns:
-            conn.execute(f"ALTER TABLE zeek_events ADD COLUMN {column} TEXT")
+    required_columns = {
+        "alerts": {"event_uid": "TEXT"},
+        "detections": {"case_uid": "TEXT"},
+        "zeek_events": {
+            "event_uid": "TEXT",
+            "source_ip": "TEXT",
+            "destination_ip": "TEXT",
+        },
+    }
+    for table_name, requirements in required_columns.items():
+        if not table_exists(conn, table_name):
+            continue
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        for column, column_type in requirements.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column} {column_type}")
 
 
 def ensure_migrations(conn):
@@ -64,6 +78,8 @@ def ensure_migrations(conn):
     ensure_ai_assessments_table(conn)
     ensure_threat_intel_tables(conn)
     ensure_sensor_fusion_tables(conn)
+    ensure_case_identity_columns(conn)
+    ensure_decision_audit_tables(conn)
     migrate_legacy_ai_reports(conn)
 
     conn.execute(
@@ -91,6 +107,7 @@ def ensure_migrations(conn):
           detection_id INTEGER,
           ip_address TEXT NOT NULL,
           direction TEXT,
+          zone TEXT,
           reason TEXT,
           firewall_rule TEXT,
           timeout_seconds INTEGER,
@@ -105,6 +122,11 @@ def ensure_migrations(conn):
         )
         """
     )
+    firewall_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(firewall_blocks)").fetchall()
+    }
+    if "zone" not in firewall_columns:
+        conn.execute("ALTER TABLE firewall_blocks ADD COLUMN zone TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS notification_events (
@@ -130,6 +152,109 @@ def table_exists(conn, table_name):
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _uid_date(value):
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        parsed = datetime.now(timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y%m%d")
+
+
+def stable_record_uid(prefix, record_id, timestamp):
+    return f"{prefix}-{_uid_date(timestamp)}-{int(record_id):06d}"
+
+
+def ensure_case_identity_columns(conn):
+    definitions = {
+        "alerts": ("event_uid", "SUR", "timestamp"),
+        "detections": ("case_uid", "CASE", "first_seen"),
+        "zeek_events": ("event_uid", "ZEK", "timestamp"),
+    }
+    for table_name, (column, prefix, timestamp_column) in definitions.items():
+        if not table_exists(conn, table_name):
+            continue
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column} TEXT")
+        rows = conn.execute(
+            f"SELECT id, {timestamp_column} AS event_time FROM {table_name} "
+            f"WHERE {column} IS NULL OR {column} = '' ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                f"UPDATE {table_name} SET {column} = ? WHERE id = ?",
+                (stable_record_uid(prefix, row["id"], row["event_time"]), row["id"]),
+            )
+        conn.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table_name}_{column} "
+            f"ON {table_name}({column})"
+        )
+
+
+def ensure_decision_audit_tables(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS score_breakdowns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          detection_id INTEGER NOT NULL,
+          ai_report_id INTEGER,
+          assessment_type TEXT NOT NULL DEFAULT 'initial',
+          sensor_severity INTEGER NOT NULL DEFAULT 0,
+          behavior_correlation INTEGER NOT NULL DEFAULT 0,
+          threat_intelligence INTEGER NOT NULL DEFAULT 0,
+          mitre_relevance INTEGER NOT NULL DEFAULT 0,
+          asset_direction INTEGER NOT NULL DEFAULT 0,
+          sensor_corroboration INTEGER NOT NULL DEFAULT 0,
+          python_score INTEGER NOT NULL DEFAULT 0,
+          llm_adjustment_raw INTEGER NOT NULL DEFAULT 0,
+          llm_adjustment_applied INTEGER NOT NULL DEFAULT 0,
+          provisional_score INTEGER NOT NULL DEFAULT 0,
+          forced_review INTEGER NOT NULL DEFAULT 0,
+          forced_review_reason TEXT,
+          details_json TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (detection_id) REFERENCES detections(id),
+          FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS virustotal_verifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          detection_id INTEGER NOT NULL,
+          ai_report_id INTEGER,
+          assessment_stage TEXT NOT NULL DEFAULT 'initial',
+          ip_address TEXT,
+          request_state TEXT NOT NULL,
+          verdict TEXT NOT NULL DEFAULT 'unknown',
+          interpretation TEXT NOT NULL DEFAULT 'unavailable',
+          malicious_count INTEGER NOT NULL DEFAULT 0,
+          suspicious_count INTEGER NOT NULL DEFAULT 0,
+          cached INTEGER NOT NULL DEFAULT 0,
+          details_json TEXT,
+          error TEXT,
+          checked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (detection_id) REFERENCES detections(id),
+          FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_score_breakdowns_detection "
+        "ON score_breakdowns(detection_id, assessment_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vt_verifications_detection "
+        "ON virustotal_verifications(detection_id, assessment_stage)"
+    )
 
 
 def ensure_ai_report_columns(conn, table_name):
@@ -755,8 +880,12 @@ def insert_alert(conn, alert):
             alert.get("raw_json"),
         ),
     )
+    alert_id = cur.lastrowid
+    event_uid = alert.get("event_uid") or stable_record_uid("SUR", alert_id, alert.get("timestamp"))
+    cur.execute("UPDATE alerts SET event_uid = ? WHERE id = ?", (event_uid, alert_id))
+    alert["event_uid"] = event_uid
     conn.commit()
-    return cur.lastrowid
+    return alert_id
 
 
 def insert_detection(conn, detection):
@@ -797,8 +926,14 @@ def insert_detection(conn, detection):
             detection.get("status"),
         ),
     )
+    detection_id = cur.lastrowid
+    case_uid = detection.get("case_uid") or stable_record_uid(
+        "CASE", detection_id, detection.get("first_seen")
+    )
+    cur.execute("UPDATE detections SET case_uid = ? WHERE id = ?", (case_uid, detection_id))
+    detection["case_uid"] = case_uid
     conn.commit()
-    return cur.lastrowid
+    return detection_id
 
 
 def insert_ai_report(conn, detection_id, report):
@@ -813,7 +948,7 @@ def insert_ai_report(conn, detection_id, report):
         except (TypeError, ValueError):
             return default
 
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO ai_reports (
           detection_id, ai_profile_uid, model_provider, model_name, model_identity,
@@ -848,6 +983,158 @@ def insert_ai_report(conn, detection_id, report):
         ),
     )
     conn.commit()
+    return cur.lastrowid
+
+
+def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", evidence_sources=None):
+    cur = conn.execute(
+        """
+        INSERT INTO ai_assessments (
+          detection_id, incident_evidence_id, assessment_type, provider,
+          model_name, classification, confidence, risk_adjustment, reason,
+          recommended_action, evidence_sources_json, response_time_ms,
+          raw_response, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            detection_id,
+            report.get("incident_evidence_id"),
+            assessment_type,
+            report.get("model_provider"),
+            report.get("model_name") or "unknown",
+            report.get("classification") or "Human Review Required",
+            report.get("confidence") or "Low",
+            int(report.get("risk_adjustment") or 0),
+            report.get("reason"),
+            report.get("recommended_action"),
+            json.dumps(evidence_sources or {}, sort_keys=True),
+            int(report.get("elapsed_ms") or 0),
+            report.get("raw_response"),
+            utc_now(),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_detection_python_score(conn, detection_id, score):
+    conn.execute(
+        "UPDATE detections SET python_initial_score = ? WHERE id = ?",
+        (max(0, min(int(score), 90)), detection_id),
+    )
+    conn.commit()
+
+
+def insert_score_breakdown(
+    conn,
+    detection_id,
+    breakdown,
+    ai_report_id=None,
+    assessment_type="initial",
+    llm_adjustment_raw=0,
+    llm_adjustment_applied=0,
+    provisional_score=None,
+):
+    python_score = max(0, min(int(breakdown.get("python_score") or 0), 90))
+    provisional = max(
+        0,
+        min(
+            100,
+            int(provisional_score if provisional_score is not None else python_score + llm_adjustment_applied),
+        ),
+    )
+    cur = conn.execute(
+        """
+        INSERT INTO score_breakdowns (
+          detection_id, ai_report_id, assessment_type, sensor_severity,
+          behavior_correlation, threat_intelligence, mitre_relevance,
+          asset_direction, sensor_corroboration, python_score,
+          llm_adjustment_raw, llm_adjustment_applied, provisional_score,
+          forced_review, forced_review_reason, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            detection_id,
+            ai_report_id,
+            assessment_type,
+            int(breakdown.get("sensor_severity") or 0),
+            int(breakdown.get("behavior_correlation") or 0),
+            int(breakdown.get("threat_intelligence") or 0),
+            int(breakdown.get("mitre_relevance") or 0),
+            int(breakdown.get("asset_direction") or 0),
+            int(breakdown.get("sensor_corroboration") or 0),
+            python_score,
+            int(llm_adjustment_raw or 0),
+            int(llm_adjustment_applied or 0),
+            provisional,
+            1 if breakdown.get("forced_review") else 0,
+            breakdown.get("forced_review_reason"),
+            json.dumps(breakdown.get("details") or {}, sort_keys=True),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def score_breakdowns_for_detection(conn, detection_id):
+    rows = conn.execute(
+        "SELECT * FROM score_breakdowns WHERE detection_id = ? ORDER BY id",
+        (detection_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+        except (TypeError, ValueError):
+            item["details"] = {}
+        result.append(item)
+    return result
+
+
+def insert_virustotal_verification(conn, detection_id, verification, ai_report_id=None, stage="initial"):
+    cur = conn.execute(
+        """
+        INSERT INTO virustotal_verifications (
+          detection_id, ai_report_id, assessment_stage, ip_address,
+          request_state, verdict, interpretation, malicious_count,
+          suspicious_count, cached, details_json, error, checked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            detection_id,
+            ai_report_id,
+            stage,
+            verification.get("indicator") or verification.get("ip_address"),
+            verification.get("request_state") or "failed",
+            verification.get("verdict") or "unknown",
+            verification.get("interpretation") or "unavailable",
+            int(verification.get("malicious_count") or 0),
+            int(verification.get("suspicious_count") or 0),
+            1 if verification.get("cached") else 0,
+            json.dumps(verification.get("details") or {}, sort_keys=True),
+            verification.get("error"),
+            verification.get("checked_at") or utc_now(),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def virustotal_verifications_for_detection(conn, detection_id):
+    rows = conn.execute(
+        "SELECT * FROM virustotal_verifications WHERE detection_id = ? ORDER BY id",
+        (detection_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+        except (TypeError, ValueError):
+            item["details"] = {}
+        result.append(item)
+    return result
 
 
 def insert_incident_evidence(conn, evidence):
@@ -924,6 +1211,13 @@ def insert_zeek_event(conn, event):
             event.get("ingested_at") or utc_now(),
         ),
     )
+    if cur.rowcount:
+        event_id = cur.lastrowid
+        event_uid = event.get("event_uid") or stable_record_uid(
+            "ZEK", event_id, event.get("timestamp")
+        )
+        conn.execute("UPDATE zeek_events SET event_uid = ? WHERE id = ?", (event_uid, event_id))
+        event["event_uid"] = event_uid
     conn.commit()
     return cur.rowcount
 
@@ -1002,6 +1296,7 @@ def sensor_findings_for_detection(conn, detection_id):
           COALESCE(alerts.dest_ip, zeek_events.destination_ip) AS destination_ip,
           COALESCE(alerts.dest_port, zeek_events.destination_port) AS destination_port,
           COALESCE(alerts.protocol, zeek_events.protocol) AS protocol
+          ,COALESCE(alerts.event_uid, zeek_events.event_uid) AS event_uid
         FROM sensor_findings
         LEFT JOIN alerts
           ON sensor_findings.sensor = 'suricata'
@@ -1027,6 +1322,11 @@ def sensor_finding_detection_id(conn, sensor, sensor_event_id):
 
 def detection_by_id(conn, detection_id):
     row = conn.execute("SELECT * FROM detections WHERE id = ?", (detection_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def detection_by_case_uid(conn, case_uid):
+    row = conn.execute("SELECT * FROM detections WHERE case_uid = ?", (case_uid,)).fetchone()
     return dict(row) if row else None
 
 
@@ -1100,9 +1400,7 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
     detection = detection_by_id(conn, detection_id)
     if not detection:
         return None
-    score = int(detection.get("python_initial_score") or 0)
-    if detection.get("sensor_state") != "multi_sensor":
-        score = min(100, score + 10)
+    score = min(90, int(detection.get("python_initial_score") or 0))
     finding_count = conn.execute(
         "SELECT COUNT(*) FROM sensor_findings WHERE detection_id = ?",
         (detection_id,),
@@ -1179,11 +1477,12 @@ def latest_zeek_events(conn, limit=50, log_type=None):
     params.append(limit)
     rows = conn.execute(
         f"""
-        SELECT zeek_events.*, sensor_findings.detection_id
+        SELECT zeek_events.*, sensor_findings.detection_id, detections.case_uid
         FROM zeek_events
         LEFT JOIN sensor_findings
           ON sensor_findings.sensor = 'zeek'
          AND sensor_findings.sensor_event_id = zeek_events.id
+        LEFT JOIN detections ON detections.id = sensor_findings.detection_id
         {where}
         ORDER BY zeek_events.id DESC
         LIMIT ?
@@ -1203,6 +1502,183 @@ def zeek_event_counts(conn):
         """
     ).fetchall()
     return {row["log_type"]: row["count"] for row in rows}
+
+
+def _zeek_raw(row):
+    try:
+        return json.loads(row["raw_json"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _counter_rows(counter, name, limit=8):
+    return [
+        {name: value, "count": count}
+        for value, count in counter.most_common(limit)
+        if value not in (None, "")
+    ]
+
+
+def zeek_telemetry_summary(conn, limit=50):
+    """Summarize stored Zeek metadata and ingest checkpoints for the dashboard."""
+    limit = max(1, min(int(limit or 50), 200))
+    counts = zeek_event_counts(conn)
+    total_events = sum(counts.values())
+    bounds = conn.execute(
+        "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event FROM zeek_events"
+    ).fetchone()
+    activity = conn.execute(
+        """
+        SELECT substr(timestamp, 1, 13) AS hour, COUNT(*) AS count
+        FROM zeek_events
+        GROUP BY substr(timestamp, 1, 13)
+        ORDER BY hour DESC
+        LIMIT 12
+        """
+    ).fetchall()
+    checkpoints = conn.execute(
+        """
+        SELECT log_type, path, inode, offset, updated_at
+        FROM zeek_ingest_checkpoints
+        ORDER BY log_type
+        """
+    ).fetchall()
+
+    tls_versions = Counter()
+    tls_sni = Counter()
+    tls_validation = Counter()
+    tls_rows = []
+    for row in conn.execute(
+        "SELECT * FROM zeek_events WHERE log_type = 'ssl' ORDER BY id DESC LIMIT 1000"
+    ).fetchall():
+        raw = _zeek_raw(row)
+        tls_versions[raw.get("version") or "unknown"] += 1
+        if raw.get("server_name"):
+            tls_sni[raw["server_name"]] += 1
+        tls_validation[raw.get("validation_status") or "not recorded"] += 1
+        if len(tls_rows) < min(limit, 25):
+            tls_rows.append(
+                {
+                    "id": row["id"],
+                    "event_uid": row["event_uid"],
+                    "timestamp": row["timestamp"],
+                    "source_ip": row["source_ip"],
+                    "source_port": row["source_port"],
+                    "destination_ip": row["destination_ip"],
+                    "destination_port": row["destination_port"],
+                    "server_name": raw.get("server_name"),
+                    "version": raw.get("version"),
+                    "cipher": raw.get("cipher"),
+                    "validation_status": raw.get("validation_status"),
+                    "sni_matches_cert": raw.get("sni_matches_cert"),
+                    "established": raw.get("established"),
+                    "resumed": raw.get("resumed"),
+                }
+            )
+
+    file_mimes = Counter()
+    file_sources = Counter()
+    file_rows = []
+    observed_bytes = 0
+    complete_file_observations = 0
+    for row in conn.execute(
+        "SELECT * FROM zeek_events WHERE log_type = 'files' ORDER BY id DESC LIMIT 1000"
+    ).fetchall():
+        raw = _zeek_raw(row)
+        seen_bytes = int(raw.get("seen_bytes") or 0)
+        missing_bytes = int(raw.get("missing_bytes") or 0)
+        observed_bytes += seen_bytes
+        if missing_bytes == 0:
+            complete_file_observations += 1
+        file_mimes[raw.get("mime_type") or "unknown"] += 1
+        file_sources[raw.get("source") or "unknown"] += 1
+        if len(file_rows) < min(limit, 25):
+            file_rows.append(
+                {
+                    "id": row["id"],
+                    "event_uid": row["event_uid"],
+                    "timestamp": row["timestamp"],
+                    "source_ip": row["source_ip"],
+                    "destination_ip": row["destination_ip"],
+                    "source": raw.get("source"),
+                    "mime_type": raw.get("mime_type"),
+                    "filename": raw.get("filename"),
+                    "seen_bytes": seen_bytes,
+                    "missing_bytes": missing_bytes,
+                    "md5": raw.get("md5"),
+                    "sha1": raw.get("sha1"),
+                    "fuid": raw.get("fuid"),
+                }
+            )
+
+    dns_queries = Counter()
+    dns_types = Counter()
+    dns_rcodes = Counter()
+    for row in conn.execute(
+        """
+        SELECT raw_json, message
+        FROM zeek_events
+        WHERE log_type = 'dns'
+        ORDER BY id DESC
+        LIMIT 5000
+        """
+    ).fetchall():
+        raw = _zeek_raw(row)
+        query = raw.get("query") or row["message"]
+        if query and query != "DNS event observed":
+            dns_queries[query] += 1
+        dns_types[raw.get("qtype_name") or "unknown"] += 1
+        dns_rcodes[raw.get("rcode_name") or "unknown"] += 1
+
+    http_hosts = Counter()
+    http_statuses = Counter()
+    http_methods = Counter()
+    for row in conn.execute(
+        "SELECT raw_json FROM zeek_events WHERE log_type = 'http' ORDER BY id DESC LIMIT 1000"
+    ).fetchall():
+        raw = _zeek_raw(row)
+        http_hosts[raw.get("host") or "unknown"] += 1
+        http_statuses[str(raw.get("status_code") or "unknown")] += 1
+        http_methods[raw.get("method") or "unknown"] += 1
+
+    recent_events = latest_zeek_events(conn, limit)
+    return {
+        "total_events": total_events,
+        "active_log_types": len(counts),
+        "first_event": bounds["first_event"] if bounds else None,
+        "last_event": bounds["last_event"] if bounds else None,
+        "event_counts": counts,
+        "activity": [dict(row) for row in reversed(activity)],
+        "checkpoints": [dict(row) for row in checkpoints],
+        "tls": {
+            "count": counts.get("ssl", 0),
+            "versions": _counter_rows(tls_versions, "version"),
+            "top_server_names": _counter_rows(tls_sni, "server_name"),
+            "validation": _counter_rows(tls_validation, "status"),
+            "recent": tls_rows,
+        },
+        "files": {
+            "count": counts.get("files", 0),
+            "observed_bytes_recent": observed_bytes,
+            "complete_observations_recent": complete_file_observations,
+            "mime_types": _counter_rows(file_mimes, "mime_type"),
+            "sources": _counter_rows(file_sources, "source"),
+            "recent": file_rows,
+        },
+        "dns": {
+            "count": counts.get("dns", 0),
+            "top_queries": _counter_rows(dns_queries, "query", limit=10),
+            "query_types": _counter_rows(dns_types, "query_type"),
+            "response_codes": _counter_rows(dns_rcodes, "response_code"),
+        },
+        "http": {
+            "count": counts.get("http", 0),
+            "top_hosts": _counter_rows(http_hosts, "host"),
+            "methods": _counter_rows(http_methods, "method"),
+            "statuses": _counter_rows(http_statuses, "status"),
+        },
+        "recent_events": recent_events,
+    }
 
 
 def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
@@ -1380,15 +1856,16 @@ def insert_firewall_block(conn, block):
     cur = conn.execute(
         """
         INSERT INTO firewall_blocks (
-          detection_id, ip_address, direction, reason, firewall_rule, timeout_seconds,
+          detection_id, ip_address, direction, zone, reason, firewall_rule, timeout_seconds,
           status, response_status, response_time_ms, created_at, expires_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             block.get("detection_id"),
             normalize_ip(block.get("ip_address")),
             block.get("direction"),
+            block.get("zone"),
             block.get("reason"),
             block.get("firewall_rule"),
             timeout_seconds,
@@ -1695,6 +2172,8 @@ def reset_dashboard_logs(conn):
         "zeek_ingest_checkpoints",
         "ai_assessments",
         "sensor_findings",
+        "score_breakdowns",
+        "virustotal_verifications",
     ]
     counts = {}
     for table in tables:
@@ -1710,6 +2189,7 @@ def latest_alerts(conn, limit=50):
         SELECT
           alerts.*,
           detections.id AS detection_id,
+          detections.case_uid,
           detections.detection_type,
           responses.final_score,
           responses.final_classification
@@ -1726,11 +2206,47 @@ def latest_alerts(conn, limit=50):
     return [dict(row) for row in rows]
 
 
-def latest_sensor_alerts(conn, limit=50):
-    rows = conn.execute(
+def latest_sensor_alerts(conn, limit=50, sensor_filter=None):
+    normalized_filter = str(sensor_filter or "all").strip().lower()
+    filter_sql = ""
+    if normalized_filter == "suricata":
+        filter_sql = """
+        WHERE EXISTS (
+          SELECT 1 FROM sensor_findings sf
+          WHERE sf.detection_id = detections.id AND sf.sensor = 'suricata'
+        )
         """
+    elif normalized_filter == "zeek":
+        filter_sql = """
+        WHERE EXISTS (
+          SELECT 1 FROM sensor_findings sf
+          WHERE sf.detection_id = detections.id AND sf.sensor = 'zeek'
+        )
+        """
+    elif normalized_filter in {"both", "multi_sensor"}:
+        filter_sql = """
+        WHERE EXISTS (
+          SELECT 1 FROM sensor_findings sf
+          WHERE sf.detection_id = detections.id AND sf.sensor = 'suricata'
+        )
+        AND EXISTS (
+          SELECT 1 FROM sensor_findings sf
+          WHERE sf.detection_id = detections.id AND sf.sensor = 'zeek'
+        )
+        """
+    rows = conn.execute(
+        f"""
         SELECT
           detections.id AS detection_id,
+          detections.case_uid,
+          COALESCE(alerts.event_uid, (
+            SELECT zeek_events.event_uid
+            FROM sensor_findings
+            JOIN zeek_events ON sensor_findings.sensor = 'zeek'
+                            AND zeek_events.id = sensor_findings.sensor_event_id
+            WHERE sensor_findings.detection_id = detections.id
+            ORDER BY sensor_findings.id LIMIT 1
+          )) AS event_uid,
           COALESCE(alerts.timestamp, detections.first_seen) AS timestamp,
           COALESCE(alerts.src_ip, detections.src_ip) AS src_ip,
           COALESCE(alerts.dest_ip, detections.dest_ip) AS dest_ip,
@@ -1760,6 +2276,7 @@ def latest_sensor_alerts(conn, limit=50):
         LEFT JOIN responses ON responses.id = (
           SELECT MAX(r2.id) FROM responses r2 WHERE r2.detection_id = detections.id
         )
+        {filter_sql}
         ORDER BY detections.id DESC
         LIMIT ?
         """,
@@ -1798,6 +2315,7 @@ def latest_ai_opinions(conn, limit=50):
           ai_reports.pcap_summary_chars,
           ai_reports.pcap_summary_included,
           ai_reports.created_at,
+          detections.case_uid,
           detections.detection_type,
           detections.python_initial_score,
           COALESCE(alerts.timestamp, detections.first_seen) AS timestamp,
@@ -2282,6 +2800,7 @@ def detection_type_detail(conn, detection_type=None, limit=50):
         f"""
         SELECT
           detections.id AS detection_id,
+          detections.case_uid,
           detections.first_seen,
           detections.src_ip,
           detections.dest_ip,
@@ -2420,6 +2939,7 @@ def ip_detail(conn, ip_address, limit=100):
         """
         SELECT
           detections.id AS detection_id,
+          detections.case_uid,
           detections.first_seen,
           detections.last_seen,
           detections.src_ip,
@@ -2581,12 +3101,11 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
     elif outcome == "human_review":
         filters.append(
             """
-            (
-              lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
-              OR responses.final_action = 'human_review'
-            )
+            lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
             """
         )
+    elif outcome == "high_risk":
+        filters.append("lower(COALESCE(responses.final_classification, '')) = 'high risk'")
     elif outcome == "safe":
         filters.append(
             """
@@ -2606,6 +3125,7 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
         SELECT
           responses.id AS response_id,
           responses.detection_id,
+          detections.case_uid,
           responses.final_score,
           responses.final_classification,
           responses.final_action,
@@ -2696,6 +3216,7 @@ def investigation_detail(conn, detection_id):
         """
         SELECT
           detections.id AS detection_id,
+          detections.case_uid,
           detections.first_seen,
           detections.last_seen,
           detections.detection_type,
@@ -2713,6 +3234,7 @@ def investigation_detail(conn, detection_id):
           detections.community_id,
           detections.status AS detection_status,
           alerts.id AS alert_id,
+          alerts.event_uid AS alert_event_uid,
           COALESCE(alerts.timestamp, detections.first_seen) AS timestamp,
           COALESCE(alerts.src_ip, detections.src_ip) AS src_ip,
           COALESCE(alerts.dest_ip, detections.dest_ip) AS dest_ip,
@@ -2785,6 +3307,39 @@ def investigation_detail(conn, detection_id):
     item["dest_otx"] = latest_threat_intel_for_ip(conn, item.get("dest_ip"), "otx")
     item["incident_evidence"] = list_incident_evidence(conn, detection_id)
     item["sensor_findings"] = sensor_findings_for_detection(conn, detection_id)
+    item["score_breakdowns"] = score_breakdowns_for_detection(conn, detection_id)
+    item["virustotal_verifications"] = virustotal_verifications_for_detection(conn, detection_id)
+    item["ai_assessments"] = [
+        dict(value)
+        for value in conn.execute(
+            "SELECT * FROM ai_assessments WHERE detection_id = ? ORDER BY id",
+            (detection_id,),
+        ).fetchall()
+    ]
+    item["responses"] = [
+        dict(value)
+        for value in conn.execute(
+            "SELECT * FROM responses WHERE detection_id = ? ORDER BY id",
+            (detection_id,),
+        ).fetchall()
+    ]
+    item["threat_intel_usage"] = [
+        dict(value)
+        for value in conn.execute(
+            """
+            SELECT indicator, indicator_type, source, stage, matched, details_json, used_at
+            FROM threat_intel_usage WHERE detection_id = ? ORDER BY id
+            """,
+            (detection_id,),
+        ).fetchall()
+    ]
+    item["firewall_history"] = [
+        dict(value)
+        for value in conn.execute(
+            "SELECT * FROM firewall_blocks WHERE detection_id = ? ORDER BY id",
+            (detection_id,),
+        ).fetchall()
+    ]
     if not item.get("signature") and item["sensor_findings"]:
         primary = item["sensor_findings"][0]
         item["signature"] = primary.get("finding_name")
@@ -2792,6 +3347,45 @@ def investigation_detail(conn, detection_id):
         item["timestamp"] = item.get("first_seen")
         item["src_ip"] = item.get("src_ip") or item.get("target_ip")
     return item
+
+
+def case_workspace(conn, case_uid):
+    detection = detection_by_case_uid(conn, case_uid)
+    if not detection:
+        return None
+    detail = investigation_detail(conn, detection["id"])
+    if not detail:
+        return None
+    detail["suricata_alerts"] = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT alerts.*
+            FROM sensor_findings
+            JOIN alerts ON sensor_findings.sensor = 'suricata'
+                       AND alerts.id = sensor_findings.sensor_event_id
+            WHERE sensor_findings.detection_id = ?
+            ORDER BY alerts.timestamp, alerts.id
+            """,
+            (detection["id"],),
+        ).fetchall()
+    ]
+    detail["zeek_findings"] = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT zeek_events.*
+            FROM sensor_findings
+            JOIN zeek_events ON sensor_findings.sensor = 'zeek'
+                            AND zeek_events.id = sensor_findings.sensor_event_id
+            WHERE sensor_findings.detection_id = ?
+            ORDER BY zeek_events.timestamp, zeek_events.id
+            """,
+            (detection["id"],),
+        ).fetchall()
+    ]
+    detail["zeek_context"] = zeek_context_for_detection(conn, detection["id"], seconds=120)
+    return detail
 
 
 def enrichment_status(conn, config, limit=50):
@@ -3126,6 +3720,7 @@ def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profil
           alerts.pcap_point,
           alerts.raw_json,
           detections.id AS detection_id,
+          detections.case_uid,
           detections.first_alert_id,
           detections.first_seen,
           detections.last_seen,

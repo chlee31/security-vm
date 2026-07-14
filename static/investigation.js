@@ -1,5 +1,6 @@
 const params = new URLSearchParams(window.location.search);
 const detectionId = params.get("id");
+const requestedCaseUid = params.get("case");
 
 const els = {
   title: document.querySelector("#investigation-title"),
@@ -18,6 +19,10 @@ const els = {
   intel: document.querySelector("#inv-intel"),
   zeek: document.querySelector("#inv-zeek"),
   createEvidence: document.querySelector("#inv-create-evidence"),
+  reassess: document.querySelector("#inv-reassess"),
+  refreshVt: document.querySelector("#inv-refresh-vt"),
+  refresh: document.querySelector("#inv-refresh"),
+  actionStatus: document.querySelector("#inv-action-status"),
   review: document.querySelector("#inv-review"),
   reviewForm: document.querySelector("#inv-review-form"),
   reviewName: document.querySelector("#inv-review-name"),
@@ -59,6 +64,11 @@ function formatApiError(data, fallback) {
 function setStatus(kind, text) {
   els.reviewStatus.className = `connection-status ${kind || ""}`.trim();
   els.reviewStatus.textContent = text;
+}
+
+function setActionStatus(kind, text) {
+  els.actionStatus.className = `connection-status ${kind || ""}`.trim();
+  els.actionStatus.textContent = text;
 }
 
 function label(value) {
@@ -150,7 +160,7 @@ function renderZeekContext(data) {
     <div class="mini-list dense expanded-list">
       ${items.slice(0, 25).map((item) => `
         <div>
-          <strong>${escapeHtml(item.event_name || item.log_type || "Zeek event")}</strong>
+          <strong>${escapeHtml(item.event_uid || item.event_name || item.log_type || "Zeek event")}</strong>
           <small>${escapeHtml(item.message || "No message")} · ${escapeHtml(item.timestamp || "")}</small>
           <small>${escapeHtml(item.source_ip || "unknown")}:${item.source_port || ""} -> ${escapeHtml(item.destination_ip || "unknown")}:${item.destination_port || ""} ${escapeHtml(item.protocol || "")}</small>
         </div>
@@ -161,7 +171,10 @@ function renderZeekContext(data) {
 
 function render(data) {
   currentInvestigation = data;
-  els.title.textContent = `${label(data.detection_type)} #${data.detection_id}`;
+  els.title.textContent = data.case_uid || `${label(data.detection_type)} #${data.detection_id}`;
+  if (data.case_uid && !requestedCaseUid) {
+    history.replaceState(null, "", `/investigation?case=${encodeURIComponent(data.case_uid)}`);
+  }
   els.finalScore.textContent = data.final_score ?? data.python_initial_score ?? 0;
   els.decision.textContent = data.final_classification || "No decision";
   els.action.textContent = data.final_action || "No action";
@@ -179,7 +192,7 @@ function render(data) {
       `${label(data.correlation_method || "none")} · confidence ${data.correlation_confidence ?? "unknown"}${data.community_id ? ` · Community ID ${escapeHtml(data.community_id)}` : ""}`
     ),
     ...findings.map((finding) => row(
-      `${label(finding.sensor)} · ${label(finding.finding_type)}`,
+      `${label(finding.sensor)} · ${finding.event_uid || label(finding.finding_type)}`,
       escapeHtml(finding.finding_name || "Unnamed finding"),
       `${escapeHtml(displayTimestamp(finding.finding_timestamp))} · ${escapeHtml(finding.source_ip || "unknown")}:${finding.source_port || ""} -> ${escapeHtml(finding.destination_ip || "unknown")}:${finding.destination_port || ""} ${escapeHtml(finding.protocol || "")} · severity ${finding.severity ?? "unknown"} · confidence ${finding.confidence ?? "unknown"}`
     )),
@@ -188,6 +201,7 @@ function render(data) {
     row("Timestamp", data.timestamp || data.first_seen || "unknown"),
   ].filter(Boolean).join("");
 
+  const assessments = data.ai_assessments || [];
   els.ai.innerHTML = [
     row("Classification", data.ai_classification || "No AI opinion", `${data.ai_confidence || "No"} confidence`),
     row("AI Profile UID", data.ai_profile_uid || "legacy-profile", "Selected Admin profile stamped into this report"),
@@ -195,18 +209,58 @@ function render(data) {
     row("Model Run", data.ai_model_run_id || "not recorded", `${data.ai_prompt_version || "unknown prompt"} · ${data.ai_elapsed_ms ?? 0}ms`),
     row("Reason", data.ai_reason || "No AI reason stored."),
     row("Recommended Action", data.ai_recommended_action || "none", `Risk adjustment ${data.ai_risk_adjustment ?? 0}`),
+    ...assessments.map((item) => row(
+      `${label(item.assessment_type)} · ${item.model_name || "unknown model"}`,
+      `${item.classification || "Unknown"} · adjustment ${item.risk_adjustment ?? 0}`,
+      `${item.confidence || "Unknown"} confidence · ${displayTimestamp(item.created_at)}`
+    )),
   ].join("");
 
+  const breakdowns = data.score_breakdowns || [];
+  const latestBreakdown = breakdowns.at(-1);
+  const categoryLabels = {
+    sensor_severity: "Sensor finding severity",
+    behavior_correlation: "Behavior and time correlation",
+    threat_intelligence: "Cached and bulk threat intelligence",
+    mitre_relevance: "MITRE ATT&CK relevance",
+    asset_direction: "Asset criticality and direction",
+    sensor_corroboration: "Suricata-Zeek corroboration"
+  };
+  const categoryMax = {
+    sensor_severity: 20,
+    behavior_correlation: 20,
+    threat_intelligence: 20,
+    mitre_relevance: 10,
+    asset_direction: 10,
+    sensor_corroboration: 10
+  };
   els.scoring.innerHTML = [
-    row("Python Score", data.python_initial_score ?? 0, "Deterministic correlation score"),
-    row("AI Adjustment", data.ai_risk_adjustment ?? 0, "Bounded model second opinion"),
+    row("Python Deterministic Score", latestBreakdown?.python_score ?? data.python_initial_score ?? 0, "Maximum 90 points"),
+    ...Object.entries(categoryLabels).map(([key, title]) => row(
+      title,
+      `${latestBreakdown?.[key] ?? 0} / ${categoryMax[key]}`,
+      latestBreakdown?.details?.[key]?.explanation || "No stored category explanation for this legacy decision."
+    )),
+    row("AI Adjustment", latestBreakdown?.llm_adjustment_applied ?? data.ai_risk_adjustment ?? 0, "Independently clamped from -10 to +10"),
+    latestBreakdown?.forced_review ? row("Mandatory Review Override", "Human Review Required", latestBreakdown.forced_review_reason || "Materially disputed sensor findings") : "",
     row("Correlation", `${data.alert_count || 0} sensor events · ${data.unique_dest_ports || 0} destination ports · ${data.unique_dest_hosts || 0} hosts`, `${data.time_window_seconds || 0}s window · ${label(data.correlation_method || "single_sensor")}`),
     row("MITRE", data.mitre_id ? `${data.mitre_id} · ${data.mitre_name || ""}` : "No MITRE mapping"),
-  ].join("");
+  ].filter(Boolean).join("");
 
+  const vtRows = data.virustotal_verifications || [];
   els.intel.innerHTML = [
     intelBlock("Source IP", data.src_ip_profile, data.src_threat_intel, data.src_asset),
     intelBlock("Destination IP", data.dest_ip_profile, data.dest_threat_intel, data.dest_asset),
+    row(
+      "VirusTotal Verification",
+      vtRows.length ? `${vtRows.length} stored verification record${vtRows.length === 1 ? "" : "s"}` : "Not requested",
+      "Post-AI evidence only. VirusTotal never changes the numerical score."
+    ),
+    ...vtRows.map((item) => row(
+      `${item.ip_address || "No eligible public IP"} · ${label(item.request_state)}`,
+      `${label(item.verdict)} · ${label(item.interpretation)}`,
+      `malicious ${item.malicious_count || 0} · suspicious ${item.suspicious_count || 0} · ${displayTimestamp(item.checked_at)}`
+    )),
   ].join("");
 
   els.review.innerHTML = [
@@ -272,18 +326,52 @@ async function createEvidence() {
     els.zeek.innerHTML = `<div class="empty">${error.message}</div>`;
   } finally {
     els.createEvidence.disabled = false;
-    els.createEvidence.textContent = "Create Evidence";
+    els.createEvidence.textContent = "Preserve Forensic Evidence";
+  }
+}
+
+async function reassess() {
+  if (!currentInvestigation?.case_uid) return;
+  els.reassess.disabled = true;
+  setActionStatus("", "Reassessment in progress. One AI request will be made.");
+  try {
+    const result = await sendJson(`/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/reassess`, "POST");
+    await refresh();
+    setActionStatus("ok", `Reassessment stored: ${result.response?.final_classification || "complete"}.`);
+  } catch (error) {
+    setActionStatus("error", error.message);
+  } finally {
+    els.reassess.disabled = false;
+  }
+}
+
+async function refreshVirusTotal() {
+  if (!currentInvestigation?.case_uid) return;
+  els.refreshVt.disabled = true;
+  setActionStatus("", "Refreshing eligible public IPs with VirusTotal.");
+  try {
+    await sendJson(`/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/virustotal/refresh`, "POST");
+    await refresh();
+    setActionStatus("ok", "VirusTotal refreshed. Reassess explicitly if another AI opinion is needed.");
+  } catch (error) {
+    setActionStatus("error", error.message);
+  } finally {
+    els.refreshVt.disabled = false;
   }
 }
 
 async function refresh() {
-  if (!detectionId) {
+  if (!detectionId && !requestedCaseUid && !currentInvestigation?.case_uid) {
     els.updated.textContent = "Missing detection id";
     els.alert.innerHTML = `<div class="empty">Open this page from an alert, AI opinion, evidence row, or review item.</div>`;
     return;
   }
   try {
-    render(await getJson(`/api/investigation/${encodeURIComponent(detectionId)}`));
+    const caseUid = requestedCaseUid || currentInvestigation?.case_uid;
+    const path = caseUid
+      ? `/api/cases/${encodeURIComponent(caseUid)}`
+      : `/api/investigation/${encodeURIComponent(detectionId)}`;
+    render(await getJson(path));
   } catch (error) {
     els.updated.textContent = "Investigation API error";
     els.alert.innerHTML = `<div class="empty">${error.message}</div>`;
@@ -293,3 +381,6 @@ async function refresh() {
 refresh();
 els.reviewForm.addEventListener("submit", submitReview);
 els.createEvidence.addEventListener("click", createEvidence);
+els.reassess.addEventListener("click", reassess);
+els.refreshVt.addEventListener("click", refreshVirusTotal);
+els.refresh.addEventListener("click", refresh);
