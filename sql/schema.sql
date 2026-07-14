@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   severity INTEGER,
   priority INTEGER,
   flow_id TEXT,
+  community_id TEXT,
   pcap_point TEXT,
   raw_json TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -24,6 +25,14 @@ CREATE TABLE IF NOT EXISTS detections (
   last_seen TEXT,
   src_ip TEXT,
   dest_ip TEXT,
+  src_port INTEGER,
+  dest_port INTEGER,
+  protocol TEXT,
+  community_id TEXT,
+  sensor_state TEXT DEFAULT 'suricata_only',
+  agreement_state TEXT DEFAULT 'single_sensor',
+  correlation_method TEXT DEFAULT 'single_sensor',
+  correlation_confidence REAL DEFAULT 0.5,
   detection_type TEXT,
   alert_count INTEGER,
   unique_dest_ports INTEGER,
@@ -36,6 +45,26 @@ CREATE TABLE IF NOT EXISTS detections (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS sensor_findings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER NOT NULL,
+  sensor TEXT NOT NULL,
+  sensor_event_id INTEGER NOT NULL,
+  finding_type TEXT NOT NULL,
+  finding_name TEXT NOT NULL,
+  severity INTEGER,
+  confidence REAL,
+  community_id TEXT,
+  raw_event TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(sensor, sensor_event_id),
+  FOREIGN KEY (detection_id) REFERENCES detections(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sensor_findings_detection
+  ON sensor_findings(detection_id);
+CREATE INDEX IF NOT EXISTS idx_sensor_findings_event
+  ON sensor_findings(sensor, sensor_event_id);
 CREATE TABLE IF NOT EXISTS allowlist (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip_address TEXT NOT NULL,
@@ -65,6 +94,54 @@ CREATE TABLE IF NOT EXISTS threat_intel_lookups (
   raw_response TEXT
 );
 
+CREATE TABLE IF NOT EXISTS threat_intel_indicators (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  indicator TEXT NOT NULL,
+  indicator_type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  category TEXT,
+  malware_family TEXT,
+  confidence INTEGER,
+  first_seen TEXT,
+  last_seen TEXT,
+  expires_at TEXT,
+  source_reference TEXT,
+  raw_data TEXT,
+  imported_at TEXT NOT NULL,
+  UNIQUE(indicator, indicator_type, source)
+);
+
+CREATE TABLE IF NOT EXISTS threat_intel_sources (
+  source TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'not_active',
+  indicator_count INTEGER DEFAULT 0,
+  last_attempt TEXT,
+  last_success TEXT,
+  last_error TEXT,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS threat_intel_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER,
+  alert_id INTEGER,
+  indicator TEXT NOT NULL,
+  indicator_type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  matched INTEGER DEFAULT 1,
+  details_json TEXT,
+  used_at TEXT NOT NULL,
+  UNIQUE(detection_id, indicator, indicator_type, source, stage)
+);
+
+CREATE INDEX IF NOT EXISTS idx_threat_intel_indicator
+  ON threat_intel_indicators(indicator, indicator_type);
+CREATE INDEX IF NOT EXISTS idx_threat_intel_source
+  ON threat_intel_indicators(source);
+CREATE INDEX IF NOT EXISTS idx_threat_intel_usage_source
+  ON threat_intel_usage(source, used_at);
+
 CREATE TABLE IF NOT EXISTS assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip_address TEXT NOT NULL UNIQUE,
@@ -83,11 +160,58 @@ CREATE TABLE IF NOT EXISTS incident_evidence (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,
   alert_id INTEGER,
+  incident_directory TEXT,
   incident_start_time TEXT,
   incident_end_time TEXT,
+  window_start TEXT,
+  window_end TEXT,
   incident_pcap_path TEXT,
+  pcap_path TEXT,
   pcap_summary_path TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  zeek_logs_path TEXT,
+  pcap_summary TEXT,
+  evidence_manifest_path TEXT,
+  status TEXT DEFAULT 'pending',
+  error_message TEXT,
+  capture_label TEXT,
+  file_size_bytes INTEGER,
+  pcap_modified_at TEXT,
+  summary_status TEXT,
+  summary_packet_count INTEGER,
+  summary_error TEXT,
+  display_filter TEXT,
+  ai_sent INTEGER DEFAULT 0,
+  ai_model_run_id TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS zeek_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  zeek_uid TEXT,
+  log_type TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  source_ip TEXT,
+  source_port INTEGER,
+  destination_ip TEXT,
+  destination_port INTEGER,
+  protocol TEXT,
+  community_id TEXT,
+  event_name TEXT,
+  message TEXT,
+  sub_message TEXT,
+  actions_json TEXT,
+  raw_json TEXT NOT NULL,
+  ingested_at TEXT NOT NULL,
+  UNIQUE(log_type, timestamp, zeek_uid, event_name, message)
+);
+
+CREATE TABLE IF NOT EXISTS zeek_ingest_checkpoints (
+  log_type TEXT PRIMARY KEY,
+  path TEXT,
+  inode INTEGER,
+  offset INTEGER DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS ai_reports (
@@ -107,7 +231,32 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   recommended_action TEXT,
   raw_response TEXT,
   elapsed_ms INTEGER,
+  prompt_sha256 TEXT,
+  prompt_chars INTEGER,
+  pcap_summary_sha256 TEXT,
+  pcap_summary_chars INTEGER,
+  pcap_summary_included INTEGER DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_assessments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER NOT NULL,
+  incident_evidence_id INTEGER,
+  assessment_type TEXT NOT NULL,
+  provider TEXT,
+  model_name TEXT NOT NULL,
+  classification TEXT NOT NULL,
+  confidence REAL,
+  risk_adjustment INTEGER,
+  reason TEXT,
+  recommended_action TEXT,
+  evidence_sources_json TEXT,
+  response_time_ms INTEGER,
+  raw_response TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (detection_id) REFERENCES detections(id),
+  FOREIGN KEY (incident_evidence_id) REFERENCES incident_evidence(id)
 );
 
 CREATE TABLE IF NOT EXISTS ai_profiles (
@@ -204,3 +353,18 @@ CREATE TABLE IF NOT EXISTS analyst_reviews (
   reviewed_at TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_zeek_events_time
+ON zeek_events(timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_zeek_events_uid
+ON zeek_events(zeek_uid);
+
+CREATE INDEX IF NOT EXISTS idx_zeek_events_src_dst
+ON zeek_events(source_ip, destination_ip);
+
+CREATE INDEX IF NOT EXISTS idx_incident_evidence_detection
+ON incident_evidence(detection_id);
+
+CREATE INDEX IF NOT EXISTS idx_ai_assessments_detection
+ON ai_assessments(detection_id, assessment_type);

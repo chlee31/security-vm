@@ -7,12 +7,15 @@ const els = {
   totalAssets: document.querySelector("#total-assets"),
   topDetection: document.querySelector("#top-detection"),
   systemMode: document.querySelector("#system-mode"),
+  zeekNoticeCount: document.querySelector("#zeek-notice-count"),
+  zeekWeirdCount: document.querySelector("#zeek-weird-count"),
+  investigationsReady: document.querySelector("#investigations-ready"),
   summaryIpPie: document.querySelector("#summary-ip-pie"),
   summaryTimeline: document.querySelector("#summary-timeline"),
-  summaryOtx: document.querySelector("#summary-otx"),
   summaryModels: document.querySelector("#summary-models"),
+  summaryEncrypted: document.querySelector("#summary-encrypted"),
+  summaryZeek: document.querySelector("#summary-zeek"),
   decisionEvidence: document.querySelector("#decision-evidence"),
-  pcapFiles: document.querySelector("#pcap-files"),
   mode: document.querySelector("#mode"),
   updated: document.querySelector("#updated"),
   alerts: document.querySelector("#alerts"),
@@ -25,15 +28,6 @@ const els = {
   assetType: document.querySelector("#asset-type"),
   assetInterface: document.querySelector("#asset-interface"),
   assetScore: document.querySelector("#asset-score"),
-  enrichment: document.querySelector("#enrichment"),
-  threatIntelForm: document.querySelector("#threat-intel-form"),
-  otxEnabled: document.querySelector("#otx-enabled"),
-  otxCacheTtl: document.querySelector("#otx-cache-ttl"),
-  otxApiKey: document.querySelector("#otx-api-key"),
-  otxLookupScope: document.querySelector("#otx-lookup-scope"),
-  otxStatus: document.querySelector("#otx-status"),
-  testOtx: document.querySelector("#test-otx"),
-  runOtx: document.querySelector("#run-otx"),
   events: document.querySelector("#events"),
   checkAiModel: document.querySelector("#check-ai-model"),
   resetLogs: document.querySelector("#reset-logs"),
@@ -42,7 +36,6 @@ const els = {
 
 let selectedDetectionType = null;
 let selectedOutcome = null;
-let selectedOtxReputation = null;
 
 function readHashFilters() {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -89,6 +82,10 @@ function investigationUrl(detectionId) {
   return `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
 
+function ipWorkbookUrl(ipAddress) {
+  return `/ip?address=${encodeURIComponent(ipAddress)}`;
+}
+
 readHashFilters();
 
 async function getJson(path) {
@@ -116,6 +113,29 @@ function formatApiError(data, fallback) {
     return detail.map((item) => item.msg || JSON.stringify(item)).join("; ");
   }
   return JSON.stringify(detail);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function displayTimestamp(value) {
+  if (!value) return "Timestamp unavailable";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
 function detectionLabel(value) {
@@ -169,7 +189,7 @@ function renderPie(container, rows, labelFn, valueFn, emptyText) {
         ${top.map((item, index) => `
           <div>
             <span class="legend-dot" style="background:${colors[index]}"></span>
-            <strong>${labelFn(item)}</strong>
+            <a class="inline-link strong-link" href="${ipWorkbookUrl(labelFn(item))}" target="_blank" rel="noopener">${labelFn(item)}</a>
             <small>${valueFn(item)} seen</small>
           </div>
         `).join("")}
@@ -200,8 +220,9 @@ function renderSummary(summary) {
     const message = `${summary._error}. Restart the dashboard backend to enable this summary.`;
     els.summaryIpPie.innerHTML = `<div class="empty">${message}</div>`;
     els.summaryTimeline.innerHTML = `<div class="empty">${message}</div>`;
-    els.summaryOtx.innerHTML = `<div class="empty">${message}</div>`;
     els.summaryModels.innerHTML = `<div class="empty">${message}</div>`;
+    els.summaryEncrypted.innerHTML = `<div class="empty">${message}</div>`;
+    els.summaryZeek.innerHTML = `<div class="empty">${message}</div>`;
     return;
   }
 
@@ -219,51 +240,6 @@ function renderSummary(summary) {
     (item) => item.count,
     "No timeline data yet."
   );
-
-  const otxSource = (summary.otx?.sources || []).find((source) => source.name === "otx") || {};
-  const reputationRows = summary.otx?.by_reputation || [];
-  const lookupsByReputation = summary.otx?.lookups_by_reputation || {};
-  if (selectedOtxReputation && !lookupsByReputation[selectedOtxReputation]) {
-    selectedOtxReputation = null;
-  }
-  const selectedOtxRows = selectedOtxReputation ? lookupsByReputation[selectedOtxReputation] || [] : [];
-  els.summaryOtx.innerHTML = `
-    <div class="summary-stack">
-      <div class="summary-cardline">
-        <strong>${otxSource.status || "unknown"}</strong>
-        <span>${summary.otx?.lookup_count || 0} lookups</span>
-      </div>
-      <small>${otxSource.api_key_configured ? "API key configured" : "API key not configured"} · ${otxSource.cache_ttl_hours || 24}h cache</small>
-      <div class="bar-list compact-bars">
-        ${reputationRows.map((row) => `
-          <button class="summary-drill-row ${selectedOtxReputation === (row.reputation || "unknown") ? "selected" : ""}" type="button" data-otx-reputation="${row.reputation || "unknown"}">
-            <div class="row tight">
-              <strong>${row.reputation || "unknown"}</strong>
-              <span>${row.count}</span>
-            </div>
-            <small>malicious ${row.malicious_total || 0} · suspicious ${row.suspicious_total || 0}</small>
-          </button>
-        `).join("") || `<div class="empty">No cached OTX results yet.</div>`}
-      </div>
-      ${selectedOtxReputation ? `
-        <div class="otx-drilldown">
-          <div class="summary-cardline">
-            <strong>${selectedOtxReputation} IPs</strong>
-            <span>${selectedOtxRows.length}</span>
-          </div>
-          <div class="mini-list dense">
-            ${selectedOtxRows.slice(0, 10).map((item) => `
-              <div>
-                <strong>${item.indicator}</strong>
-                <small>malicious ${item.malicious_count || 0} · suspicious ${item.suspicious_count || 0}</small>
-                <small>${item.lookup_result || "No OTX detail"}${item.lookup_time ? ` · ${item.lookup_time}` : ""}</small>
-              </div>
-            `).join("") || `<small>No IPs found for this reputation.</small>`}
-          </div>
-        </div>
-      ` : `<small>Click a reputation row to see searched IP addresses.</small>`}
-    </div>
-  `;
 
   const grouped = new Map();
   let legacyCount = 0;
@@ -322,6 +298,67 @@ function renderSummary(summary) {
       </div>
     </div>
   `;
+
+  const encrypted = summary.encrypted_traffic || {};
+  const portRows = encrypted.ports || [];
+  const ipRows = encrypted.ips || [];
+  els.summaryEncrypted.innerHTML = `
+    <div class="summary-stack encrypted-summary">
+      <div class="summary-cardline">
+        <strong>${encrypted.candidate_count || 0} candidates</strong>
+        <span>metadata only</span>
+      </div>
+      <small>${encrypted.not_visible || "Encrypted payload contents are not visible."}</small>
+      <div class="mini-list dense">
+        <div>
+          <strong>Visible signals</strong>
+          <small>${(encrypted.visible || []).join(" · ") || "IPs · ports · timing · reputation"}</small>
+        </div>
+      </div>
+      <div class="split-mini-list">
+        <div>
+          <strong>Top ports</strong>
+          ${(portRows.slice(0, 4).map((item) => `
+            <small>${item.protocol || "unknown"}/${item.port || "unknown"} · ${item.count || 0}</small>
+          `).join("")) || `<small>No encrypted candidates yet.</small>`}
+        </div>
+        <div>
+          <strong>Top IPs</strong>
+          ${(ipRows.slice(0, 4).map((item) => `
+            <small><a class="inline-link" href="${ipWorkbookUrl(item.ip_address)}" target="_blank" rel="noopener">${item.ip_address}</a> · ${item.count || 0}</small>
+          `).join("")) || `<small>No IPs yet.</small>`}
+        </div>
+      </div>
+    </div>
+  `;
+
+  const zeek = summary.zeek || {};
+  const zeekCounts = zeek.event_counts || {};
+  const zeekLogs = zeek.logs || [];
+  els.summaryZeek.innerHTML = `
+    <div class="summary-stack zeek-summary">
+      <div class="summary-cardline">
+        <strong>${zeek.running ? "running" : zeek.installed ? "installed" : "unavailable"}</strong>
+        <span>${zeek.interface || "no interface"}</span>
+      </div>
+      <small>${zeek.log_directory || "No Zeek log directory configured"}</small>
+      <div class="split-mini-list">
+        <div>
+          <strong>Events</strong>
+          <small>notice ${zeekCounts.notice || 0}</small>
+          <small>weird ${zeekCounts.weird || 0}</small>
+          <small>conn ${zeekCounts.conn || 0}</small>
+        </div>
+        <div>
+          <strong>Logs</strong>
+          ${zeekLogs.slice(0, 4).map((item) => `
+            <small>${item.log_type}: ${item.exists ? "ready" : "missing"}</small>
+          `).join("") || `<small>No log checks available.</small>`}
+        </div>
+      </div>
+      <small>Community packages: ${(zeek.community_packages || []).length || 0} configured through zkg.</small>
+    </div>
+  `;
 }
 
 function renderMetrics(metrics) {
@@ -332,6 +369,9 @@ function renderMetrics(metrics) {
   els.reviewCount.textContent = metrics.outcome_counts?.human_review ?? 0;
   els.dangerCount.textContent = metrics.outcome_counts?.dangerous ?? 0;
   els.totalAssets.textContent = metrics.total_assets ?? 0;
+  els.zeekNoticeCount.textContent = metrics.zeek_notice_count ?? 0;
+  els.zeekWeirdCount.textContent = metrics.zeek_weird_count ?? 0;
+  els.investigationsReady.textContent = metrics.investigations_ready ?? 0;
   els.topDetection.textContent = detections[0] ? detectionLabel(detections[0].detection_type) : "None";
   els.systemMode.textContent = metrics.mode || "alert_only";
   els.mode.textContent = metrics.mode || "alert_only";
@@ -376,25 +416,43 @@ function renderMetrics(metrics) {
 }
 
 function renderAlerts(alerts) {
-  els.alerts.innerHTML = alerts.map((alert) => `
-    <a class="alert investigation-link" href="${alert.detection_id ? investigationUrl(alert.detection_id) : "#"}" target="_blank" rel="noopener">
-      <time>${alert.timestamp || ""}</time>
-      <div>
-        <strong>${alert.signature || "Suricata alert"}</strong>
-        <p>
-          ${alert.src_ip || "unknown"}:${alert.src_port || ""} ->
-          ${alert.dest_ip || "unknown"}:${alert.dest_port || ""}
-          ${alert.protocol || ""}
-        </p>
-        <p>${alert.category || "unknown"} · priority ${alert.priority || "unknown"}</p>
-        ${alert.final_classification ? `<p>${alert.final_classification} · score ${alert.final_score ?? 0}</p>` : ""}
-      </div>
-      <div class="score-badge priority">
-        <span>Priority</span>
-        <strong>${alert.priority || "?"}</strong>
-      </div>
-    </a>
-  `).join("") || `<div class="empty">No alerts in SQLite yet. Run the ingest command while Suricata writes eve.json.</div>`;
+  els.alerts.innerHTML = alerts.map((alert) => {
+    const findings = alert.sensor_findings || [];
+    const sensors = [...new Set(findings.map((finding) => String(finding.sensor || "unknown").toLowerCase()))];
+    const timestamp = alert.timestamp || findings[0]?.finding_timestamp;
+    return `
+      <a class="alert unified-alert investigation-link" href="${alert.detection_id ? investigationUrl(alert.detection_id) : "#"}" target="_blank" rel="noopener">
+        <div class="alert-time-block">
+          <span>Detected</span>
+          <time>${escapeHtml(displayTimestamp(timestamp))}</time>
+          <small>#${alert.detection_id || "unlinked"}</small>
+        </div>
+        <div class="alert-main">
+          <div class="sensor-badges">
+            ${sensors.map((sensor) => `<span class="sensor-badge ${escapeHtml(sensor)}">${escapeHtml(sensor.toUpperCase())}</span>`).join("") || `<span class="sensor-badge unknown">UNLINKED</span>`}
+            <span class="correlation-label">${escapeHtml(detectionLabel(alert.sensor_state || "single_sensor"))}</span>
+          </div>
+          <strong class="alert-signature">${escapeHtml(alert.signature || "Network detection")}</strong>
+          <p class="alert-flow">
+            ${escapeHtml(alert.src_ip || "unknown")}:${escapeHtml(alert.src_port || "")}
+            <span aria-hidden="true">-&gt;</span>
+            ${escapeHtml(alert.dest_ip || "unknown")}:${escapeHtml(alert.dest_port || "")}
+            ${escapeHtml(alert.protocol || "")}
+          </p>
+          <div class="sensor-finding-list">
+            ${findings.map((finding) => `
+              <div class="sensor-finding-row">
+                <span class="sensor-badge ${escapeHtml(String(finding.sensor || "unknown").toLowerCase())}">${escapeHtml(String(finding.sensor || "unknown").toUpperCase())}</span>
+                <strong>${escapeHtml(finding.finding_name || finding.finding_type || "Finding")}</strong>
+                <time>${escapeHtml(displayTimestamp(finding.finding_timestamp))}</time>
+              </div>
+            `).join("") || `<small>No linked sensor findings stored.</small>`}
+          </div>
+        </div>
+        ${scoreBadge(alert.final_score ?? 0, alert.final_classification || "Pending")}
+      </a>
+    `;
+  }).join("") || `<div class="empty">No unified detections yet. Start Suricata and Zeek ingestion, then refresh.</div>`;
 }
 
 function classificationClass(value) {
@@ -417,6 +475,7 @@ function renderAiModelReports(reports) {
           ${report.src_ip || "unknown"} -> ${report.dest_ip || "unknown"}
           ${report.signature || ""}
         </p>
+        <p>${detectionLabel(report.sensor_state || "suricata_only")} · ${detectionLabel(report.agreement_state || "single_sensor")}</p>
         <p>${report.reason || "No reason returned."}</p>
         <p>Recommended action: ${report.recommended_action || "none"} · risk adjustment ${report.risk_adjustment ?? 0}</p>
         <p>Profile ${report.ai_profile_uid || "legacy-profile"} · run ${report.model_run_id || "not recorded"} · ${report.elapsed_ms ?? 0}ms</p>
@@ -438,119 +497,26 @@ function renderEvents(events) {
   `).join("") || `<div class="empty">No runtime logs yet. Start ingest or check the AI model.</div>`;
 }
 
-function renderOtxSummary(result) {
-  if (!result) return "OTX no lookup yet";
-  const reputation = result.reputation || "unknown";
-  const malicious = result.malicious_count ?? 0;
-  const suspicious = result.suspicious_count ?? 0;
-  const cached = result.cached ? "cached" : "fresh";
-  return `OTX ${reputation} · malicious ${malicious} · suspicious ${suspicious} · ${cached}`;
-}
-
-function renderEnrichment(status) {
-  const sources = status.sources || [];
-  const topIps = status.top_ips || [];
-  const otx = sources.find((source) => source.name === "otx") || {};
-  els.otxEnabled.checked = Boolean(otx.enabled);
-  els.otxCacheTtl.value = status.cache_policy?.ttl_hours || 24;
-  els.otxApiKey.placeholder = otx.api_key_configured ? "OTX API key saved" : "OTX API key";
-  if (!otx.api_key_configured && !els.otxApiKey.value) {
-    els.otxStatus.className = "connection-status warn";
-    els.otxStatus.textContent = "OTX key not configured.";
-  } else if (!els.otxStatus.dataset.manual) {
-    els.otxStatus.className = "connection-status";
-    els.otxStatus.textContent = "OTX connection not tested.";
-  }
-  els.enrichment.innerHTML = `
-    <div class="list-item">
-      <div class="row tight">
-        <strong>Cache policy</strong>
-        <span>${status.cache_policy?.ttl_hours || 24}h TTL</span>
-      </div>
-      <p>${status.cache_policy?.notes || "Recent lookups are reused from SQLite."}</p>
-    </div>
-    ${sources.map((source) => `
-      <div class="list-item enrichment-source ${source.status}">
-        <div class="row tight">
-          <strong>${source.name}</strong>
-          <span>${source.status}${source.cache_ttl_hours ? ` · ${source.cache_ttl_hours}h cache` : ""}</span>
-        </div>
-        <p>${source.notes}</p>
-        ${source.api_key_configured !== undefined ? `<small>API key configured: ${source.api_key_configured ? "yes" : "no"}</small>` : ""}
-      </div>
-    `).join("")}
-    <div class="list-item">
-      <div class="row tight">
-        <strong>Threat intel lookups</strong>
-        <span>${status.lookup_count || 0}</span>
-      </div>
-      <p>External API lookups are tracked here when enabled.</p>
-    </div>
-    ${topIps.slice(0, 8).map((item) => `
-      <div class="list-item">
-        <div class="row tight">
-          <strong>${item.ip_address}</strong>
-          <span>${item.scope}</span>
-        </div>
-        <p>${item.location}</p>
-        <small>${item.source} · seen ${item.count}</small>
-      </div>
-    `).join("")}
-  `;
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-}
-
-function renderPcapFiles(inventory) {
-  const files = (inventory.files || []).filter((file) => file.related).slice(0, 20);
-  const allFiles = inventory.files || [];
-  els.pcapFiles.innerHTML = `
-    <div class="pcap-summary">
-      <strong>${files.length}</strong>
-      <span>related files · ${allFiles.length} total in ${inventory.directory || "pcap directory"}</span>
-    </div>
-    ${files.map((file) => `
-      <div class="pcap-item ${file.label}">
-        <div class="row tight">
-          <strong>${file.name}</strong>
-          <span>${file.label}</span>
-        </div>
-        <p>${file.path}</p>
-        <small>${formatBytes(file.size_bytes)} · modified ${file.modified_at}</small>
-      </div>
-    `).join("") || `<div class="empty">No PCAP files matched this detection time window.</div>`}
-  `;
-}
-
 function renderDecisionEvidence(rows) {
   const outcomeLabel = selectedOutcome ? detectionLabel(selectedOutcome) : "All Outcomes";
   els.decisionEvidence.innerHTML = rows.map((row) => `
     <article class="evidence-item">
       <div class="row tight">
         <strong>${row.final_classification || "Decision"}</strong>
-        <span>${row.final_action || "none"}</span>
+        <time class="evidence-timestamp">${escapeHtml(displayTimestamp(row.timestamp || row.first_seen))}</time>
       </div>
       ${scoreBadge(row.final_score ?? 0, "Final")}
       <div class="evidence-chain">
         <div>
-          <span>Alert</span>
-          <strong>${row.signature || "Suricata alert"}</strong>
-          <small>${row.src_ip || "unknown"}:${row.src_port || ""} -> ${row.dest_ip || "unknown"}:${row.dest_port || ""} · priority ${row.priority || "unknown"}</small>
+          <span>Sensor Finding</span>
+          <strong>${row.signature || "Network detection"}</strong>
+          <small>${detectionLabel(row.sensor_state || "single_sensor")} · ${row.src_ip || "unknown"}:${row.src_port || ""} -> ${row.dest_ip || "unknown"}:${row.dest_port || ""}</small>
+          <small>${(row.sensor_findings || []).map((finding) => `${String(finding.sensor || "unknown").toUpperCase()}: ${finding.finding_name || finding.finding_type || "finding"}`).join(" · ") || `priority ${row.priority || "unknown"}`}</small>
         </div>
         <div>
           <span>Correlation</span>
           <strong>${detectionLabel(row.detection_type)}</strong>
-          <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
+          <small>${detectionLabel(row.sensor_state || "suricata_only")} · ${detectionLabel(row.agreement_state || "single_sensor")} · ${row.alert_count || 0} events · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
         </div>
         <div>
           <span>Scoring</span>
@@ -644,25 +610,25 @@ function renderAssets(payload) {
   `;
 }
 
-async function refresh() {
+async function refresh(options = {}) {
+  const preserveScroll = Boolean(options.preserveScroll);
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
   try {
-    const pcapPath = selectedDetectionType
-      ? `/api/pcap-files?detection_type=${encodeURIComponent(selectedDetectionType)}`
-      : "/api/pcap-files";
+    els.refresh.disabled = true;
+    els.refresh.textContent = "Refreshing";
     const evidencePath = selectedDetectionType
       ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`
       : `/api/decision-evidence?limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`;
     const summaryRequest = getJson("/api/dashboard-summary?limit=12").catch((error) => ({ _error: error.message }));
-    const [metrics, summary, alerts, aiReports, allowlist, assets, enrichment, events, pcaps, evidence] = await Promise.all([
+    const [metrics, summary, alerts, aiReports, allowlist, assets, events, evidence] = await Promise.all([
       getJson("/api/metrics"),
       summaryRequest,
-      getJson("/api/alerts?limit=50"),
+      getJson("/api/latest-alerts?limit=50"),
       getJson("/api/ai-opinions?limit=50"),
       getJson("/api/allowlist?limit=25"),
       getJson("/api/assets?limit=25"),
-      getJson("/api/enrichment-status?limit=25"),
       getJson("/api/events?limit=40"),
-      getJson(pcapPath),
       getJson(evidencePath)
     ]);
     renderMetrics(metrics);
@@ -671,25 +637,28 @@ async function refresh() {
     renderAiModelReports(aiReports);
     renderAllowlist(allowlist);
     renderAssets(assets);
-    renderEnrichment(enrichment);
     renderEvents(events);
-    renderPcapFiles(pcaps);
     renderDecisionEvidence(evidence);
-    els.updated.textContent = new Date().toLocaleTimeString();
+    els.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (error) {
     els.updated.textContent = "Dashboard API error";
     els.alerts.innerHTML = `<div class="empty">${error.message}</div>`;
     els.aiReports.innerHTML = `<div class="empty">${error.message}</div>`;
     els.allowlist.innerHTML = `<div class="empty">${error.message}</div>`;
     els.assets.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.enrichment.innerHTML = `<div class="empty">${error.message}</div>`;
     els.events.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.pcapFiles.innerHTML = `<div class="empty">${error.message}</div>`;
     els.decisionEvidence.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryIpPie.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryTimeline.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.summaryOtx.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryModels.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.summaryEncrypted.innerHTML = `<div class="empty">${error.message}</div>`;
+    els.summaryZeek.innerHTML = `<div class="empty">${error.message}</div>`;
+  } finally {
+    els.refresh.disabled = false;
+    els.refresh.textContent = "Refresh";
+    if (preserveScroll) {
+      requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
+    }
   }
 }
 
@@ -710,72 +679,6 @@ async function resetLogs() {
   selectedOutcome = null;
   writeHashFilters();
   refresh();
-}
-
-async function saveThreatIntelSettingsFromForm(forceEnable = false) {
-  const form = new FormData(els.threatIntelForm);
-  return sendJson("/api/threat-intel-config", "POST", {
-    otx_enabled: forceEnable || form.get("otx_enabled") === "on",
-    otx_api_key: form.get("otx_api_key") || "",
-    cache_ttl_hours: Number(form.get("cache_ttl_hours") || 24)
-  });
-}
-
-async function saveThreatIntelSettings(event) {
-  event.preventDefault();
-  await saveThreatIntelSettingsFromForm();
-  els.otxApiKey.value = "";
-  refresh();
-}
-
-async function testOtxConnection() {
-  els.otxStatus.dataset.manual = "true";
-  els.otxStatus.className = "connection-status warn";
-  els.otxStatus.textContent = "Testing OTX connection...";
-  const result = await sendJson("/api/otx-status", "POST", {
-    otx_api_key: els.otxApiKey.value || ""
-  });
-  if (result.ok) {
-    els.otxStatus.className = "connection-status ok";
-    els.otxStatus.textContent = `OTX connected. Subscribed pulses: ${result.pulse_count ?? 0}.`;
-  } else {
-    els.otxStatus.className = "connection-status error";
-    els.otxStatus.textContent = `OTX failed: ${result.error || result.status || "unknown error"}`;
-  }
-  refresh();
-}
-
-async function runOtxLookups() {
-  const scope = els.otxLookupScope.value || "top5";
-  const limitByScope = { top5: 5, top10: 10, visible: 50 };
-  els.otxStatus.dataset.manual = "true";
-  els.otxStatus.className = "connection-status warn";
-  els.otxStatus.textContent = "Running OTX lookups...";
-  els.updated.textContent = "Running OTX lookups";
-  try {
-    await saveThreatIntelSettingsFromForm(true);
-    els.otxEnabled.checked = true;
-    const lookupPayload = {
-      scope,
-      limit: limitByScope[scope] || 5
-    };
-    if (scope === "visible" && selectedDetectionType) {
-      lookupPayload.detection_type = selectedDetectionType;
-    }
-    const result = await sendJson("/api/otx-lookups", "POST", lookupPayload);
-    const okCount = (result.results || []).filter((item) => item.status === "ok").length;
-    const errors = (result.results || []).filter((item) => item.status === "error");
-    const errorCount = errors.length;
-    const totalCount = (result.results || []).length;
-    els.otxStatus.className = errorCount ? "connection-status warn" : "connection-status ok";
-    const firstError = errors[0] ? ` First error ${errors[0].ip_address}: ${errors[0].error}` : "";
-    els.otxStatus.textContent = result.message || `OTX lookups complete. Checked ${totalCount}; saved ${okCount}; errors ${errorCount}.${firstError}`;
-    refresh();
-  } catch (error) {
-    els.otxStatus.className = "connection-status error";
-    els.otxStatus.textContent = `OTX lookup failed: ${error.message}`;
-    refresh();
-  }
 }
 
 async function addAllowlistEntry(event) {
@@ -847,14 +750,6 @@ async function handleDashboardClick(event) {
     return;
   }
 
-  const otxReputationButton = event.target.closest ? event.target.closest("[data-otx-reputation]") : null;
-  if (otxReputationButton) {
-    const reputation = otxReputationButton.dataset.otxReputation;
-    selectedOtxReputation = selectedOtxReputation === reputation ? null : reputation;
-    refresh();
-    return;
-  }
-
   const removeId = event.target.dataset.allowRemove;
   if (removeId) {
     await sendJson(`/api/allowlist/${removeId}`, "DELETE");
@@ -874,9 +769,6 @@ async function handleDashboardClick(event) {
 els.refresh.addEventListener("click", refresh);
 els.checkAiModel.addEventListener("click", checkAiModel);
 els.resetLogs.addEventListener("click", resetLogs);
-els.threatIntelForm.addEventListener("submit", saveThreatIntelSettings);
-els.testOtx.addEventListener("click", testOtxConnection);
-els.runOtx.addEventListener("click", runOtxLookups);
 els.allowlistForm.addEventListener("submit", addAllowlistEntry);
 els.assetForm.addEventListener("submit", addAsset);
 els.assetType.addEventListener("change", () => {
@@ -885,4 +777,3 @@ els.assetType.addEventListener("change", () => {
 });
 document.addEventListener("click", handleDashboardClick);
 refresh();
-setInterval(refresh, 2000);

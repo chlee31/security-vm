@@ -10,19 +10,76 @@ database:
   path: security_vm.db
 
 pcap:
+  enabled: true
   rolling_dir: /var/log/pcap
+  directory: /var/log/pcap
   incident_dir: /var/log/incidents
   incident_window_minutes: 5
   rolling_retention_days: 2
   external_interface: ens33
   internal_interface: ens37
+  rotate_seconds: 60
+  keep_files: 60
+  max_ai_files: 2
+  summary_packet_limit: 20
+  summary_timeout_seconds: 20
+
+zeek:
+  enabled: true
+  interface: ens37
+  log_directory: /opt/zeek/logs/current
+  archive_directory: /opt/zeek/logs
+  json_logs: true
+  ingest_notice: true
+  ingest_weird: true
+  context_logs:
+    - conn
+    - dns
+    - http
+    - ssl
+    - files
+    - notice
+    - weird
+    - ssh
+    - x509
+  community_packages:
+    - ncsa/bro-simple-scan
+    - jbaggs/anomalous-dns
+  package_install_enabled: false
+
+incident_evidence:
+  enabled: true
+  root_directory: /var/lib/security-vm/incidents
+  seconds_before: 120
+  seconds_after: 120
+  preserve_automatically_for:
+    - human_review
+    - dangerous
+  pcap_summary_enabled: true
+  maximum_summary_packets: 500
+  maximum_summary_characters: 20000
+  maximum_window_seconds: 600
+
+ai_reassessment:
+  enabled: true
+  include_suricata: true
+  include_zeek: true
+  include_threat_intel: true
+  include_asset_context: true
+  include_pcap_summary: true
+
+correlation:
+  sensor_time_tolerance_seconds: 10
 
 ai_model:
   host: http://127.0.0.1:11434
   model: llama3.2:latest
   provider: ollama
   active_profile_uid: ''
-  timeout_seconds: 90
+  timeout_seconds: 180
+  num_predict: 192
+  num_ctx: 8192
+  temperature: 0.1
 
 firewall:
   provider: firewalld
@@ -40,6 +97,16 @@ threat_intel:
   virustotal_api_key: ""
   otx_enabled: false
   otx_api_key: ""
+  providers:
+    otx: {enabled: false, api_key: "", refresh_hours: 24}
+    threatfox: {enabled: false, api_key: "", refresh_hours: 6}
+    urlhaus: {enabled: false, api_key: "", refresh_hours: 6}
+    sslbl: {enabled: false, api_key: "", refresh_hours: 6}
+    spamhaus_drop: {enabled: false, api_key: "", refresh_hours: 24}
+    openphish: {enabled: false, api_key: "", refresh_hours: 12}
+    ipsum: {enabled: false, api_key: "", refresh_hours: 24}
+    feodo: {enabled: false, api_key: "", refresh_hours: 24}
+    virustotal: {enabled: false, api_key: "", refresh_hours: 24}
 
 notifications:
   email:

@@ -19,6 +19,7 @@ def normalize_suricata_event(event):
         "severity": alert.get("severity"),
         "priority": alert.get("severity"),
         "flow_id": str(event.get("flow_id") or ""),
+        "community_id": event.get("community_id"),
         "pcap_point": event.get("pcap_cnt"),
         "raw_json": json.dumps(event, separators=(",", ":")),
     }

@@ -5,7 +5,7 @@ import time
 import requests
 
 
-PROMPT_VERSION = "security-vm-ai-triage-v2"
+PROMPT_VERSION = "security-vm-multi-sensor-triage-v3"
 
 
 def infer_model_provider(host, model):
@@ -58,8 +58,25 @@ def model_run_id(metadata, alert):
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
+def text_sha256(value):
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
 def build_prompt(alert, detection, evidence_context=None, pcap_summary=""):
     asset_context = detection.get("asset_context") or {}
+    encrypted_ports = {22, 443, 853, 8443, 1194, 500, 4500, 51820}
+    signature_text = " ".join(
+        str(value or "")
+        for value in [alert.get("signature"), alert.get("category"), detection.get("detection_type")]
+    ).lower()
+    src_port = alert.get("src_port")
+    dest_port = alert.get("dest_port")
+    try:
+        port_values = {int(src_port or 0), int(dest_port or 0)}
+    except (TypeError, ValueError):
+        port_values = set()
+    encrypted_keywords = ["tls", "ssl", "https", "quic", "vpn", "wireguard", "openvpn", "ipsec", "ssh"]
+    likely_encrypted = bool(port_values & encrypted_ports) or any(word in signature_text for word in encrypted_keywords)
     package = {
         "event_context": {
             "src_ip": alert.get("src_ip"),
@@ -73,6 +90,11 @@ def build_prompt(alert, detection, evidence_context=None, pcap_summary=""):
             "unique_destination_ports": detection.get("unique_dest_ports"),
             "time_window_seconds": detection.get("time_window_seconds"),
             "detection_type": detection.get("detection_type"),
+            "sensor_state": detection.get("sensor_state", "suricata_only"),
+            "agreement_state": detection.get("agreement_state", "single_sensor"),
+            "correlation_method": detection.get("correlation_method", "single_sensor"),
+            "correlation_confidence": detection.get("correlation_confidence", 0.5),
+            "community_id": detection.get("community_id"),
         },
         "mitre_mapping": {
             "technique_id": detection.get("mitre_id"),
@@ -88,12 +110,36 @@ def build_prompt(alert, detection, evidence_context=None, pcap_summary=""):
             "src_asset": asset_context.get("src_asset"),
             "dest_asset": asset_context.get("dest_asset"),
         },
+        "encrypted_traffic_context": {
+            "likely_encrypted_or_tunneled": likely_encrypted,
+            "source_port": src_port,
+            "destination_port": dest_port,
+            "visible_to_security_vm": [
+                "source_ip",
+                "destination_ip",
+                "ports",
+                "protocol",
+                "DNS/TLS metadata when present",
+                "timing",
+                "connection volume",
+                "Suricata signatures and Zeek notices",
+                "multi-source threat intelligence matches",
+                "packet summary metadata",
+            ],
+            "not_visible_without_endpoint_or_tls_decryption": [
+                "encrypted payload contents",
+                "full HTTPS URLs after TLS setup",
+                "commands inside encrypted sessions",
+                "endpoint process names",
+                "files or registry changes",
+            ],
+        },
         "evidence_context": evidence_context or {},
         "pcap_summary": pcap_summary or "No packet-level summary generated for this alert.",
     }
 
     instructions = """
-You are assisting a cybersecurity lab system that triages Suricata alerts.
+You are assisting a cybersecurity lab system that triages unified network detections from Suricata and Zeek.
 Python already calculated python_initial_score from deterministic rules. Your job is not to replace that score; your job is to provide a bounded second opinion.
 
 Return only valid JSON with exactly these keys:
@@ -125,16 +171,39 @@ Asset guidance:
 - Do not mark something Dangerous only because asset_score is high; combine asset importance with alert behavior.
 
 Evidence rules:
+- sensor_fusion in evidence_context is authoritative about which sensors produced findings. Evaluate every finding independently and then explain whether they support the same security conclusion.
+- A Suricata signature may initiate a detection without a Zeek notice. A Zeek notice may initiate a detection without a Suricata signature. Absence of a finding from one sensor is missing evidence, not evidence that the traffic is safe, and must never cancel the other sensor's finding.
+- When sensor_state is multi_sensor, use Community ID or flow/time correlation metadata to understand why findings were grouped. Corroborating independent findings should increase confidence, but should not automatically mean Dangerous.
+- Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
+- Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
+- If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, Zeek metadata, or packet summary evidence, choose Human Review Required and describe the disputed evidence.
 - Treat DNS tunneling, port scans, repeated connections, many destination ports, or MITRE-mapped behavior as more suspicious.
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
-- Use threat_intel in evidence_context when present. Malicious or suspicious OTX reputation should raise concern, while benign or missing OTX should not automatically make an alert safe.
+- Use threat_intel in evidence_context when present. Treat matches from independent sources as corroborating evidence, consider confidence/category/freshness, and name the sources in the reason. No match or an inactive provider does not make an alert safe.
 - Use pcap_evidence in evidence_context as supporting context only. Related capture files mean packet data exists for analyst follow-up, but raw packet contents are not included unless a packet_summary is present.
+- If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, asset context, correlation, and packet summaries.
+- For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent, prefer Human Review Required or Safe with clear low-confidence wording.
 - If context is missing, prefer Human Review Required with Low or Medium confidence instead of guessing.
 - The reason must briefly explain the main evidence and why the adjustment was chosen.
 
 Analyze this event package:
 """
     return instructions.strip() + "\n\n" + json.dumps(package, indent=2)
+
+
+def build_prompt_audit(config, alert, detection, evidence_context=None, pcap_summary=""):
+    metadata = model_metadata(config)
+    prompt = build_prompt(alert, detection, evidence_context, pcap_summary)
+    packet_summary_text = pcap_summary or ""
+    return prompt, {
+        **metadata,
+        "model_run_id": model_run_id(metadata, alert),
+        "prompt_sha256": text_sha256(prompt),
+        "prompt_chars": len(prompt),
+        "pcap_summary_sha256": text_sha256(packet_summary_text) if packet_summary_text else "",
+        "pcap_summary_chars": len(packet_summary_text),
+        "pcap_summary_included": 1 if packet_summary_text else 0,
+    }
 
 
 def normalize_risk_adjustment(value):
@@ -172,21 +241,37 @@ def normalize_report(parsed):
 
 def ask_ai_model(config, alert, detection, evidence_context=None, pcap_summary=""):
     ai_model = config.get("ai_model", {})
-    metadata = model_metadata(config)
-    host = metadata["model_endpoint"]
-    model = metadata["model_name"]
+    prompt, audit = build_prompt_audit(config, alert, detection, evidence_context, pcap_summary)
+    host = audit["model_endpoint"]
+    model = audit["model_name"]
     timeout = ai_model.get("timeout_seconds", 90)
-    prompt = build_prompt(alert, detection, evidence_context, pcap_summary)
+    options = {
+        "num_predict": int(ai_model.get("num_predict", 192)),
+        "num_ctx": int(ai_model.get("num_ctx", 8192)),
+        "temperature": float(ai_model.get("temperature", 0.1)),
+    }
     start = time.monotonic()
 
-    response = requests.post(
+    response_chunks = []
+    with requests.post(
         f"{host}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False, "format": "json"},
+        json={"model": model, "prompt": prompt, "stream": True, "format": "json", "options": options},
         timeout=timeout,
-    )
-    response.raise_for_status()
+        stream=True,
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            chunk = json.loads(line)
+            if chunk.get("error"):
+                raise requests.RequestException(chunk["error"])
+            response_chunks.append(chunk.get("response", ""))
+            if chunk.get("done"):
+                break
+
     elapsed_ms = int((time.monotonic() - start) * 1000)
-    raw_text = response.json().get("response", "{}")
+    raw_text = "".join(response_chunks) or "{}"
 
     try:
         parsed = json.loads(raw_text)
@@ -200,8 +285,7 @@ def ask_ai_model(config, alert, detection, evidence_context=None, pcap_summary="
         }
 
     parsed = normalize_report(parsed)
-    parsed.update(metadata)
-    parsed["model_run_id"] = model_run_id(metadata, alert)
+    parsed.update(audit)
     parsed["raw_response"] = raw_text
     parsed["elapsed_ms"] = elapsed_ms
     return parsed
@@ -224,4 +308,3 @@ def check_ai_model(config):
         "elapsed_ms": elapsed_ms,
         "models": models,
     }
-

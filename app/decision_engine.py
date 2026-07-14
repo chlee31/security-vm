@@ -26,6 +26,17 @@ def safe_risk_adjustment(report):
         return confidence_adjustment(report)
 
 
+def virustotal_adjustment(report):
+    results = report.get("virustotal_verification") or []
+    malicious = sum(int(item.get("malicious_count") or 0) for item in results)
+    suspicious = sum(int(item.get("suspicious_count") or 0) for item in results)
+    if malicious:
+        return min(10, 4 + malicious)
+    if suspicious:
+        return min(5, 1 + suspicious)
+    return 0
+
+
 def is_private_ip(ip_address):
     try:
         return ipaddress.ip_address(ip_address).is_private
@@ -67,12 +78,13 @@ def decide(conn, config, alert, detection, ai_report=None):
     score = detection.get("python_initial_score", 0)
     if ai_report:
         score += safe_risk_adjustment(ai_report)
+        score += virustotal_adjustment(ai_report)
     score = cap_score(score)
 
     ai_class = str((ai_report or {}).get("classification", "")).lower()
     ai_conf = str((ai_report or {}).get("confidence", "")).lower()
 
-    if mode == "prevention" and score >= dangerous_min and ai_class == "dangerous" and ai_conf == "high" and target_ip not in safelist:
+    if mode == "prevention" and target_ip and score >= dangerous_min and ai_class == "dangerous" and ai_conf == "high" and target_ip not in safelist:
         action = "temporary_block"
         classification = "Dangerous"
     elif mode in {"alert_only", "detection"} and score >= dangerous_min:

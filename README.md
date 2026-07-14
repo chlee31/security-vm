@@ -1,6 +1,6 @@
 # Security VM
 
-Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts, stores them in SQLite, asks a configured AI model for a second opinion, records rolling PCAP files, and shows analyst review information in a browser dashboard.
+Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts, Zeek behavioral logs, and rolling PCAP evidence, stores them in SQLite, asks a configured AI model for a second opinion, and shows analyst review information in a browser dashboard.
 
 The system starts in safe `alert_only` mode. The AI model can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `prevention` mode is explicitly enabled.
 
@@ -32,15 +32,16 @@ Home AI/GPU usage during triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
 
 ## What It Shows
 
-- Latest Suricata alerts
+- Unified latest alerts with Suricata and Zeek findings, timestamps, flows, and sensor labels
+- Zeek notice, weird, and protocol context logs
 - Detection types and investigation drilldowns
-- Dedicated detection workbook tabs with IP share, AI opinion, timeline, evidence, and PCAP views
+- Dedicated detection workbook tabs with IP share, AI opinion, timeline, and evidence
 - Dedicated outcome workbook tabs for Safe, Human Review, and Dangerous decisions
 - Dedicated asset inventory workbook for registered internal machines and their matched detections
 - AI opinions for alerts
 - AI model comparison by provider/model identity, classification, average adjustment, and average response time
 - Decision evidence: alert data, correlation, score, AI reason, and final action
-- Related PCAP files by detection time window
+- Zeek sensor status, correlated findings, and incident evidence paths
 - Human-review queue
 - Temporary allowlist entries
 - Manual internal asset inventory for lab machines on `ens37`
@@ -71,20 +72,62 @@ Human review tuning:
 Threat enrichment:
 
 - Local IP classification works now.
-- OTX can be configured from the dashboard and run manually against top public IPs.
-- The dashboard can test the OTX API key before running lookups.
-- OTX lookup scope can be top 5 public IPs, top 10 public IPs, or all visible public IPs in the current investigation view.
-- VirusTotal is still planned as an opt-in external lookup.
-- API keys must be entered locally in `config.yaml` and must not be committed to GitHub.
-- Lookups should be cached in SQLite so the project does not burn API quota.
-- The AI model receives cached enrichment summaries from Python; the model does not call external APIs directly.
-- IP address drilldowns show cached OTX results when present, or `OTX no lookup yet` before live lookup support is enabled.
+- Open `/admin#threat-intel` to enable and configure threat-intelligence providers.
+- Supported cached feeds are ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, and Feodo Tracker.
+- OTX remains a live API provider with connection testing and a manual top-10 public-IP lookup from Admin.
+- VirusTotal is a post-AI verification provider. Python queries public source/destination IPs only after the AI model returns `Dangerous`, then caches and stores the result.
+- Active bulk feeds are refreshed on their configured schedule and normalized into SQLite. A failed refresh keeps the last successful cache.
+- API keys are saved only in the local `config.yaml`; never commit that file or paste keys into issues or screenshots.
+- Python sends matching cached intelligence to the AI model. The model does not browse or call provider APIs itself.
+- Provider cards show indicator counts plus how many detection prompts actually used each feed and when it was last used.
+- Investigation and IP-address pages show each provider as matched, no match, or `Not active`.
 
 PCAP evidence:
 
-- Rolling PCAP capture files are tracked by time window and shown in detection views.
+- Rolling PCAP capture remains a backend evidence source and is not displayed as a dashboard panel.
 - The AI model receives related PCAP file metadata as evidence context, including capture label, file size, and modified time.
-- Raw PCAP bytes are not sent to the AI model. A future packet-summary step should convert selected PCAPs into compact tshark summaries before AI review.
+- Python selects a small number of related PCAP files, converts them into compact `tshark` CSV summaries, and includes those text summaries in the AI prompt.
+- Raw PCAP bytes are not sent to the AI model.
+
+Zeek evidence:
+
+- Zeek is configured as a second network sensor. Bootstrap asks which detected interface it should monitor; the project default is `ens37`.
+- Zeek `notice.log` is treated as an alert-like finding; `weird.log` is retained as investigation context.
+- Every Suricata alert and every Zeek `notice.log` finding enters the same AI and Python decision pipeline.
+- Correlated Suricata and Zeek findings are stored under one detection as separate sensor findings; `weird.log` remains supporting context unless another detection corroborates it.
+- Sensor correlation uses Community ID first, then bidirectional IP/port/protocol matching with timestamp tolerance.
+- Zeek `conn`, `dns`, `http`, `ssl`, `files`, `ssh`, and `x509` logs are treated as supporting context.
+- The dashboard combines Zeek and Suricata findings under the same latest-alert and decision-evidence rows.
+- Investigation pages can create a server-generated evidence folder with filtered Zeek context and a manifest.
+- Zeek community detections are managed through `zkg` packages, not Suricata-style rule files.
+- The default reviewed community package list contains `ncsa/bro-simple-scan` and `jbaggs/anomalous-dns`. Bootstrap asks before installing either package with `zkg`.
+
+Multi-sensor correlation:
+
+Enable Community ID in the EVE output section of `/etc/suricata/suricata.yaml`:
+
+```yaml
+community-id: true
+community-id-seed: 0
+```
+
+Load matching Community ID policies from `/opt/zeek/share/zeek/site/local.zeek`:
+
+```zeek
+@load policy/protocols/conn/community-id-logging
+@load policy/frameworks/notice/community-id
+```
+
+Then validate and restart both sensors:
+
+```bash
+sudo suricata -T -c /etc/suricata/suricata.yaml
+sudo systemctl restart suricata
+sudo /opt/zeek/bin/zeekctl check
+sudo /opt/zeek/bin/zeekctl deploy
+```
+
+Both sensors must use the same Community ID seed. When Community ID is unavailable, Security VM falls back to flow fields and overlapping event timestamps.
 
 Dashboard reset:
 
@@ -95,6 +138,7 @@ Dashboard reset:
 Admin controls:
 
 - Open `/admin` from the dashboard header.
+- Use the Threat Intelligence tab to enable providers, set API keys and refresh intervals, refresh active bulk feeds, and run OTX connection/manual lookup checks. VirusTotal is invoked by the detection pipeline, not the feed-refresh button.
 - Switch between `alert_only`, `detection`, and `prevention` mode.
 - View firewalld setup commands, running status, applied rich rules, dangerous detections awaiting enforcement, active firewall blocks, firewall history, and unblock or mark an IP safe.
 - Change the AI service URL, model name, and timeout without editing `config.yaml` manually.
@@ -122,8 +166,10 @@ Gmail alerts:
 Recommended OS:
 
 ```text
-Ubuntu 20.04 or newer
+Ubuntu 22.04 or newer
 ```
+
+The tested Zeek bootstrap path is not recommended on Ubuntu releases older than 22.04. Bootstrap detects `/etc/os-release`, displays the result, and asks before continuing on an unsupported host.
 
 Required system tools:
 
@@ -133,6 +179,9 @@ python3-venv
 python3-pip
 suricata
 suricata-update
+zeek
+zeekctl
+zkg
 sqlite3
 wireshark-common
 tshark
@@ -156,6 +205,31 @@ Install common Ubuntu dependencies:
 sudo apt update
 sudo apt install python3 python3-venv python3-pip sqlite3 curl suricata suricata-update wireshark-common tshark
 ```
+
+Bootstrap installs Zeek from the official Zeek OBS repository when Zeek is missing on a supported Ubuntu host. To run that guided setup:
+
+```bash
+python -m app.bootstrap
+```
+
+If automatic installation fails, follow the official Zeek binary package instructions, then rerun:
+
+```bash
+python -m app.bootstrap
+python -m app.main zeek-status --config config.yaml
+```
+
+Zeek community detections are installed with `zkg`. Add reviewed packages to `config.yaml`:
+
+```yaml
+zeek:
+  community_packages:
+    - ncsa/bro-simple-scan
+    - jbaggs/anomalous-dns
+  package_install_enabled: true
+```
+
+Then rerun bootstrap and approve each package install. Do not add unreviewed community packages just because they exist online.
 
 ## Installed By Python
 
@@ -213,7 +287,7 @@ Run bootstrap:
 python -m app.bootstrap
 ```
 
-Bootstrap creates `config.yaml`, initializes `security_vm.db`, checks required tools, and tests the AI model endpoint.
+Bootstrap preserves an existing `config.yaml` unless you approve changes, initializes or migrates `security_vm.db`, checks the Ubuntu version and required tools, and tests the AI model endpoint. It also offers official Zeek installation, interface selection, `node.cfg`, JSON logging, and optional reviewed `zkg` community-package installation.
 
 Bootstrap can also guide router setup:
 
@@ -244,10 +318,14 @@ This starts:
 Suricata service restart/check
 rolling PCAP capture
 Suricata EVE ingest
+Zeek ingest
+scheduled threat-intelligence feed refresh
 dashboard API and web UI
 ```
 
 Normal logs are kept quiet. If a process fails or prints an error, the launcher prints the error line and a short recent log tail in the terminal.
+
+The dashboard loads once and updates only when you press **Refresh**. This prevents new ingest data from moving the page while an analyst is reading evidence.
 
 By default, `run-all` uses:
 
@@ -255,6 +333,8 @@ By default, `run-all` uses:
 external interface: ens33
 internal interface: ens37
 pcap directory: /var/log/pcap
+Zeek interface: selected during bootstrap (default ens37)
+Zeek log directory: /opt/zeek/logs/current
 dashboard: http://0.0.0.0:8000/
 ```
 
@@ -277,6 +357,31 @@ pcap:
   rolling_dir: /var/log/pcap
   external_interface: ens33
   internal_interface: ens37
+  max_ai_files: 2
+  summary_packet_limit: 20
+  summary_timeout_seconds: 20
+
+zeek:
+  enabled: true
+  interface: ens37
+  log_directory: /opt/zeek/logs/current
+  json_logs: true
+  community_packages: []
+```
+
+Zeek-only checks:
+
+```bash
+python -m app.main zeek-status --config config.yaml
+python -m app.main zeek-ingest --config config.yaml
+```
+
+The PCAP AI settings mean:
+
+```text
+max_ai_files              maximum related PCAP files summarized per detection
+summary_packet_limit      maximum packets included in each tshark text summary
+summary_timeout_seconds   timeout for each tshark summary command
 ```
 
 Use the interface names shown by:
@@ -506,6 +611,10 @@ model_name       example: llama3.1:8b
 model_identity   example: ollama:llama3.1:8b
 model_run_id     unique ID for that specific AI opinion
 prompt_version   prompt template version used for the request
+prompt_sha256    hash of the full prompt sent to the AI model
+prompt_chars     prompt size in characters
+pcap_summary_sha256 / pcap_summary_chars / pcap_summary_included
+                 audit fields showing whether packet summaries were included
 elapsed_ms       model response time
 ```
 

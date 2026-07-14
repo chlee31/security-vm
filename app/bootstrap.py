@@ -3,12 +3,13 @@ import json
 import shutil
 import subprocess
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 import requests
 import yaml
 
-from app.config import DEFAULT_CONFIG, save_config
+from app.config import DEFAULT_CONFIG, load_config, save_config
 from app.database import init_db
 
 
@@ -22,6 +23,9 @@ REQUIRED_TOOLS = {
     "tshark": "tshark",
     "dumpcap": "dumpcap",
     "firewalld": "firewall-cmd",
+    "zeek": "zeek",
+    "zeekctl": "zeekctl",
+    "zkg": "zkg",
 }
 
 APT_PACKAGES = {
@@ -35,6 +39,12 @@ APT_PACKAGES = {
     "firewalld": "firewalld",
 }
 
+TOOL_PATH_CANDIDATES = {
+    "zeek": ["zeek", "/usr/bin/zeek", "/usr/local/bin/zeek", "/opt/zeek/bin/zeek"],
+    "zeekctl": ["zeekctl", "/usr/bin/zeekctl", "/usr/local/bin/zeekctl", "/opt/zeek/bin/zeekctl"],
+    "zkg": ["zkg", "/usr/bin/zkg", "/usr/local/bin/zkg", "/opt/zeek/bin/zkg"],
+}
+
 
 def yes_no(prompt, default=False):
     suffix = "Y/n" if default else "y/N"
@@ -45,10 +55,59 @@ def yes_no(prompt, default=False):
 
 
 def check_tool(name, binary):
-    path = shutil.which(binary)
+    path = resolve_tool_path(name, binary)
     status = "installed" if path else "missing"
     print(f"{name:10} {status:10} {path or ''}")
     return bool(path)
+
+
+def resolve_tool_path(name, binary):
+    candidates = TOOL_PATH_CANDIDATES.get(name, [binary])
+    for candidate in candidates:
+        path = shutil.which(candidate) if "/" not in candidate else candidate
+        if path and Path(path).exists():
+            return str(path)
+    return ""
+
+
+def detect_os_release(path="/etc/os-release"):
+    values = {}
+    try:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key] = value.strip().strip('"')
+    except OSError:
+        pass
+    return {
+        "id": values.get("ID", "unknown").lower(),
+        "version_id": values.get("VERSION_ID", ""),
+        "pretty_name": values.get("PRETTY_NAME", "Unknown operating system"),
+    }
+
+
+def version_tuple(value):
+    try:
+        parts = str(value).split(".")
+        return tuple(int(part) for part in parts[:2])
+    except ValueError:
+        return (0, 0)
+
+
+def zeek_os_recommendation(os_release):
+    is_ubuntu = os_release.get("id") == "ubuntu"
+    supported_version = version_tuple(os_release.get("version_id")) >= (22, 4)
+    return {
+        **os_release,
+        "recommended": bool(is_ubuntu and supported_version),
+        "minimum": "Ubuntu 22.04",
+        "message": (
+            "Recommended for this project."
+            if is_ubuntu and supported_version
+            else "Not recommended for this project. Use Ubuntu 22.04 or newer for the tested Zeek bootstrap path."
+        ),
+    }
 
 
 def run_json(command):
@@ -236,17 +295,167 @@ def router_setup_wizard():
     print("[!] If your SSH/browser connection drops, reconnect using the interface address that still reaches this VM.")
 
 
-def install_missing(missing):
+def install_official_zeek(os_release):
+    recommendation = zeek_os_recommendation(os_release)
+    if not recommendation["recommended"]:
+        print(f"[!] Zeek automatic setup skipped: {recommendation['message']}")
+        return False
+    if not yes_no("Install Zeek from the official Zeek OBS repository now?", default=True):
+        return False
+
+    version_id = os_release["version_id"]
+    repository_url = f"https://download.opensuse.org/repositories/security:/zeek/xUbuntu_{version_id}/"
+    repository_line = f"deb {repository_url} /\n"
+    key_url = f"{repository_url}Release.key"
+    repo_temp = write_temp_text(repository_line)
+    key_ascii = tempfile.NamedTemporaryFile(delete=False, suffix=".key").name
+    keyring = tempfile.NamedTemporaryFile(delete=False, suffix=".gpg").name
+    try:
+        response = requests.get(key_url, timeout=30)
+        response.raise_for_status()
+        Path(key_ascii).write_bytes(response.content)
+        subprocess.run(["gpg", "--batch", "--yes", "--dearmor", "--output", keyring, key_ascii], check=True)
+        subprocess.run(
+            ["sudo", "install", "-m", "0644", repo_temp, "/etc/apt/sources.list.d/security-zeek.list"],
+            check=True,
+        )
+        subprocess.run(
+            ["sudo", "install", "-m", "0644", keyring, "/etc/apt/trusted.gpg.d/security_zeek.gpg"],
+            check=True,
+        )
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+        subprocess.run(["sudo", "apt-get", "install", "-y", "zeek"], check=True)
+        return bool(resolve_tool_path("zeek", "zeek"))
+    except (OSError, requests.RequestException, subprocess.CalledProcessError) as exc:
+        print(f"[!] Official Zeek installation failed: {exc}")
+        print(f"    Review the repository instructions for {os_release.get('pretty_name')}: {repository_url}")
+        return False
+    finally:
+        for path in (repo_temp, key_ascii, keyring):
+            try:
+                Path(path).unlink()
+            except OSError:
+                pass
+
+
+def install_missing(missing, os_release):
     packages = sorted({APT_PACKAGES[item] for item in missing if item in APT_PACKAGES})
-    if not packages:
+    if packages:
+        print("\nMissing apt packages:")
+        print("  " + " ".join(packages))
+        if yes_no("Install missing packages with apt now?"):
+            command = ["sudo", "apt-get", "update"]
+            subprocess.run(command, check=True)
+            command = ["sudo", "apt-get", "install", "-y", *packages]
+            subprocess.run(command, check=True)
+    still_missing = [
+        name
+        for name in ("zeek", "zeekctl", "zkg")
+        if name in missing and not resolve_tool_path(name, REQUIRED_TOOLS[name])
+    ]
+    if still_missing:
+        install_official_zeek(os_release)
+    still_missing = [name for name in still_missing if not resolve_tool_path(name, REQUIRED_TOOLS[name])]
+    if still_missing:
+        print("\n[!] Zeek was not found after apt package checks.")
+        print("    Official binary package instructions are here:")
+        print("    https://docs.zeek.org/en/current/install.html")
+        print("    After installing Zeek, rerun bootstrap or set zeek.log_directory in config.yaml.")
+
+
+def zeek_config_directory():
+    candidates = [
+        Path("/opt/zeek/etc"),
+        Path("/usr/local/etc"),
+        Path("/etc/zeek"),
+    ]
+    for path in candidates:
+        if (path / "node.cfg").exists() or (path / "zeekctl.cfg").exists():
+            return path
+    for path in candidates:
+        if path.exists():
+            return path
+    return Path("/opt/zeek/etc")
+
+
+def zeek_setup_wizard(config):
+    print("\nZeek setup:")
+    if not yes_no("Enable Zeek?", default=True):
+        config["zeek"]["enabled"] = False
+        print("[+] Zeek disabled in config.")
         return
-    print("\nMissing apt packages:")
-    print("  " + " ".join(packages))
-    if yes_no("Install missing packages with apt now?"):
-        command = ["sudo", "apt-get", "update"]
-        subprocess.run(command, check=True)
-        command = ["sudo", "apt-get", "install", "-y", *packages]
-        subprocess.run(command, check=True)
+
+    detected = detected_interfaces()
+    names = [item["name"] for item in detected]
+    default_interface = config.get("zeek", {}).get("interface") or config.get("assets", {}).get("internal_interface", "ens37")
+    if names and default_interface not in names:
+        default_interface = names[0]
+    interface = prompt_choice("Zeek monitoring interface", names, default_interface) if names else default_interface
+    json_logs = yes_no("Use Zeek JSON logs?", default=True)
+    install_packages = yes_no("Install configured Zeek community packages with zkg?", default=False)
+
+    config.setdefault("zeek", {})
+    config["zeek"]["enabled"] = True
+    config["zeek"]["interface"] = interface
+    config["zeek"]["json_logs"] = json_logs
+    config["zeek"]["package_install_enabled"] = install_packages
+
+    config_dir = zeek_config_directory()
+    node_cfg = f"""[zeek]
+type=standalone
+host=localhost
+interface={interface}
+"""
+    networks_cfg = "# Security VM internal networks can be added here.\n"
+    local_lines = [
+        "@load policy/protocols/conn/community-id-logging",
+        "@load policy/frameworks/notice/community-id",
+    ]
+    if json_logs:
+        local_lines.insert(0, "@load policy/tuning/json-logs")
+    local_extra = "\n" + "\n".join(local_lines) + "\n"
+
+    print(f"\nDetected Zeek config directory: {config_dir}")
+    print("Generated node.cfg:")
+    print(node_cfg)
+    print("local.zeek addition:")
+    print(local_extra.strip() or "(none)")
+
+    if yes_no("Write Zeek node.cfg/networks.cfg/local.zeek changes now?", default=False):
+        node_tmp = write_temp_text(node_cfg)
+        networks_tmp = write_temp_text(networks_cfg)
+        commands = [
+            ["sudo", "cp", node_tmp, str(config_dir / "node.cfg")],
+            ["sudo", "cp", networks_tmp, str(config_dir / "networks.cfg")],
+        ]
+        for command in commands:
+            subprocess.run(command, check=True)
+        local_path = config_dir / "local.zeek"
+        append_cmd = ["sudo", "tee", "-a", str(local_path)]
+        subprocess.run(append_cmd, input=local_extra, text=True, check=True)
+
+    zeek = resolve_tool_path("zeek", "zeek")
+    zeekctl = resolve_tool_path("zeekctl", "zeekctl")
+    if zeek:
+        subprocess.run([zeek, "--version"], check=False)
+    if zeekctl:
+        subprocess.run([zeekctl, "check"], check=False)
+        if yes_no("Deploy Zeek with zeekctl now?", default=False):
+            subprocess.run(["sudo", zeekctl, "deploy"], check=True)
+            subprocess.run([zeekctl, "status"], check=False)
+
+    packages = config.get("zeek", {}).get("community_packages", [])
+    zkg = resolve_tool_path("zkg", "zkg")
+    if install_packages and packages and zkg:
+        for package in packages:
+            print(f"\nChecking Zeek package: {package}")
+            subprocess.run([zkg, "info", package], check=False)
+            if yes_no(f"Install Zeek package {package}?", default=False):
+                subprocess.run(["sudo", zkg, "install", package], check=True)
+        if zeekctl:
+            subprocess.run([zeekctl, "check"], check=False)
+    elif install_packages and not packages:
+        print("[+] No Zeek community packages configured. Add reviewed package names under zeek.community_packages.")
 
 
 def test_ai_model(host, model, timeout):
@@ -262,6 +471,13 @@ def test_ai_model(host, model, timeout):
 
 
 def main():
+    os_release = detect_os_release()
+    recommendation = zeek_os_recommendation(os_release)
+    print(f"Detected operating system: {recommendation['pretty_name']}")
+    print(f"Zeek platform recommendation: {recommendation['message']}")
+    if not recommendation["recommended"] and not yes_no("Continue bootstrap without the recommended Zeek platform?", default=False):
+        return
+
     print("Tailscale is required for this project.")
     print("Please head over to Tailscale or the admin console to get your AI machine IP address.")
     print("Example AI service/Tailscale endpoint: http://<ai-machine-ip>:11434\n")
@@ -276,21 +492,23 @@ def main():
 
     print("\nChecking required system tools:")
     missing = [name for name, binary in REQUIRED_TOOLS.items() if not check_tool(name, binary)]
-    install_missing(missing)
-
-    config = DEFAULT_CONFIG.copy()
-    config["ai_model"]["host"] = ai_model_host
-    config["ai_model"]["model"] = ai_model_name
+    install_missing(missing, os_release)
 
     config_path = Path("config.yaml")
-    if config_path.exists() and not yes_no("config.yaml already exists. Replace it?"):
+    config = load_config(config_path) if config_path.exists() else deepcopy(DEFAULT_CONFIG)
+    config["ai_model"]["host"] = ai_model_host
+    config["ai_model"]["model"] = ai_model_name
+    zeek_setup_wizard(config)
+
+    if config_path.exists() and not yes_no("Update the existing config.yaml with these bootstrap settings?", default=True):
         print("[+] Keeping existing config.yaml")
     else:
         save_config(config, config_path)
         print("[+] Wrote config.yaml")
 
     db_path = config["database"]["path"]
-    init_db(db_path)
+    db_connection = init_db(db_path)
+    db_connection.close()
     print(f"[+] SQLite database initialized: {db_path}")
 
     Path("evidence/sample_alerts").mkdir(parents=True, exist_ok=True)

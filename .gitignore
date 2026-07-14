@@ -6,11 +6,15 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
+venv-python38-backup/
 
 # Local configuration and runtime state
 config.yaml
 security_vm.db
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 

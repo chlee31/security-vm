@@ -57,6 +57,20 @@ def deactivate_allowlist_entry(conn, entry_id):
     return cur.rowcount > 0
 
 
+def deactivate_allowlist_for_ip(conn, ip_address):
+    cur = conn.execute(
+        """
+        UPDATE allowlist
+        SET status = 'inactive'
+        WHERE ip_address = ?
+          AND status = 'active'
+        """,
+        (ip_address,),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def list_allowlist_entries(conn, limit=50):
     now = utc_now()
     rows = conn.execute(

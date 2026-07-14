@@ -21,11 +21,34 @@
         </div>
       </section>
 
+      <nav class="admin-tabs" aria-label="Admin sections">
+        <button class="admin-tab-button active" type="button" data-admin-tab-button="settings">Settings</button>
+        <button class="admin-tab-button" type="button" data-admin-tab-button="threat-intel">Threat Intelligence</button>
+        <button class="admin-tab-button" type="button" data-admin-tab-button="incident">Incident Response</button>
+      </nav>
+
       <section class="admin-grid">
-        <section class="panel wide-panel">
+        <section class="panel wide-panel" data-admin-tab-panel="threat-intel" hidden>
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Firewall Controls</p>
+              <p class="eyebrow">Local Enrichment</p>
+              <h2>Threat Intelligence Providers</h2>
+            </div>
+          </div>
+          <form id="threat-intel-form" class="admin-form">
+            <div id="threat-intel-providers" class="provider-grid"></div>
+            <div class="admin-action-row">
+              <button id="save-threat-intel" type="submit">Save Provider Settings</button>
+              <button id="refresh-threat-intel" type="button">Refresh Active Feed Data</button>
+            </div>
+            <div id="threat-intel-status" class="connection-status">Provider settings not changed.</div>
+          </form>
+        </section>
+
+        <section class="panel wide-panel" data-admin-tab-panel="incident" hidden>
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Incident Response</p>
               <h2>Detection and Prevention Mode</h2>
             </div>
           </div>
@@ -53,7 +76,7 @@
           <div id="firewall-history" class="list admin-list"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
               <p class="eyebrow">AI Runtime</p>
@@ -118,7 +141,7 @@
           <div id="ai-profiles" class="list admin-list"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
               <p class="eyebrow">Notifications</p>
@@ -162,7 +185,7 @@
           <div id="notification-events" class="list admin-list"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
               <p class="eyebrow">Setup Inputs</p>
@@ -215,7 +238,7 @@
           <div id="admin-assets" class="list admin-list"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
               <p class="eyebrow">Host Setup</p>
@@ -225,7 +248,7 @@
           <div id="admin-tools" class="list admin-list"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
               <p class="eyebrow">Python Environment</p>
@@ -235,7 +258,7 @@
           <div id="admin-python-packages" class="list admin-list"></div>
         </section>
 
-        <section class="panel wide-panel">
+        <section class="panel wide-panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
               <p class="eyebrow">Paths</p>
@@ -247,6 +270,6 @@
       </section>
     </main>
 
-    <script src="/static/admin.js?v=20260704-email-diagnostics"></script>
+    <script src="/static/admin.js?v=20260714-sensor-fusion"></script>
   </body>
 </html>

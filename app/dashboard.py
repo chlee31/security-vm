@@ -2,12 +2,13 @@ from pathlib import Path
 import importlib.util
 import getpass
 import ipaddress
+import json
 import os
 import shutil
 import sqlite3
 import subprocess
 import sys
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 import requests
 from pydantic import BaseModel
 
-from app.allowlist import add_allowlist_entry, deactivate_allowlist_entry, list_allowlist_entries
+from app.allowlist import add_allowlist_entry, deactivate_allowlist_entry, deactivate_allowlist_for_ip, list_allowlist_entries
 from app.config import load_config, save_config
 from app.database import (
     ai_model_comparison,
@@ -36,11 +37,14 @@ from app.database import (
     enrichment_status,
     get_firewall_candidate,
     get_firewall_block,
+    ip_detail,
     investigation_detail,
     latest_alerts,
+    latest_sensor_alerts,
     latest_app_events,
     latest_decision_evidence,
     latest_ai_opinions,
+    latest_zeek_events,
     insert_firewall_block,
     insert_notification_event,
     list_ai_profiles,
@@ -58,15 +62,22 @@ from app.database import (
     submit_analyst_review,
     update_response_manual_action,
     upsert_threat_intel_lookup,
+    threat_intel_provider_results,
     upsert_asset,
     update_asset,
     update_ai_profile,
+    zeek_context_for_detection,
+    zeek_event_counts,
 )
+from app.bootstrap import detect_os_release, zeek_os_recommendation
 from app.enrichment import lookup_otx_ip, test_otx_connection
+from app.threat_intel import PROVIDERS, provider_config, refresh_provider, sanitized_provider_status
 from app.firewall import firewalld_runtime_status, firewalld_setup_commands, remove_firewalld_block, temporary_block_firewalld
+from app.incident_evidence import create_incident_evidence
 from app.ai_client import check_ai_model, model_metadata
 from app.notifications import normalize_recipients, sanitized_email_settings, send_email
 from app.pcap_inventory import list_pcap_files
+from app.zeek_inventory import zeek_status
 
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
@@ -131,6 +142,16 @@ class ThreatIntelConfigRequest(BaseModel):
     cache_ttl_hours: int = 24
 
 
+class ThreatIntelProviderRequest(BaseModel):
+    enabled: bool = False
+    api_key: str = ""
+    refresh_hours: int = 24
+
+
+class ThreatIntelAdminRequest(BaseModel):
+    providers: Dict[str, ThreatIntelProviderRequest]
+
+
 class SystemModeRequest(BaseModel):
     mode: str
 
@@ -160,6 +181,12 @@ class EmailNotificationRequest(BaseModel):
     dashboard_base_url: str = ""
 
 
+class InvestigationRequest(BaseModel):
+    seconds_before: int = 120
+    seconds_after: int = 120
+    ip_filter_enabled: bool = True
+
+
 ADMIN_SYSTEM_TOOLS = {
     "Python": {"binary": "python3", "package": "python3 python3-venv python3-pip"},
     "Suricata": {"binary": "suricata", "package": "suricata"},
@@ -170,6 +197,21 @@ ADMIN_SYSTEM_TOOLS = {
     "tshark": {"binary": "tshark", "package": "tshark"},
     "firewalld": {"binary": "firewall-cmd", "package": "firewalld"},
     "Tailscale": {"binary": "tailscale", "package": "tailscale"},
+    "Zeek": {
+        "binary": "zeek",
+        "package": "zeek",
+        "candidates": ["zeek", "/opt/zeek/bin/zeek", "/usr/local/bin/zeek"],
+    },
+    "ZeekControl": {
+        "binary": "zeekctl",
+        "package": "zeek",
+        "candidates": ["zeekctl", "/opt/zeek/bin/zeekctl", "/usr/local/bin/zeekctl"],
+    },
+    "Zeek Package Manager": {
+        "binary": "zkg",
+        "package": "zeek",
+        "candidates": ["zkg", "/opt/zeek/bin/zkg", "/usr/local/bin/zkg"],
+    },
 }
 
 ADMIN_PYTHON_PACKAGES = {
@@ -186,6 +228,9 @@ AI_MODEL_SUGGESTIONS = [
     "deepseek-r1:latest",
 ]
 
+ENCRYPTED_TRAFFIC_PORTS = (22, 443, 853, 8443, 1194, 500, 4500, 51820)
+ENCRYPTED_TRAFFIC_KEYWORDS = ("tls", "ssl", "https", "quic", "vpn", "wireguard", "openvpn", "ipsec", "ssh")
+
 
 def tool_status():
     tools = []
@@ -199,7 +244,12 @@ def tool_status():
             executable = True
             version = sys.version.split()[0]
         else:
-            path = shutil.which(binary, mode=os.F_OK)
+            path = ""
+            for candidate in meta.get("candidates", [binary]):
+                resolved = shutil.which(candidate, mode=os.F_OK) if "/" not in candidate else candidate
+                if resolved and Path(resolved).exists():
+                    path = str(resolved)
+                    break
             installed = bool(path)
             executable = bool(path and os.access(path, os.X_OK))
             version = tool_version(path) if executable else ""
@@ -273,6 +323,104 @@ def python_package_status():
             }
         )
     return packages
+
+
+def encrypted_traffic_summary(conn, limit=8):
+    port_placeholders = ",".join("?" for _ in ENCRYPTED_TRAFFIC_PORTS)
+    keyword_sql = " OR ".join(
+        [
+            "LOWER(COALESCE(alerts.signature, '')) LIKE ?",
+            "LOWER(COALESCE(alerts.category, '')) LIKE ?",
+            "LOWER(COALESCE(detections.detection_type, '')) LIKE ?",
+        ]
+        * len(ENCRYPTED_TRAFFIC_KEYWORDS)
+    )
+    keyword_params = []
+    for keyword in ENCRYPTED_TRAFFIC_KEYWORDS:
+        pattern = f"%{keyword}%"
+        keyword_params.extend([pattern, pattern, pattern])
+    where_sql = f"""
+      (
+        CAST(COALESCE(alerts.dest_port, 0) AS INTEGER) IN ({port_placeholders})
+        OR CAST(COALESCE(alerts.src_port, 0) AS INTEGER) IN ({port_placeholders})
+        OR {keyword_sql}
+      )
+    """
+    params = list(ENCRYPTED_TRAFFIC_PORTS) + list(ENCRYPTED_TRAFFIC_PORTS) + keyword_params
+
+    total = conn.execute(
+        f"""
+        SELECT COUNT(DISTINCT detections.id) AS count
+        FROM detections
+        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+        WHERE {where_sql}
+        """,
+        params,
+    ).fetchone()
+
+    port_case_sql = f"""
+      CASE
+        WHEN CAST(COALESCE(alerts.dest_port, 0) AS INTEGER) IN ({port_placeholders}) THEN alerts.dest_port
+        WHEN CAST(COALESCE(alerts.src_port, 0) AS INTEGER) IN ({port_placeholders}) THEN alerts.src_port
+        ELSE COALESCE(alerts.dest_port, alerts.src_port, 'metadata')
+      END
+    """
+    port_case_params = list(ENCRYPTED_TRAFFIC_PORTS) + list(ENCRYPTED_TRAFFIC_PORTS)
+
+    ports = conn.execute(
+        f"""
+        SELECT protocol, port, COUNT(*) AS count
+        FROM (
+          SELECT
+            COALESCE(alerts.protocol, 'unknown') AS protocol,
+            {port_case_sql} AS port
+          FROM detections
+          LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+          WHERE {where_sql}
+        )
+        GROUP BY protocol, port
+        ORDER BY count DESC
+        LIMIT ?
+        """,
+        port_case_params + params + [limit],
+    ).fetchall()
+
+    ips = conn.execute(
+        f"""
+        SELECT ip_address, COUNT(*) AS count
+        FROM (
+          SELECT detections.src_ip AS ip_address
+          FROM detections
+          LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+          WHERE {where_sql} AND detections.src_ip IS NOT NULL
+          UNION ALL
+          SELECT detections.dest_ip AS ip_address
+          FROM detections
+          LEFT JOIN alerts ON alerts.id = detections.first_alert_id
+          WHERE {where_sql} AND detections.dest_ip IS NOT NULL
+        )
+        GROUP BY ip_address
+        ORDER BY count DESC
+        LIMIT ?
+        """,
+        params + params + [limit],
+    ).fetchall()
+
+    return {
+        "candidate_count": total["count"] if total else 0,
+        "ports": [dict(row) for row in ports],
+        "ips": [dict(row) for row in ips],
+        "visible": [
+            "IPs",
+            "ports",
+            "protocol",
+            "DNS/TLS hints",
+            "timing",
+            "volume",
+            "reputation",
+        ],
+        "not_visible": "Encrypted payload contents without endpoint telemetry or TLS inspection.",
+    }
 
 
 def validate_ai_model_config(payload):
@@ -386,6 +534,10 @@ def create_app(config_path):
     def investigation_workbook():
         return static_page("investigation.html")
 
+    @app.get("/ip")
+    def ip_workbook():
+        return static_page("ip.html")
+
     @app.get("/compare")
     def ai_comparison_workbook():
         return static_page("compare.html")
@@ -450,15 +602,79 @@ def create_app(config_path):
                     "internal_interface": config.get("assets", {}).get("internal_interface", "ens37"),
                     "suricata_eve_json_path": config.get("suricata", {}).get("eve_json_path", ""),
                     "pcap_rolling_dir": config.get("pcap", {}).get("rolling_dir", ""),
+                    "zeek_interface": config.get("zeek", {}).get("interface", ""),
+                    "zeek_log_directory": config.get("zeek", {}).get("log_directory", ""),
                 },
+                "host_os": zeek_os_recommendation(detect_os_release()),
                 "assets": {
                     "types": default_asset_types(config),
                     "summary": asset_summary(conn),
                     "items": list_all_assets(conn, limit),
                 },
+                "threat_intel": {
+                    "providers": sanitized_provider_status(config, conn),
+                },
                 "tools": tool_status(),
                 "python_packages": python_package_status(),
             }
+        finally:
+            conn.close()
+
+    @app.put("/api/admin/threat-intel")
+    def api_admin_threat_intel(payload: ThreatIntelAdminRequest):
+        threat_intel = config.setdefault("threat_intel", {})
+        configured = threat_intel.setdefault("providers", {})
+        for source, request in payload.providers.items():
+            if source not in PROVIDERS:
+                raise HTTPException(status_code=400, detail=f"Unknown threat-intelligence provider: {source}")
+            if request.refresh_hours < 1 or request.refresh_hours > 168:
+                raise HTTPException(status_code=400, detail=f"{source} refresh interval must be between 1 and 168 hours")
+            existing = configured.get(source, {})
+            key = request.api_key.strip() or existing.get("api_key", "")
+            configured[source] = {
+                "enabled": request.enabled,
+                "api_key": key,
+                "refresh_hours": request.refresh_hours,
+            }
+            if source in {"otx", "virustotal"}:
+                threat_intel[f"{source}_enabled"] = request.enabled
+                threat_intel[f"{source}_api_key"] = key
+        save_config(config, config_path)
+        conn = connect(db_path)
+        try:
+            insert_app_event(conn, "info", "threat_intel", "Updated threat-intelligence provider settings")
+            return {"status": "saved", "providers": sanitized_provider_status(config, conn)}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/threat-intel/{source}/refresh")
+    def api_admin_refresh_threat_intel(source: str):
+        conn = connect(db_path)
+        try:
+            try:
+                result = refresh_provider(conn, config, source)
+                insert_app_event(conn, "info", "threat_intel", f"Refreshed {source}", result)
+                return result
+            except Exception as exc:
+                insert_app_event(conn, "error", "threat_intel", f"{source} refresh failed: {exc}")
+                raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/threat-intel/refresh-active")
+    def api_admin_refresh_active_threat_intel():
+        conn = connect(db_path)
+        results = []
+        try:
+            for source in PROVIDERS:
+                settings = provider_config(config, source)
+                if not settings["enabled"] or source not in {"threatfox", "urlhaus", "sslbl", "spamhaus_drop", "openphish", "ipsum", "feodo"}:
+                    continue
+                try:
+                    results.append(refresh_provider(conn, config, source))
+                except Exception as exc:
+                    results.append({"source": source, "status": "failed", "error": str(exc)})
+            return {"status": "complete", "results": results}
         finally:
             conn.close()
 
@@ -694,6 +910,33 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.delete("/api/admin/trusted-ip/{ip_address}")
+    def api_admin_remove_trusted_ip(ip_address: str, payload: FirewallBlockActionRequest):
+        try:
+            ipaddress.ip_address(ip_address)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid IP address")
+        conn = connect(db_path)
+        try:
+            removed = deactivate_allowlist_for_ip(conn, ip_address)
+            if not removed:
+                raise HTTPException(status_code=404, detail="No active trusted setting found for this IP")
+            insert_app_event(
+                conn,
+                "info",
+                "firewall",
+                f"Removed trusted setting for {ip_address}",
+                {
+                    "ip_address": ip_address,
+                    "removed_entries": removed,
+                    "analyst_name": payload.analyst_name.strip() or "admin",
+                    "reason": payload.reason.strip() or "Removed from admin incident response history",
+                },
+            )
+            return {"status": "removed", "removed_entries": removed}
+        finally:
+            conn.close()
+
     @app.post("/api/admin/ai-model")
     def api_admin_ai_model(payload: AIModelConfigRequest):
         host, model, provider, timeout_seconds = validate_ai_model_config(payload)
@@ -874,6 +1117,14 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.get("/api/latest-alerts")
+    def api_latest_sensor_alerts(limit: int = 50):
+        conn = connect(db_path)
+        try:
+            return latest_sensor_alerts(conn, limit)
+        finally:
+            conn.close()
+
     @app.get("/api/ai-opinions")
     def api_ai_opinions(limit: int = 50):
         conn = connect(db_path)
@@ -924,13 +1175,21 @@ def create_app(config_path):
             otx_rows = conn.execute(
                 """
                 SELECT
-                  COALESCE(reputation, 'unknown') AS reputation,
+                  reputation,
                   COUNT(*) AS count,
                   SUM(COALESCE(malicious_count, 0)) AS malicious_total,
                   SUM(COALESCE(suspicious_count, 0)) AS suspicious_total
-                FROM threat_intel_lookups
-                WHERE source = 'otx'
-                GROUP BY COALESCE(reputation, 'unknown')
+                FROM (
+                  SELECT
+                    indicator,
+                    COALESCE(reputation, 'unknown') AS reputation,
+                    MAX(COALESCE(malicious_count, 0)) AS malicious_count,
+                    MAX(COALESCE(suspicious_count, 0)) AS suspicious_count
+                  FROM threat_intel_lookups
+                  WHERE source = 'otx'
+                  GROUP BY indicator, COALESCE(reputation, 'unknown')
+                )
+                GROUP BY reputation
                 ORDER BY count DESC
                 """
             ).fetchall()
@@ -943,7 +1202,7 @@ def create_app(config_path):
                 ORDER BY reputation ASC, lookup_time DESC, id DESC
                 LIMIT ?
                 """,
-                (max(50, limit * 10),),
+                (max(250, limit * 25),),
             ).fetchall()
             otx_by_reputation = {}
             seen_indicators = set()
@@ -962,9 +1221,23 @@ def create_app(config_path):
                 ORDER BY count DESC
                 """
             ).fetchall()
+            encrypted_summary = encrypted_traffic_summary(conn, limit)
+            zeek_counts = zeek_event_counts(conn)
+            zeek_runtime = zeek_status(config)
             return {
                 "timeline": detail.get("timeline", [])[-8:],
                 "top_ips": detail.get("ips", [])[:limit],
+                "encrypted_traffic": encrypted_summary,
+                "zeek": {
+                    "enabled": zeek_runtime.get("enabled"),
+                    "installed": zeek_runtime.get("installed"),
+                    "running": zeek_runtime.get("running"),
+                    "interface": zeek_runtime.get("interface"),
+                    "log_directory": zeek_runtime.get("log_directory"),
+                    "event_counts": zeek_counts,
+                    "logs": zeek_runtime.get("logs", []),
+                    "community_packages": zeek_runtime.get("community_packages", []),
+                },
                 "otx": {
                     "lookup_count": enrichment.get("lookup_count", 0),
                     "sources": enrichment.get("sources", []),
@@ -986,6 +1259,120 @@ def create_app(config_path):
             return enrichment_status(conn, config, limit)
         finally:
             conn.close()
+
+    @app.get("/api/zeek/status")
+    def api_zeek_status():
+        conn = connect(db_path)
+        try:
+            status = zeek_status(config)
+            status["event_counts"] = zeek_event_counts(conn)
+            return status
+        finally:
+            conn.close()
+
+    @app.get("/api/zeek/events")
+    def api_zeek_events(limit: int = 50, log_type: str = None):
+        conn = connect(db_path)
+        try:
+            return latest_zeek_events(conn, limit, log_type)
+        finally:
+            conn.close()
+
+    @app.get("/api/zeek/events/{event_id}")
+    def api_zeek_event(event_id: int):
+        conn = connect(db_path)
+        try:
+            row = conn.execute("SELECT * FROM zeek_events WHERE id = ?", (event_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Zeek event not found")
+            return dict(row)
+        finally:
+            conn.close()
+
+    @app.get("/api/detections/{detection_id}/zeek-context")
+    def api_detection_zeek_context(detection_id: int, seconds: int = 120):
+        seconds = max(1, min(seconds, 600))
+        conn = connect(db_path)
+        try:
+            return zeek_context_for_detection(conn, detection_id, seconds=seconds)
+        finally:
+            conn.close()
+
+    @app.post("/api/detections/{detection_id}/investigation")
+    def api_create_investigation(detection_id: int, payload: InvestigationRequest):
+        conn = connect(db_path)
+        try:
+            try:
+                evidence = create_incident_evidence(
+                    conn,
+                    config,
+                    detection_id,
+                    seconds_before=payload.seconds_before,
+                    seconds_after=payload.seconds_after,
+                    ip_filter_enabled=payload.ip_filter_enabled,
+                )
+                insert_app_event(
+                    conn,
+                    "info",
+                    "incident_evidence",
+                    f"Created incident evidence for detection {detection_id}",
+                    {"incident_evidence_id": evidence.get("id"), "status": evidence.get("status")},
+                )
+                return {"status": "created", "incident_evidence": evidence}
+            except ValueError as exc:
+                insert_app_event(conn, "error", "incident_evidence", str(exc), {"detection_id": detection_id})
+                raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            conn.close()
+
+    @app.get("/api/detections/{detection_id}/incident-evidence")
+    def api_detection_incident_evidence(detection_id: int):
+        conn = connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM incident_evidence WHERE detection_id = ? ORDER BY id DESC",
+                (detection_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    @app.get("/api/incident-evidence/{evidence_id}")
+    def api_incident_evidence(evidence_id: int):
+        conn = connect(db_path)
+        try:
+            row = conn.execute("SELECT * FROM incident_evidence WHERE id = ?", (evidence_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Incident evidence not found")
+            return dict(row)
+        finally:
+            conn.close()
+
+    def stored_json_file(evidence_id, column):
+        conn = connect(db_path)
+        try:
+            row = conn.execute("SELECT * FROM incident_evidence WHERE id = ?", (evidence_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Incident evidence not found")
+            path = row[column]
+            if not path:
+                raise HTTPException(status_code=404, detail=f"{column} is not available for this evidence")
+            try:
+                return json.loads(Path(path).read_text(encoding="utf-8"))
+            except OSError as exc:
+                raise HTTPException(status_code=404, detail=f"Evidence file unavailable: {exc}")
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=500, detail=f"Evidence file is not valid JSON: {exc}")
+        finally:
+            conn.close()
+
+    @app.get("/api/incident-evidence/{evidence_id}/manifest")
+    def api_incident_manifest(evidence_id: int):
+        return stored_json_file(evidence_id, "evidence_manifest_path")
+
+    @app.get("/api/incident-evidence/{evidence_id}/zeek/events")
+    def api_incident_zeek_events(evidence_id: int):
+        return stored_json_file(evidence_id, "zeek_logs_path")
 
     @app.post("/api/threat-intel-config")
     def api_threat_intel_config(payload: ThreatIntelConfigRequest):
@@ -1128,12 +1515,27 @@ def create_app(config_path):
             detail = investigation_detail(conn, detection_id)
             if not detail:
                 raise HTTPException(status_code=404, detail="Investigation not found")
+            zeek_context = zeek_context_for_detection(conn, detection_id, seconds=120)
+            providers = sanitized_provider_status(config, conn)
+            detail["src_threat_intel"] = threat_intel_provider_results(conn, detail.get("src_ip"), providers)
+            detail["dest_threat_intel"] = threat_intel_provider_results(conn, detail.get("dest_ip"), providers)
         finally:
             conn.close()
-        pcaps = list_pcap_files(config, detail.get("timestamp") or detail.get("first_seen"), detail.get("last_seen") or detail.get("timestamp"))
-        pcaps["detection_id"] = detection_id
-        detail["pcap_files"] = pcaps
+        detail["zeek_context"] = zeek_context
         return detail
+
+    @app.get("/api/ip-detail")
+    def api_ip_detail(address: str, limit: int = 100):
+        conn = connect(db_path)
+        try:
+            detail = ip_detail(conn, address, limit)
+            providers = sanitized_provider_status(config, conn)
+            detail["threat_intel"] = threat_intel_provider_results(conn, detail.get("ip_address"), providers)
+            return detail
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid IP address")
+        finally:
+            conn.close()
 
     @app.get("/api/assets")
     def api_assets(limit: int = 100):
@@ -1449,9 +1851,25 @@ def create_app(config_path):
     def api_metrics():
         conn = connect(db_path)
         try:
-            total_alerts = conn.execute("SELECT COUNT(*) AS count FROM alerts").fetchone()["count"]
+            suricata_alerts = conn.execute("SELECT COUNT(*) AS count FROM alerts").fetchone()["count"]
+            zeek_detection_findings = conn.execute(
+                "SELECT COUNT(*) AS count FROM sensor_findings WHERE sensor = 'zeek' AND finding_type = 'notice'"
+            ).fetchone()["count"]
+            total_alerts = suricata_alerts + zeek_detection_findings
             total_detections = conn.execute("SELECT COUNT(*) AS count FROM detections").fetchone()["count"]
             total_assets = conn.execute("SELECT COUNT(*) AS count FROM assets WHERE status = 'active'").fetchone()["count"]
+            zeek_counts = zeek_event_counts(conn)
+            zeek_notice_count = zeek_counts.get("notice", 0)
+            zeek_weird_count = zeek_counts.get("weird", 0)
+            incident_ready = conn.execute(
+                "SELECT COUNT(*) AS count FROM incident_evidence WHERE COALESCE(status, summary_status) IN ('ready', 'generated')"
+            ).fetchone()["count"]
+            incident_failed = conn.execute(
+                "SELECT COUNT(*) AS count FROM incident_evidence WHERE COALESCE(status, summary_status) IN ('failed', 'partial', 'summary_failed', 'summary_timeout', 'tshark_unavailable')"
+            ).fetchone()["count"]
+            ai_reassessments = conn.execute(
+                "SELECT COUNT(*) AS count FROM ai_assessments WHERE assessment_type = 'reassessment'"
+            ).fetchone()["count"]
             by_type = conn.execute(
                 "SELECT detection_type, COUNT(*) AS count FROM detections GROUP BY detection_type ORDER BY count DESC"
             ).fetchall()
@@ -1459,6 +1877,9 @@ def create_app(config_path):
                 """
                 SELECT final_classification, final_action, COUNT(*) AS count
                 FROM responses
+                WHERE id = (
+                  SELECT MAX(r2.id) FROM responses r2 WHERE r2.detection_id = responses.detection_id
+                )
                 GROUP BY final_classification, final_action
                 """
             ).fetchall()
@@ -1481,6 +1902,15 @@ def create_app(config_path):
                 "total_alerts": total_alerts,
                 "total_detections": total_detections,
                 "total_assets": total_assets,
+                "zeek_notice_count": zeek_notice_count,
+                "zeek_weird_count": zeek_weird_count,
+                "zeek_event_counts": zeek_counts,
+                "multi_sensor_detections": conn.execute(
+                    "SELECT COUNT(*) AS count FROM detections WHERE sensor_state = 'multi_sensor'"
+                ).fetchone()["count"],
+                "investigations_ready": incident_ready,
+                "investigations_failed": incident_failed,
+                "ai_reassessments": ai_reassessments,
                 "outcome_counts": outcome_counts,
                 "detections_by_type": [dict(row) for row in by_type],
                 "mode": config.get("system", {}).get("mode"),

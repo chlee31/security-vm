@@ -13,8 +13,7 @@ const els = {
   timeline: document.querySelector("#wb-timeline"),
   ips: document.querySelector("#wb-ips"),
   recent: document.querySelector("#wb-recent"),
-  evidence: document.querySelector("#wb-evidence"),
-  pcaps: document.querySelector("#wb-pcaps")
+  evidence: document.querySelector("#wb-evidence")
 };
 
 async function getJson(path) {
@@ -48,23 +47,6 @@ function scoreBadge(score, badgeLabel = "Score") {
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-}
-
-function otxText(result) {
-  if (!result) return "OTX no lookup yet";
-  return `OTX ${result.reputation || "unknown"} · malicious ${result.malicious_count ?? 0} · suspicious ${result.suspicious_count ?? 0}`;
 }
 
 function investigationUrl(detectionId) {
@@ -152,7 +134,7 @@ function renderIps(ips) {
       <div>
         <strong>${item.ip_address}</strong>
         <p>${item.asset ? `${item.asset.name} · ${label(item.asset.device_type)} · score ${item.asset.asset_score}` : item.location}</p>
-        <small>${item.scope} · seen ${item.count} · ${otxText(item.otx)}</small>
+        <small>${item.scope} · seen ${item.count}</small>
       </div>
     </div>
   `).join("") || `<div class="empty">No IPs found for this detection.</div>`;
@@ -208,28 +190,13 @@ function renderEvidence(rows) {
   `).join("") || `<div class="empty">No decision evidence yet.</div>`;
 }
 
-function renderPcaps(inventory) {
-  const files = (inventory.files || []).filter((file) => file.related).slice(0, 12);
-  els.pcaps.innerHTML = files.map((file) => `
-    <div class="pcap-item ${file.label}">
-      <div class="row tight">
-        <strong>${file.name}</strong>
-        <span>${file.label}</span>
-      </div>
-      <p>${file.path}</p>
-      <small>${formatBytes(file.size_bytes)} · modified ${file.modified_at}</small>
-    </div>
-  `).join("") || `<div class="empty">No related PCAP files for this detection window.</div>`;
-}
-
 async function refresh() {
   els.title.textContent = label(detectionType);
   const encoded = encodeURIComponent(detectionType);
   try {
-    const [detail, evidence, pcaps] = await Promise.all([
+    const [detail, evidence] = await Promise.all([
       getJson(`/api/detection-detail?detection_type=${encoded}&limit=100`),
-      getJson(`/api/decision-evidence?detection_type=${encoded}&limit=100`),
-      getJson(`/api/pcap-files?detection_type=${encoded}`)
+      getJson(`/api/decision-evidence?detection_type=${encoded}&limit=100`)
     ]);
 
     const summary = detail.summary || {};
@@ -242,7 +209,6 @@ async function refresh() {
     renderIps(detail.ips || []);
     renderRecent(detail.recent || []);
     renderEvidence(evidence || []);
-    renderPcaps(pcaps || {});
     els.updated.textContent = new Date().toLocaleTimeString();
   } catch (error) {
     els.updated.textContent = "Workbook API error";

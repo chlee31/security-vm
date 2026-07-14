@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>IP Investigation</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">IP Investigation</p>
+          <h1 id="ip-title">Loading IP</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="ip-updated">Waiting for data</span>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+        </div>
+      </section>
+
+      <section class="workbook-metrics">
+        <article class="metric">
+          <span>Alerts</span>
+          <strong id="ip-alert-count">0</strong>
+          <small>Suricata rows involving this IP</small>
+        </article>
+        <article class="metric">
+          <span>Detections</span>
+          <strong id="ip-detection-count">0</strong>
+          <small>Correlated investigation items</small>
+        </article>
+        <article class="metric">
+          <span>Traffic Role</span>
+          <strong id="ip-role">Unknown</strong>
+          <small id="ip-role-detail">No traffic yet</small>
+        </article>
+        <article class="metric">
+          <span>Threat Intelligence</span>
+          <strong id="ip-intel-match-count">0</strong>
+          <small id="ip-intel-provider-count">No active providers</small>
+        </article>
+      </section>
+
+      <section class="workbook-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Profile</p>
+              <h2>Address Context</h2>
+            </div>
+          </div>
+          <div id="ip-profile" class="workbook-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Connectivity</p>
+              <h2>Top Peers</h2>
+            </div>
+          </div>
+          <div id="ip-peer-chart" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Correlation</p>
+              <h2>Detection Types</h2>
+            </div>
+          </div>
+          <div id="ip-detection-types" class="chart-panel"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Decision</p>
+              <h2>Outcome Mix</h2>
+            </div>
+          </div>
+          <div id="ip-outcomes" class="chart-panel"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Investigations</p>
+              <h2>Related Detections</h2>
+            </div>
+          </div>
+          <div id="ip-detections" class="evidence-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Event Stream</p>
+              <h2>Recent Alerts</h2>
+            </div>
+          </div>
+          <div id="ip-alerts" class="workbook-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Threat Intel</p>
+              <h2>Lookup History</h2>
+            </div>
+          </div>
+          <div id="ip-intel-history" class="workbook-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/ip.js?v=20260711-threat-intel"></script>
+  </body>
+</html>

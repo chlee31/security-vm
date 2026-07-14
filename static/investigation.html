@@ -38,9 +38,14 @@
           <small id="inv-ai-classification">No opinion</small>
         </article>
         <article class="metric">
-          <span>Related PCAPs</span>
-          <strong id="inv-pcap-count">0</strong>
-          <small>Capture files in window</small>
+          <span>Sensor Evidence</span>
+          <strong id="inv-sensor-state">Unknown</strong>
+          <small id="inv-agreement-state">No correlation</small>
+        </article>
+        <article class="metric timestamp-metric">
+          <span>Alert Timestamp</span>
+          <strong id="inv-timestamp">Unknown</strong>
+          <small>Normalized sensor event time</small>
         </article>
       </section>
 
@@ -94,8 +99,8 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Alert</p>
-              <h2>Suricata Event</h2>
+              <p class="eyebrow">Sensor Fusion</p>
+              <h2>Detection Findings</h2>
             </div>
           </div>
           <div id="inv-alert" class="workbook-list"></div>
@@ -134,11 +139,12 @@
         <section class="panel wide-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Packet Capture</p>
-              <h2>Related PCAP Files</h2>
+              <p class="eyebrow">Zeek Sensor</p>
+              <h2>Related Behavior Logs</h2>
             </div>
+            <button id="inv-create-evidence" type="button">Create Evidence</button>
           </div>
-          <div id="inv-pcaps" class="pcap-list"></div>
+          <div id="inv-zeek" class="workbook-list"></div>
         </section>
 
         <section class="panel">
@@ -153,6 +159,6 @@
       </section>
     </main>
 
-    <script src="/static/investigation.js?v=20260703-human-feedback"></script>
+    <script src="/static/investigation.js?v=20260714-unified-alerts"></script>
   </body>
 </html>

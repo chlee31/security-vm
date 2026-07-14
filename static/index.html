@@ -11,13 +11,14 @@
       <section class="topbar">
         <div>
           <p class="eyebrow">Security VM</p>
-          <h1>Suricata Threat Dashboard</h1>
+          <h1>Security VM Threat Dashboard</h1>
         </div>
         <div class="status">
           <span class="dot"></span>
           <span id="mode">Loading</span>
           <span class="divider"></span>
           <span id="updated">Waiting for data</span>
+          <button id="refresh" class="refresh-button" type="button" title="Load the latest sensor and decision data">Refresh</button>
           <span class="divider"></span>
           <a class="nav-link" href="/outcome?type=human_review" target="_blank" rel="noopener">Investigate</a>
           <span class="divider"></span>
@@ -31,9 +32,9 @@
 
       <section class="metrics">
         <article class="metric">
-          <span>Total Alerts</span>
+          <span>Sensor Findings</span>
           <strong id="total-alerts">0</strong>
-          <small>Stored in SQLite</small>
+          <small>Suricata alerts + Zeek notices</small>
         </article>
         <article class="metric" data-outcome-all="true" role="button" tabindex="0" title="Open all decision outcomes in a new tab">
           <span>Detections</span>
@@ -70,6 +71,21 @@
           <strong id="system-mode">alert_only</strong>
           <small>Firewall guarded</small>
         </article>
+        <article class="metric sensor-metric">
+          <span>Zeek Notices</span>
+          <strong id="zeek-notice-count">0</strong>
+          <small>Alert-like Zeek events</small>
+        </article>
+        <article class="metric sensor-metric">
+          <span>Zeek Weirds</span>
+          <strong id="zeek-weird-count">0</strong>
+          <small>Protocol anomalies</small>
+        </article>
+        <article class="metric sensor-metric">
+          <span>Evidence Ready</span>
+          <strong id="investigations-ready">0</strong>
+          <small>Incident records</small>
+        </article>
       </section>
 
       <section class="insight-grid">
@@ -96,53 +112,55 @@
         <section class="panel">
           <div class="panel-head compact">
             <div>
-              <p class="eyebrow">Enrichment</p>
-              <h2>OTX Status</h2>
-            </div>
-          </div>
-          <div id="summary-otx" class="chart-panel compact-chart"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head compact">
-            <div>
               <p class="eyebrow">AI Comparison</p>
               <h2>Model Snapshot</h2>
             </div>
           </div>
           <div id="summary-models" class="chart-panel compact-chart"></div>
         </section>
+
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Encrypted Traffic</p>
+              <h2>Metadata View</h2>
+            </div>
+          </div>
+          <div id="summary-encrypted" class="chart-panel compact-chart"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Zeek Sensor</p>
+              <h2>Behavior Logs</h2>
+            </div>
+          </div>
+          <div id="summary-zeek" class="chart-panel compact-chart"></div>
+        </section>
+      </section>
+
+      <section class="panel decision-evidence-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Evidence</p>
+            <h2>Decision Evidence</h2>
+          </div>
+          <small class="panel-hint">Suricata, Zeek, scoring, AI, and analyst context</small>
+        </div>
+        <div id="decision-evidence" class="evidence-list"></div>
       </section>
 
       <section class="grid">
         <section class="streams">
-          <section class="panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Evidence</p>
-                <h2>Decision Evidence</h2>
-              </div>
-            </div>
-            <div id="decision-evidence" class="evidence-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Packet Capture</p>
-                <h2>Related PCAP Files</h2>
-              </div>
-            </div>
-            <div id="pcap-files" class="pcap-list"></div>
-          </section>
 
           <section class="panel">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Event Stream</p>
-                <h2>Latest Suricata Alerts</h2>
+                <h2>Latest Alerts</h2>
               </div>
-              <button id="refresh" type="button" title="Refresh">R</button>
+              <small class="panel-hint">Combined sensor findings by detection</small>
             </div>
             <div id="alerts" class="alerts"></div>
           </section>
@@ -203,33 +221,6 @@
           <section class="panel">
             <div class="panel-head compact">
               <div>
-                <p class="eyebrow">Enrichment</p>
-                <h2>Lookup Status</h2>
-              </div>
-            </div>
-            <form id="threat-intel-form" class="form-grid">
-              <label class="check-row">
-                <input id="otx-enabled" name="otx_enabled" type="checkbox">
-                <span>Enable OTX</span>
-              </label>
-              <input id="otx-cache-ttl" name="cache_ttl_hours" type="number" min="1" max="168" value="24" placeholder="Cache hours">
-              <input id="otx-api-key" name="otx_api_key" type="password" placeholder="OTX API key">
-              <select id="otx-lookup-scope" name="lookup_scope">
-                <option value="top5">Lookup top 5 public IPs</option>
-                <option value="top10">Lookup top 10 public IPs</option>
-                <option value="visible">Lookup all visible public IPs</option>
-              </select>
-              <button id="test-otx" class="wide-button" type="button">Test OTX Connection</button>
-              <button class="wide-button" type="submit">Save OTX Settings</button>
-              <button id="run-otx" class="wide-button" type="button">Run OTX Lookups</button>
-              <div id="otx-status" class="connection-status">OTX connection not tested.</div>
-            </form>
-            <div id="enrichment" class="list enrichment-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
                 <p class="eyebrow">Allowlist</p>
                 <h2>Trusted IPs</h2>
               </div>
@@ -277,7 +268,7 @@
               </div>
             </div>
             <div class="pipeline">
-              <span>Suricata EVE JSON</span>
+              <span>Suricata and Zeek findings</span>
               <span>SQLite storage</span>
               <span>Python correlation</span>
               <span>Manual asset score</span>
@@ -291,6 +282,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260704-ai-opinions-only"></script>
+    <script src="/static/app.js?v=20260714-unified-alerts"></script>
   </body>
 </html>

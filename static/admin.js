@@ -50,10 +50,18 @@ const els = {
   assets: document.querySelector("#admin-assets"),
   tools: document.querySelector("#admin-tools"),
   pythonPackages: document.querySelector("#admin-python-packages"),
-  paths: document.querySelector("#admin-paths")
+  paths: document.querySelector("#admin-paths"),
+  threatIntelForm: document.querySelector("#threat-intel-form"),
+  threatIntelProviders: document.querySelector("#threat-intel-providers"),
+  threatIntelStatus: document.querySelector("#threat-intel-status"),
+  refreshThreatIntel: document.querySelector("#refresh-threat-intel"),
+  tabButtons: Array.from(document.querySelectorAll("[data-admin-tab-button]")),
+  tabPanels: Array.from(document.querySelectorAll("[data-admin-tab-panel]"))
 };
 
-let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", modes: [] };
+let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", modes: [], threatIntelProviders: [] };
+const initialTab = window.location.hash.replace("#", "");
+let activeAdminTab = initialTab === "incident-response" ? "incident" : initialTab === "threat-intel" ? "threat-intel" : "settings";
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -85,9 +93,98 @@ function label(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function setStatus(element, kind, text) {
   element.className = `connection-status ${kind || ""}`.trim();
   element.textContent = text;
+}
+
+function setAdminTab(tabName, updateHash = true) {
+  activeAdminTab = ["settings", "incident", "threat-intel"].includes(tabName) ? tabName : "settings";
+  els.tabButtons.forEach((button) => {
+    const selected = button.dataset.adminTabButton === activeAdminTab;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+  });
+  els.tabPanels.forEach((panel) => {
+    panel.hidden = panel.dataset.adminTabPanel !== activeAdminTab;
+  });
+  if (updateHash) {
+    const hash = activeAdminTab === "incident" ? "#incident-response" : activeAdminTab === "threat-intel" ? "#threat-intel" : "#settings";
+    history.replaceState(null, "", hash);
+  }
+}
+
+function renderThreatIntel(threatIntel) {
+  state.threatIntelProviders = threatIntel.providers || [];
+  els.threatIntelProviders.innerHTML = state.threatIntelProviders.map((provider) => `
+    <article class="provider-card ${provider.enabled ? "active" : "inactive"}" data-provider="${provider.name}">
+      <div class="row tight">
+        <div>
+          <strong>${escapeHtml(provider.label)}</strong>
+          <small>${escapeHtml(label(provider.kind))}</small>
+        </div>
+        <span class="status-pill ${provider.status === "ready" || provider.status === "active" ? "active" : provider.status === "failed" || provider.status === "missing_key" ? "danger" : "inactive"}">${label(provider.status)}</span>
+      </div>
+      <p>${escapeHtml(provider.description)}</p>
+      <label class="field checkbox-field compact-field">
+        <input type="checkbox" data-provider-enabled="${provider.name}" ${provider.enabled ? "checked" : ""}>
+        <span>Active</span>
+      </label>
+      ${provider.requires_key ? `
+        <label class="field compact-field">
+          <span>API key</span>
+          <input type="password" data-provider-key="${provider.name}" placeholder="${provider.api_key_configured ? "Saved; leave blank to keep" : "Required when active"}">
+        </label>
+      ` : ""}
+      <label class="field compact-field">
+        <span>Refresh interval, hours</span>
+        <input type="number" min="1" max="168" value="${provider.refresh_hours || 24}" data-provider-refresh-hours="${provider.name}">
+      </label>
+      <div class="provider-facts">
+        <span><strong>${provider.indicator_count || 0}</strong> indicators</span>
+        <span>Last success: ${escapeHtml(provider.last_success || "never")}</span>
+        <span><strong>${provider.usage_count || 0}</strong> detection matches used</span>
+        <span>Last used: ${escapeHtml(provider.last_used || "not used in a decision yet")}</span>
+      </div>
+      ${provider.last_error ? `<small class="error-text">${escapeHtml(provider.last_error)}</small>` : ""}
+      ${provider.name === "otx" ? `
+        <div class="provider-actions">
+          <button class="text-button" type="button" data-test-otx ${!provider.enabled ? "disabled" : ""}>Test Connection</button>
+          <button class="text-button" type="button" data-run-otx ${!provider.enabled ? "disabled" : ""}>Lookup Top 10 Public IPs</button>
+        </div>
+      ` : provider.name === "virustotal" ? `
+        <div class="provider-policy">
+          <strong>Post-AI verification</strong>
+          <small>Python queries public IPs only after the selected AI profile returns Dangerous. Cached results are reused for the configured TTL.</small>
+        </div>
+      ` : `
+        <button class="text-button" type="button" data-refresh-provider="${provider.name}" ${!["bulk_api", "bulk_feed"].includes(provider.kind) || !provider.enabled ? "disabled" : ""}>
+          ${["bulk_api", "bulk_feed"].includes(provider.kind) ? "Refresh Feed" : "Manual Only"}
+        </button>
+      `}
+    </article>
+  `).join("");
+}
+
+function threatIntelPayload() {
+  const providers = {};
+  state.threatIntelProviders.forEach((provider) => {
+    providers[provider.name] = {
+      enabled: Boolean(document.querySelector(`[data-provider-enabled="${provider.name}"]`)?.checked),
+      api_key: document.querySelector(`[data-provider-key="${provider.name}"]`)?.value || "",
+      refresh_hours: Number(document.querySelector(`[data-provider-refresh-hours="${provider.name}"]`)?.value || 24)
+    };
+  });
+  return { providers };
 }
 
 function renderAiModel(settings) {
@@ -297,6 +394,13 @@ function renderFirewallHistory(history) {
         <p>${label(item.detection_type)} · ${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</p>
         <small>${item.signature || item.reason || "No signature recorded"}</small>
         <small>${item.direction || "n/a"} · created ${item.created_at || "unknown"}${item.released_at ? ` · released ${item.released_at}` : ""}</small>
+        ${item.history_type === "marked_safe" && Number(item.active_allowlist_count || 0) > 0 ? `
+          <div class="asset-admin-actions">
+            <button class="text-button danger-button" type="button" data-remove-trusted-ip="${item.ip_address}">
+              Remove Trusted Setting
+            </button>
+          </div>
+        ` : item.history_type === "marked_safe" ? `<small>Trusted setting not active.</small>` : ""}
         ${item.release_reason ? `<small>${item.release_reason}</small>` : ""}
       </div>
     `).join("") || `<div class="empty">No firewall history yet.</div>`}
@@ -436,7 +540,16 @@ function renderPythonPackages(packages) {
 
 function renderPaths(settings) {
   const network = settings.network || {};
+  const hostOs = settings.host_os || {};
   els.paths.innerHTML = `
+    <div class="list-item ${hostOs.recommended ? "tool-item ready" : "tool-item missing"}">
+      <div class="row tight">
+        <strong>Host operating system</strong>
+        <span>${hostOs.recommended ? "recommended" : "not recommended"}</span>
+      </div>
+      <p>${hostOs.pretty_name || "Unknown operating system"}</p>
+      <small>${hostOs.message || "Ubuntu 22.04 or newer is recommended for Zeek."}</small>
+    </div>
     <div class="list-item">
       <div class="row tight">
         <strong>Config file</strong>
@@ -472,6 +585,13 @@ function renderPaths(settings) {
       </div>
       <p>${network.pcap_rolling_dir || "/var/log/pcap"}</p>
     </div>
+    <div class="list-item">
+      <div class="row tight">
+        <strong>Zeek sensor</strong>
+        <span>${network.zeek_interface || "not configured"}</span>
+      </div>
+      <p>${network.zeek_log_directory || "/opt/zeek/logs/current"}</p>
+    </div>
   `;
 }
 
@@ -483,6 +603,7 @@ async function refresh() {
     renderSystemControls(settings);
     renderNotifications(settings);
     renderAssets(settings.assets || {});
+    renderThreatIntel(settings.threat_intel || {});
     renderTools(settings.tools || []);
     renderPythonPackages(settings.python_packages || []);
     renderPaths(settings);
@@ -603,6 +724,19 @@ async function markFirewallCandidateSafe(responseId) {
     safe_duration_hours: 24 * 365
   });
   window.alert(`Candidate marked ${result.status}.`);
+  await refresh();
+}
+
+async function removeTrustedIp(ipAddress) {
+  const analyst = window.prompt("Analyst name for removing trust:", "admin") || "admin";
+  const reason = window.prompt("Why remove this trusted setting?", "No longer approved or created by mistake") || "No longer approved or created by mistake";
+  const confirmed = window.confirm(`Remove active trusted/allowlist setting for ${ipAddress}? Firewall history will remain for audit.`);
+  if (!confirmed) return;
+  const result = await sendJson(`/api/admin/trusted-ip/${encodeURIComponent(ipAddress)}`, "DELETE", {
+    analyst_name: analyst,
+    reason
+  });
+  window.alert(`Removed ${result.removed_entries || 0} trusted setting(s) for ${ipAddress}.`);
   await refresh();
 }
 
@@ -773,6 +907,37 @@ els.assetForm.addEventListener("submit", async (event) => {
 
 els.assetCancel.addEventListener("click", resetAssetForm);
 
+els.threatIntelForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await sendJson("/api/admin/threat-intel", "PUT", threatIntelPayload());
+    await refresh();
+    setStatus(els.threatIntelStatus, "ok", "Threat-intelligence provider settings saved.");
+  } catch (error) {
+    setStatus(els.threatIntelStatus, "error", error.message);
+  }
+});
+
+els.refreshThreatIntel.addEventListener("click", async () => {
+  els.refreshThreatIntel.disabled = true;
+  setStatus(els.threatIntelStatus, "", "Refreshing active bulk feeds...");
+  try {
+    await sendJson("/api/admin/threat-intel", "PUT", threatIntelPayload());
+    const result = await sendJson("/api/admin/threat-intel/refresh-active", "POST");
+    const failures = (result.results || []).filter((item) => item.status === "failed");
+    await refresh();
+    setStatus(
+      els.threatIntelStatus,
+      failures.length ? "warn" : "ok",
+      failures.length ? `${failures.length} feed refreshes failed. Review provider cards.` : "Active bulk feeds refreshed."
+    );
+  } catch (error) {
+    setStatus(els.threatIntelStatus, "error", error.message);
+  } finally {
+    els.refreshThreatIntel.disabled = false;
+  }
+});
+
 els.assetType.addEventListener("change", () => {
   const selected = els.assetType.selectedOptions[0];
   els.assetScore.value = selected ? selected.dataset.score : "";
@@ -780,6 +945,52 @@ els.assetType.addEventListener("change", () => {
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
+  const tabButton = event.target.closest("[data-admin-tab-button]");
+  if (tabButton) {
+    setAdminTab(tabButton.dataset.adminTabButton);
+    return;
+  }
+  if (event.target.closest("[data-test-otx]")) {
+    const button = event.target.closest("[data-test-otx]");
+    button.disabled = true;
+    setStatus(els.threatIntelStatus, "", "Testing OTX connection...");
+    sendJson("/api/admin/threat-intel", "PUT", threatIntelPayload())
+      .then(() => sendJson("/api/otx-status", "POST", { otx_api_key: "" }))
+      .then((result) => {
+        if (!result.ok) throw new Error(result.error || "OTX connection test failed");
+        setStatus(els.threatIntelStatus, "ok", `OTX connected. Subscribed pulses: ${result.pulse_count ?? "available"}.`);
+      })
+      .catch((error) => setStatus(els.threatIntelStatus, "error", error.message))
+      .finally(() => { button.disabled = false; });
+    return;
+  }
+  if (event.target.closest("[data-run-otx]")) {
+    const button = event.target.closest("[data-run-otx]");
+    button.disabled = true;
+    setStatus(els.threatIntelStatus, "", "Looking up the top 10 public IPs with OTX...");
+    sendJson("/api/admin/threat-intel", "PUT", threatIntelPayload())
+      .then(() => sendJson("/api/otx-lookups", "POST", { scope: "top10", limit: 10 }))
+      .then((result) => refresh().then(() => result))
+      .then((result) => {
+        const failures = (result.results || []).filter((item) => item.status === "error");
+        setStatus(els.threatIntelStatus, failures.length ? "warn" : "ok", `OTX completed ${result.results?.length || 0} lookups${failures.length ? ` with ${failures.length} failures` : ""}.`);
+      })
+      .catch((error) => setStatus(els.threatIntelStatus, "error", error.message))
+      .finally(() => { button.disabled = false; });
+    return;
+  }
+  const refreshProvider = event.target.dataset.refreshProvider;
+  if (refreshProvider) {
+    event.target.disabled = true;
+    setStatus(els.threatIntelStatus, "", `Refreshing ${label(refreshProvider)}...`);
+    sendJson("/api/admin/threat-intel", "PUT", threatIntelPayload())
+      .then(() => sendJson(`/api/admin/threat-intel/${encodeURIComponent(refreshProvider)}/refresh`, "POST"))
+      .then(() => refresh())
+      .then(() => setStatus(els.threatIntelStatus, "ok", `${label(refreshProvider)} refreshed.`))
+      .catch((error) => setStatus(els.threatIntelStatus, "error", error.message))
+      .finally(() => { event.target.disabled = false; });
+    return;
+  }
   const assetId = event.target.dataset.editAsset;
   if (assetId) editAsset(assetId);
   const toggleId = event.target.dataset.toggleAsset;
@@ -805,6 +1016,10 @@ document.addEventListener("click", (event) => {
   const safeCandidateId = event.target.dataset.safeCandidate;
   if (safeCandidateId) {
     markFirewallCandidateSafe(safeCandidateId).catch((error) => window.alert(error.message));
+  }
+  const trustedIp = event.target.dataset.removeTrustedIp;
+  if (trustedIp) {
+    removeTrustedIp(trustedIp).catch((error) => window.alert(error.message));
   }
   const editProfileUid = event.target.dataset.editAiProfile;
   if (editProfileUid) {
@@ -837,10 +1052,17 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (!["Enter", " "].includes(event.key)) return;
+  const tabButton = event.target.closest("[data-admin-tab-button]");
+  if (tabButton) {
+    event.preventDefault();
+    setAdminTab(tabButton.dataset.adminTabButton);
+    return;
+  }
   const profileTarget = event.target.closest("[data-select-ai-profile]");
   if (!profileTarget) return;
   event.preventDefault();
   selectAiProfile(profileTarget.dataset.selectAiProfile).catch((error) => setStatus(els.aiModelStatus, "error", error.message));
 });
 
+setAdminTab(activeAdminTab, false);
 refresh();
