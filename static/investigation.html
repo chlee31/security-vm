@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Security VM Investigation</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260717-case-evidence-browser">
   </head>
   <body>
     <main class="shell workbook-shell">
@@ -23,6 +23,7 @@
 
       <section class="case-actions" aria-label="Case actions">
         <button id="inv-reassess" type="button">Reassess Case</button>
+        <button id="inv-compare" type="button">Run Three-Model Comparison</button>
         <button id="inv-refresh-vt" type="button">Refresh VirusTotal</button>
         <button id="inv-refresh" type="button">Refresh Evidence</button>
         <span id="inv-action-status" class="connection-status">Case evidence loaded on request.</span>
@@ -60,6 +61,27 @@
         <section class="panel wide-panel">
           <div class="panel-head">
             <div>
+              <p class="eyebrow">Case Summary</p>
+              <h2>Who, What, When, Where, Why, and How</h2>
+            </div>
+          </div>
+          <div id="inv-overview" class="case-overview-grid"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">AI Comparison</p>
+              <h2>All Model Responses</h2>
+            </div>
+            <small class="panel-hint">Sequential requests · model identities shown</small>
+          </div>
+          <div id="inv-comparison"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
               <p class="eyebrow">Human Feedback</p>
               <h2>Analyst Review</h2>
             </div>
@@ -80,8 +102,8 @@
                 <option value="confirm">Confirm original</option>
                 <option value="log_only">Override: log only</option>
                 <option value="human_review">Override: keep review</option>
-                <option value="would_block">Override: would block</option>
-                <option value="temporary_block">Override: temporary block</option>
+                <option value="investigate">Override: investigate</option>
+                <option value="escalate">Override: escalate</option>
               </select>
             </label>
             <label class="field wide-field">
@@ -109,15 +131,22 @@
               <p class="eyebrow">Sensor Fusion</p>
               <h2>Detection Findings</h2>
             </div>
+            <div class="finding-view-toolbar" aria-label="Finding display mode">
+              <span id="inv-finding-count">0 findings</span>
+              <div class="segmented-control finding-view-control">
+                <button type="button" class="active" data-finding-view="unique" aria-pressed="true">Unique</button>
+                <button type="button" data-finding-view="all" aria-pressed="false">All Events</button>
+              </div>
+            </div>
           </div>
-          <div id="inv-alert" class="workbook-list"></div>
+          <div id="inv-alert" class="workbook-list finding-browser"></div>
         </section>
 
         <section class="panel">
           <div class="panel-head">
             <div>
               <p class="eyebrow">AI Review</p>
-              <h2>Model Reasoning</h2>
+              <h2>Evidence-Based Explanation</h2>
             </div>
           </div>
           <div id="inv-ai" class="workbook-list"></div>
@@ -137,7 +166,7 @@
           <div class="panel-head">
             <div>
               <p class="eyebrow">Enrichment</p>
-              <h2>Assets, Threat Intel & VirusTotal</h2>
+              <h2>Registered IP Roles, Threat Intel & VirusTotal</h2>
             </div>
           </div>
           <div id="inv-intel" class="workbook-list"></div>
@@ -147,9 +176,8 @@
           <div class="panel-head">
             <div>
               <p class="eyebrow">Zeek Sensor</p>
-              <h2>Related Behavior Logs & Forensics</h2>
+              <h2>Related Network Context</h2>
             </div>
-            <button id="inv-create-evidence" type="button">Preserve Forensic Evidence</button>
           </div>
           <div id="inv-zeek" class="workbook-list"></div>
         </section>
@@ -166,6 +194,6 @@
       </section>
     </main>
 
-    <script src="/static/investigation.js?v=20260714-case-workspace"></script>
+    <script src="/static/investigation.js?v=20260717-case-evidence-browser"></script>
   </body>
 </html>

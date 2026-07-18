@@ -24,7 +24,6 @@
       <nav class="admin-tabs" aria-label="Admin sections">
         <button class="admin-tab-button active" type="button" data-admin-tab-button="settings">Settings</button>
         <button class="admin-tab-button" type="button" data-admin-tab-button="threat-intel">Threat Intelligence</button>
-        <button class="admin-tab-button" type="button" data-admin-tab-button="incident">Incident Response</button>
       </nav>
 
       <section class="admin-grid">
@@ -45,7 +44,7 @@
           </form>
         </section>
 
-        <section class="panel wide-panel" data-admin-tab-panel="incident" hidden>
+        <section class="panel wide-panel" data-admin-tab-panel="incident" data-retired="true" hidden>
           <div class="panel-head">
             <div>
               <p class="eyebrow">Incident Response</p>
@@ -139,9 +138,21 @@
           </form>
           <div id="ai-model-summary" class="list"></div>
           <div id="ai-profiles" class="list admin-list"></div>
+          <form id="ai-comparison-form" class="admin-form comparison-profile-form">
+            <div class="list-item">
+              <div class="row tight">
+                <strong>Comparison profiles</strong>
+                <span>exactly 3</span>
+              </div>
+              <p>Each case uses one frozen evidence package. Requests run one at a time, then all model identities and responses appear together on the investigation page.</p>
+              <div id="ai-comparison-profiles" class="comparison-profile-choices"></div>
+            </div>
+            <button class="wide-button" type="submit">Save Comparison Profiles</button>
+            <div id="ai-comparison-status" class="connection-status">Comparison profiles not changed.</div>
+          </form>
         </section>
 
-        <section class="panel" data-admin-tab-panel="settings">
+        <section class="panel" data-admin-tab-panel="settings" data-retired="true" hidden>
           <div class="panel-head">
             <div>
               <p class="eyebrow">Notifications</p>
@@ -188,8 +199,8 @@
         <section class="panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Setup Inputs</p>
-              <h2>Asset Inventory</h2>
+              <p class="eyebrow">Network Context</p>
+              <h2>Registered IP Addresses</h2>
             </div>
           </div>
           <form id="admin-asset-form" class="form-grid admin-form">
@@ -203,9 +214,9 @@
               <input id="admin-asset-name" name="name" type="text" placeholder="Example: Marino's Desktop" required>
             </label>
             <label class="field">
-              <span>Device type</span>
+              <span>Assigned role</span>
               <select id="admin-asset-type" name="device_type" required></select>
-              <small>Used to choose the default asset score.</small>
+              <small>The role supplies a default business-impact score.</small>
             </label>
             <label class="field">
               <span>Network interface</span>
@@ -225,14 +236,14 @@
               </select>
             </label>
             <label class="field">
-              <span>Machine function</span>
+              <span>Role details</span>
               <input id="admin-asset-function" name="function" type="text" placeholder="Example: Windows test endpoint">
             </label>
             <label class="field wide-field">
               <span>Notes</span>
               <textarea id="admin-asset-notes" name="notes" placeholder="Example: Runs Atomic Red Team tests from ens37"></textarea>
             </label>
-            <button id="admin-asset-submit" class="wide-button" type="submit">Add Inventory Record</button>
+            <button id="admin-asset-submit" class="wide-button" type="submit">Add IP Address</button>
             <button id="admin-asset-cancel" class="wide-button" type="button">Cancel Edit</button>
           </form>
           <div id="admin-assets" class="list admin-list"></div>
@@ -270,6 +281,6 @@
       </section>
     </main>
 
-    <script src="/static/admin.js?v=20260714-sensor-fusion"></script>
+    <script src="/static/admin.js?v=20260717-direct-model-responses"></script>
   </body>
 </html>

@@ -1,224 +1,143 @@
 # Security VM Workflow
 
-This document shows the current path from network sensors to a case, deterministic scoring, AI-assisted triage, optional VirusTotal verification, analyst reassessment, and response.
-
-> Open this file in GitHub or use **Markdown: Open Preview** in VS Code to render the Mermaid diagrams.
-
-## End-To-End System
+Security VM is a passive, AI-assisted network investigation platform. This diagram shows how live sensor records become an analyst-reviewed case.
 
 ```mermaid
 flowchart TB
-    USER([Administrator / analyst])
-    DEVICE[Internal devices]
-    INTERNET[(External network)]
+    TRAFFIC[Live network traffic<br/>SPAN/mirror in production<br/>lab routing during development]
 
-    subgraph SETUP[1. Bootstrap and Configuration]
-        BOOT[python -m app.bootstrap]
-        OS[Check Ubuntu version<br/>Zeek recommended on 22.04+]
-        IFACES[Choose external and internal interfaces]
-        ROUTERSETUP[Optional router setup<br/>netplan + forwarding<br/>explicit firewalld zones]
-        INSTALL[Check/install Suricata, Zeek,<br/>tshark/dumpcap and Python packages]
-        CONFIG[Write ignored local config.yaml]
-        DBINIT[(Initialize or migrate SQLite<br/>without deleting existing data)]
-
-        BOOT --> OS --> IFACES --> ROUTERSETUP
-        IFACES --> INSTALL --> CONFIG --> DBINIT
+    subgraph SENSORS[Required Network Sensors]
+        SUR[Suricata<br/>signature alerts]
+        ZEEK[Zeek<br/>connection and protocol metadata]
+        EVE[/EVE JSON/]
+        ZLOG[/conn, DNS, HTTP, TLS, notice,<br/>weird, files, SSH and X.509 JSON logs/]
+        SUR --> EVE
+        ZEEK --> ZLOG
     end
 
-    subgraph NETWORK[2. Network Sensors]
-        ROUTER[Security VM router/firewall]
-        SURICATA[Suricata signature findings]
-        EVE[/EVE JSON alerts/]
-        ZEEK[Zeek behavior and protocol metadata]
-        ZLOGS[/notice, conn, DNS, TLS, HTTP,<br/>files, weird, SSH and X.509 logs/]
-        CAPTURE[Optional rolling packet capture]
-        PCAPS[/Local forensic PCAP files/]
-
-        DEVICE -->|routed traffic| ROUTER --> INTERNET
-        ROUTER -. observed traffic .-> SURICATA --> EVE
-        ROUTER -. observed traffic .-> ZEEK --> ZLOGS
-        ROUTER -. observed traffic .-> CAPTURE --> PCAPS
+    subgraph STORE[Normalize and Preserve]
+        SN[Normalize Suricata<br/>assign SUR event UID]
+        ZN[Normalize Zeek<br/>assign ZEK event UID]
+        DB[(SQLite<br/>original records retained)]
+        EVE --> SN --> DB
+        ZLOG --> ZN --> DB
     end
 
-    subgraph RUNTIME[3. One-Command Runtime]
-        RUNALL[app.main run-all<br/>localhost dashboard by default]
-        REQUIRED[Required workers<br/>Suricata ingest + Zeek ingest<br/>+ dashboard]
-        OPTIONAL[Conditional optional workers<br/>PCAP capture + bulk threat-intel refresh]
-
-        RUNALL --> REQUIRED
-        RUNALL --> OPTIONAL
+    subgraph CORRELATION[Deterministic Case Construction]
+        ORDER[1. Community ID<br/>2. Zeek UID relationships<br/>3. Bidirectional flow and time<br/>4. Shared observables<br/>5. Repeated same-asset behavior]
+        CASE[(Developing case<br/>CASE UID)]
+        CONTEXT[Bounded Zeek context<br/>connections, domains, TLS names,<br/>bytes, duration and periodicity]
+        DB --> ORDER --> CASE
+        DB --> CONTEXT --> CASE
     end
 
-    subgraph CASES[4. Normalize, Correlate and Identify]
-        SNORM[Normalize Suricata alert<br/>assign SUR event UID]
-        ZNORM[Normalize Zeek logs<br/>assign ZEK event UID]
-        ZNOTICE{Alert-like Zeek finding?}
-        ZCONTEXT[Store protocol log as case context]
-        CORRELATE[Correlate by Community ID first<br/>then bidirectional flow + time]
-        CASE[(Case with CASE UID<br/>and separate sensor findings)]
-
-        EVE --> SNORM --> CORRELATE
-        ZLOGS --> ZNORM --> ZNOTICE
-        ZNOTICE -->|yes| CORRELATE
-        ZNOTICE -->|no| ZCONTEXT
-        CORRELATE --> CASE
-        ZCONTEXT --> CASE
-    end
-
-    subgraph PREAI[5. Python Deterministic Evidence]
-        ASSETS[(Registered asset inventory)]
-        FEEDS[Cached and bulk providers<br/>ThreatFox, URLhaus, SSLBL,<br/>Spamhaus, OpenPhish, IPsum,<br/>Feodo and cached OTX]
-        SCORE[Deterministic score 0-90<br/>sensor severity 0-20<br/>behavior/time 0-20<br/>threat intelligence 0-20<br/>MITRE relevance 0-10<br/>asset/direction 0-10<br/>sensor corroboration 0-10]
-        PACKAGE[Case evidence package<br/>Suricata + Zeek + assets + MITRE<br/>cached threat intelligence + score]
-
+    subgraph ENRICH[Python Evidence and Score]
+        ASSET[(Admin-managed IP roles)]
+        TI[(Cached threat intelligence)]
+        SCORE[Explainable deterministic score 0-90<br/>severity 20 + behavior 20 + TI 20<br/>MITRE 10 + asset/direction 10<br/>sensor corroboration 10]
+        PACKAGE[Structured case evidence package]
         CASE --> SCORE
-        ASSETS --> SCORE
-        FEEDS --> SCORE
+        ASSET --> SCORE
+        TI --> SCORE
         CASE --> PACKAGE
+        CONTEXT --> PACKAGE
         SCORE --> PACKAGE
-        ASSETS --> PACKAGE
-        FEEDS --> PACKAGE
+        ASSET --> PACKAGE
+        TI --> PACKAGE
     end
 
-    subgraph AI[6. Bounded AI Second Opinion]
-        PROFILE[(Selected AI profile UID<br/>provider + model + endpoint)]
-        PROMPT[Versioned prompt<br/>adjustment limited to -10 through +10]
-        MODEL[Configured compatible AI service]
-        REPORT[(Structured assessment<br/>classification, confidence,<br/>adjustment, reason, action)]
-
-        PACKAGE --> PROMPT
-        PROFILE --> PROMPT --> MODEL --> REPORT
+    subgraph AI[Bounded Local AI Explanation]
+        PROMPT[Versioned evidence-only prompt<br/>who, what, when, where, why, how, next steps]
+        MODEL[Configured local/compatible model]
+        REPORT[Structured explanation<br/>adjustment clamped -10 to +10]
+        PACKAGE --> PROMPT --> MODEL --> REPORT
     end
 
-    subgraph DECISION[7. Python Final Decision]
-        CLAMP[Clamp AI adjustment -10 to +10<br/>final score = clamp Python + AI, 0-100]
-        DISPUTE{Material sensor dispute?}
-        OUTCOME{Score outcome}
+    subgraph OUTCOME[Python Final Control]
+        FINAL[Final score 0-100]
         SAFE[Safe 0-29]
         REVIEW[Human Review Required 30-69]
         HIGH[High Risk 70-84]
         DANGER[Dangerous 85-100]
-
-        SCORE --> CLAMP
-        REPORT --> CLAMP --> DISPUTE
-        DISPUTE -->|yes| REVIEW
-        DISPUTE -->|no| OUTCOME
-        OUTCOME --> SAFE
-        OUTCOME --> REVIEW
-        OUTCOME --> HIGH
-        OUTCOME --> DANGER
+        SCORE --> FINAL
+        REPORT --> FINAL
+        FINAL --> SAFE
+        FINAL --> REVIEW
+        FINAL --> HIGH
+        FINAL --> DANGER
     end
 
-    subgraph VT[8. Post-AI VirusTotal Verification]
-        AIDANGER{AI classification Dangerous?}
-        ELIGIBLE{Valid global IP and provider configured?}
-        CACHE{Fresh cache exists?}
-        QUERY[Query VirusTotal]
-        VSTORE[(Store verification separately<br/>no score change)]
-        SKIP[Store not requested or unavailable]
-
-        REPORT --> AIDANGER
-        AIDANGER -->|yes| ELIGIBLE
-        AIDANGER -->|no| SKIP --> VSTORE
-        ELIGIBLE -->|yes| CACHE
-        ELIGIBLE -->|no| SKIP
-        CACHE -->|yes| VSTORE
-        CACHE -->|no| QUERY --> VSTORE
+    subgraph VERIFY[Post-AI Verification]
+        VT{AI said Dangerous?}
+        VTR[Use fresh cache or query eligible global IP]
+        VTDB[(Store VirusTotal separately<br/>no numerical score change)]
+        REPORT --> VT
+        VT -->|yes| VTR --> VTDB
+        VT -->|no| VTDB
     end
 
-    subgraph STORAGE[9. Audit and Response]
-        STORE[(SQLite system of record<br/>cases, sensor events, score history,<br/>AI assessments, verification,<br/>reviews and response history)]
-        MODE{Runtime mode}
-        RECORD[alert_only: record only]
-        QUEUE[detection: analyst enforcement queue]
-        BLOCK[prevention: explicit-zone<br/>temporary firewalld block when gated]
-
-        CASE --> STORE
-        SCORE --> STORE
-        REPORT --> STORE
-        VSTORE --> STORE
-        SAFE --> STORE
-        REVIEW --> STORE
-        HIGH --> STORE
-        DANGER --> STORE
-        DANGER --> MODE
-        MODE --> RECORD
-        MODE --> QUEUE
-        MODE --> BLOCK --> STORE
+    subgraph ANALYST[Centralized Investigation]
+        PAGE[Case page<br/>all findings + context + timeline<br/>score + TI + AI explanation]
+        FEEDBACK[Analyst decision, notes and tuning label]
+        REASSESS[Explicit reassessment<br/>one new AI request]
+        BLIND[Optional model comparison<br/>same frozen evidence package]
+        DB --> PAGE
+        CASE --> PAGE
+        REPORT --> PAGE
+        VTDB --> PAGE
+        PAGE --> FEEDBACK --> DB
+        PAGE --> REASSESS --> SCORE
+        PAGE --> BLIND
     end
 
-    subgraph ANALYST[10. Investigation and Reassessment]
-        DASH[Dashboard<br/>manual Refresh]
-        INVESTIGATE[Case investigation by CASE UID<br/>complete sensor timeline and evidence]
-        FEEDBACK[Analyst feedback and override]
-        REASSESS[Explicit Reassess Case<br/>recompute 0-90 + one AI request]
-        MANUALVT[Explicit Refresh VirusTotal<br/>no automatic AI request]
-        FORENSICS[Optional preserve evidence<br/>Zeek context + local PCAP reference]
-
-        STORE --> DASH --> INVESTIGATE
-        INVESTIGATE --> FEEDBACK --> STORE
-        INVESTIGATE --> REASSESS --> SCORE
-        INVESTIGATE --> MANUALVT --> VSTORE
-        INVESTIGATE --> FORENSICS
-        PCAPS --> FORENSICS
+    subgraph EVALUATION[Sequential Three-Model Evaluation]
+        A[Model Response A]
+        B[Model Response B]
+        C[Model Response C]
+        VOTE[Analyst selects A, B, C,<br/>tie, or reject all]
+        REVEAL[Record selected model<br/>update selection scorecard]
+        BLIND --> A
+        A --> B
+        B --> C
+        A --> VOTE
+        B --> VOTE
+        C --> VOTE
+        VOTE --> REVEAL
     end
 
-    USER --> BOOT
-    USER --> RUNALL
-    USER --> DASH
-    DBINIT --> RUNALL
+    TRAFFIC --> SUR
+    TRAFFIC --> ZEEK
 ```
 
-## Reassessment Sequence
+## Correlation Boundary
 
-```mermaid
-sequenceDiagram
-    participant Analyst
-    participant API as Case API
-    participant DB as SQLite
-    participant Python as Python scorer
-    participant AI as Selected AI profile
-    participant VT as VirusTotal
+Community ID represents one bidirectional flow. A larger incident can span many Community IDs, so Security VM also groups repeated behavior conservatively:
 
-    Analyst->>API: Reassess CASE-YYYYMMDD-NNNNNN
-    API->>DB: Load all Suricata, Zeek, TI, asset, review and prior verification evidence
-    API->>Python: Recalculate deterministic categories (0-90)
-    Python->>AI: Send case evidence and deterministic breakdown
-    AI-->>Python: Classification, confidence and adjustment (-10 to +10)
-    Python->>Python: Clamp adjustment and calculate provisional 0-100 outcome
-    alt AI classification is Dangerous
-        Python->>VT: Use fresh cache or query eligible global IPs
-        VT-->>Python: Separate verification result
-    else AI classification is not Dangerous
-        Python->>DB: Store not_requested verification state
-    end
-    Python->>DB: Store score, AI assessment, verification and response audit
-    Python-->>Analyst: Updated case workspace
-    Note over Python,AI: VirusTotal never changes the numerical score
-    Note over Python,AI: No automatic third AI request occurs
-```
+- scans may share a source, protocol, and time window while destinations or ports vary;
+- DNS tunneling, beaconing, and brute-force activity must share the source plus a relevant destination within the configured window;
+- unknown findings require the same source, destination, protocol, and finding name;
+- unrelated surrounding Zeek traffic is excluded from case context.
 
 ## Sensor Responsibilities
 
-| Source | Starts a case? | Main contribution |
-|---|---:|---|
-| Suricata `alert` | Yes | Signature, category, priority, flow and Community ID |
+| Source | Can start a case? | Contribution |
+| --- | ---: | --- |
+| Suricata `alert` | Yes | Signature, category, severity, flow and Community ID |
 | Zeek `notice.log` | Yes | Behavioral or policy finding |
-| Zeek protocol logs | No, by themselves | Connection, DNS, TLS/certificate, HTTP, file, SSH and X.509 context |
-| Zeek `weird.log` | Context by default | Protocol anomaly requiring corroboration |
-| Rolling PCAP | No | Optional local forensic preservation; never sent in AI prompts |
-| Cached/bulk threat intelligence | No | Pre-AI indicator matches and up to 20 deterministic points |
+| Zeek protocol logs | Normally no | Connection, DNS, HTTP, TLS/certificate, file, SSH and timing context |
+| Zeek `weird.log` | Context by default | Protocol anomaly that needs corroboration |
+| Cached threat intelligence | No | Supporting indicator evidence and deterministic score input |
 | VirusTotal | No | Post-AI verification only; zero score points |
-| Registered assets | No | Analyst-defined business impact and traffic-direction context |
+| Registered IP roles | No | Analyst-defined business impact and traffic direction |
 
-## Security Boundaries
+## Evidence Boundaries
 
-- Python owns the deterministic score, final classification, and response action.
-- The AI model supplies only a bounded `-10` to `+10` adjustment and explanation.
-- A materially disputed sensor finding forces Human Review Required.
-- VirusTotal no-detection results never lower a classification.
-- Private, loopback, link-local, multicast, reserved, and `100.64.0.0/10` addresses are never queried through VirusTotal.
-- API keys, Gmail app passwords, and raw PCAP data are not sent to the AI model or returned in dashboard evidence.
-- PCAP collection is optional and remains local for explicit forensic preservation.
-- The dashboard binds to localhost by default. Binding to `0.0.0.0` is an explicit, warned lab-only choice.
-- firewalld commands always specify the configured zone.
+- Python owns correlation, the deterministic score, classification thresholds, and the recorded outcome.
+- The AI model supplies a bounded adjustment and explanation; it does not execute a response.
+- Model comparison runs three requests sequentially against the same evidence. Candidate outputs remain advisory and cannot change the official case decision.
+- All three model identities and responses appear directly on the investigation page. Analyst selections update the aggregate scorecard.
+- Raw packet capture is outside the active workflow and is never sent to the model.
+- Network evidence cannot establish endpoint process, user identity, or decrypted payload content unless another source explicitly supplies it.
+- API keys are not included in prompts, logs, evidence responses, or dashboard payloads.
+- The dashboard binds to localhost by default. A remote management address must be selected deliberately.
+- Development routing/NAT is only a lab traffic-visibility method; passive SPAN/mirror traffic is the intended deployment.

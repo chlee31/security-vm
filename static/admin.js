@@ -14,6 +14,9 @@ const els = {
   aiModelTimeout: document.querySelector("#ai-model-timeout"),
   aiModelStatus: document.querySelector("#ai-model-admin-status"),
   aiModelSummary: document.querySelector("#ai-model-summary"),
+  comparisonForm: document.querySelector("#ai-comparison-form"),
+  comparisonProfiles: document.querySelector("#ai-comparison-profiles"),
+  comparisonStatus: document.querySelector("#ai-comparison-status"),
   testAiModel: document.querySelector("#test-ai-model-admin"),
   systemModeForm: document.querySelector("#system-mode-form"),
   systemModeSelect: document.querySelector("#system-mode-select"),
@@ -59,7 +62,7 @@ const els = {
   tabPanels: Array.from(document.querySelectorAll("[data-admin-tab-panel]"))
 };
 
-let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", modes: [], threatIntelProviders: [] };
+let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", comparisonProfileUids: [], modes: [], threatIntelProviders: [] };
 const initialTab = window.location.hash.replace("#", "");
 let activeAdminTab = initialTab === "incident-response" ? "incident" : initialTab === "threat-intel" ? "threat-intel" : "settings";
 
@@ -115,7 +118,7 @@ function setAdminTab(tabName, updateHash = true) {
     button.setAttribute("aria-selected", selected ? "true" : "false");
   });
   els.tabPanels.forEach((panel) => {
-    panel.hidden = panel.dataset.adminTabPanel !== activeAdminTab;
+    panel.hidden = panel.dataset.retired === "true" || panel.dataset.adminTabPanel !== activeAdminTab;
   });
   if (updateHash) {
     const hash = activeAdminTab === "incident" ? "#incident-response" : activeAdminTab === "threat-intel" ? "#threat-intel" : "#settings";
@@ -192,6 +195,7 @@ function renderAiModel(settings) {
   const profiles = settings.ai_profiles || {};
   state.aiProfiles = profiles.items || [];
   state.activeProfileUid = profiles.active_uid || aiModel.active_profile_uid || "";
+  state.comparisonProfileUids = settings.ai_comparison?.profile_uids || [];
   const activeProfile = state.aiProfiles.find((profile) => profile.uid === state.activeProfileUid) || {};
   els.profileName.value = activeProfile.name || `${aiModel.provider || "ai"}:${aiModel.model || ""}`;
   els.profileUid.value = state.activeProfileUid || "";
@@ -216,6 +220,32 @@ function renderAiModel(settings) {
     </div>
   `;
   renderAiProfiles();
+  renderComparisonProfiles();
+}
+
+function renderComparisonProfiles() {
+  const activeProfiles = state.aiProfiles.filter((profile) => profile.status === "active");
+  els.comparisonProfiles.innerHTML = activeProfiles.map((profile) => `
+    <label class="comparison-profile-choice">
+      <input type="checkbox" value="${escapeHtml(profile.uid)}" ${state.comparisonProfileUids.includes(profile.uid) ? "checked" : ""}>
+      <span>
+        <strong>${escapeHtml(profile.name)}</strong>
+        <small>${escapeHtml(profile.provider)} · ${escapeHtml(profile.model)}</small>
+      </span>
+    </label>
+  `).join("") || `<div class="empty">Create three active AI profiles first.</div>`;
+}
+
+async function saveComparisonProfiles(event) {
+  event.preventDefault();
+  const profileUids = Array.from(els.comparisonProfiles.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+  try {
+    const result = await sendJson("/api/admin/ai-comparison", "PUT", { profile_uids: profileUids });
+    state.comparisonProfileUids = result.profile_uids || [];
+    setStatus(els.comparisonStatus, "ok", "Three profiles saved. Case comparisons will run sequentially and display every response.");
+  } catch (error) {
+    setStatus(els.comparisonStatus, "error", error.message);
+  }
 }
 
 function renderAiProfiles() {
@@ -230,22 +260,23 @@ function renderAiProfiles() {
     ${state.aiProfiles.map((profile) => `
       <div
         class="list-item ai-profile ${profile.uid === state.activeProfileUid ? "active" : ""} ${profile.status === "inactive" ? "inactive" : ""}"
-        ${profile.status === "active" ? `data-select-ai-profile="${profile.uid}" role="button" tabindex="0"` : ""}
+        ${profile.status === "active" ? `data-select-ai-profile="${escapeHtml(profile.uid)}" role="button" tabindex="0"` : ""}
       >
         <div class="row tight">
-          <strong>${profile.name}</strong>
+          <strong>${escapeHtml(profile.name)}</strong>
           <span class="status-pill ${profile.uid === state.activeProfileUid ? "active" : profile.status === "inactive" ? "inactive" : ""}">
             ${profile.uid === state.activeProfileUid ? "active / selected" : profile.status}
           </span>
         </div>
-        <p>${profile.provider}:${profile.model}</p>
-        <small>${profile.uid} · ${profile.host} · timeout ${profile.timeout_seconds || 90}s</small>
-        ${profile.notes ? `<small>${profile.notes}</small>` : ""}
+        <p>${escapeHtml(profile.provider)}:${escapeHtml(profile.model)}</p>
+        <small>${escapeHtml(profile.uid)} · ${escapeHtml(profile.host)} · timeout ${profile.timeout_seconds || 90}s</small>
+        ${profile.notes ? `<small>${escapeHtml(profile.notes)}</small>` : ""}
         <div class="asset-admin-actions">
-          <button class="text-button" type="button" data-edit-ai-profile="${profile.uid}">Edit</button>
-          <button class="text-button" type="button" data-select-ai-profile="${profile.uid}" ${profile.status === "inactive" || profile.uid === state.activeProfileUid ? "disabled" : ""}>
+          <button class="text-button" type="button" data-edit-ai-profile="${escapeHtml(profile.uid)}">Edit</button>
+          <button class="text-button" type="button" data-select-ai-profile="${escapeHtml(profile.uid)}" ${profile.status === "inactive" || profile.uid === state.activeProfileUid ? "disabled" : ""}>
             ${profile.uid === state.activeProfileUid ? "Selected" : "Select"}
           </button>
+          <button class="text-button danger-button" type="button" data-delete-ai-profile="${escapeHtml(profile.uid)}">Delete</button>
         </div>
       </div>
     `).join("")}
@@ -283,7 +314,7 @@ function renderAssets(payload) {
         <button class="text-button danger-button" type="button" data-delete-asset="${asset.id}">Delete</button>
       </div>
     </div>
-  `).join("") || `<div class="empty">No machines registered yet.</div>`;
+  `).join("") || `<div class="empty">No IP addresses registered yet.</div>`;
 }
 
 function renderSystemControls(settings) {
@@ -580,13 +611,6 @@ function renderPaths(settings) {
     </div>
     <div class="list-item">
       <div class="row tight">
-        <strong>Rolling PCAP directory</strong>
-        <span>capture files</span>
-      </div>
-      <p>${network.pcap_rolling_dir || "/var/log/pcap"}</p>
-    </div>
-    <div class="list-item">
-      <div class="row tight">
         <strong>Zeek sensor</strong>
         <span>${network.zeek_interface || "not configured"}</span>
       </div>
@@ -631,7 +655,7 @@ function assetPayloadFromForm() {
 function resetAssetForm() {
   els.assetForm.reset();
   els.assetId.value = "";
-  els.assetSubmit.textContent = "Add Inventory Record";
+  els.assetSubmit.textContent = "Add IP Address";
   const selected = els.assetType.selectedOptions[0];
   els.assetScore.value = selected ? selected.dataset.score : "";
   els.assetInterface.placeholder = state.network.internal_interface || "ens37";
@@ -649,7 +673,7 @@ function editAsset(assetId) {
   els.assetStatus.value = asset.status || "active";
   els.assetFunction.value = asset.function || "";
   els.assetNotes.value = asset.notes || "";
-  els.assetSubmit.textContent = "Save Inventory Changes";
+  els.assetSubmit.textContent = "Save IP Address Changes";
   els.assetForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -672,8 +696,8 @@ async function toggleAssetStatus(assetId) {
 
 async function deleteAsset(assetId) {
   const asset = state.assets.find((item) => String(item.id) === String(assetId));
-  const name = asset?.name || `asset ${assetId}`;
-  const confirmed = window.confirm(`Delete ${name} permanently? Use inactive status instead if you need to keep it for asset tracking.`);
+  const name = asset?.name || `IP record ${assetId}`;
+  const confirmed = window.confirm(`Delete ${name} permanently? Use inactive status instead if you need to retain its role history.`);
   if (!confirmed) return;
   await sendJson(`/api/admin/assets/${assetId}`, "DELETE");
   if (els.assetId.value === String(assetId)) resetAssetForm();
@@ -806,6 +830,27 @@ async function selectAiProfile(uid) {
   await refresh();
 }
 
+async function deleteAiProfile(uid) {
+  const profile = state.aiProfiles.find((item) => item.uid === uid);
+  if (!profile) return;
+  const warning = profile.uid === state.activeProfileUid
+    ? `Delete selected profile "${profile.name}"? Another active profile will be selected automatically.`
+    : `Delete AI profile "${profile.name}"?`;
+  if (!window.confirm(`${warning}\n\nHistorical AI reports and comparison results will be preserved.`)) return;
+  const result = await sendJson(`/api/admin/ai-profiles/${encodeURIComponent(uid)}`, "DELETE");
+  if (els.profileUid.value === uid) {
+    els.profileUid.value = "";
+  }
+  const replacement = result.active_profile_uid && result.active_profile_uid !== uid
+    ? ` Selected profile is now ${result.active_profile_uid}.`
+    : "";
+  const comparisonNote = (result.comparison_profile_uids || []).length < 3
+    ? " Choose three comparison profiles again before the next model comparison."
+    : "";
+  setStatus(els.aiModelStatus, "ok", `AI profile deleted. Historical reports were preserved.${replacement}${comparisonNote}`);
+  await refresh();
+}
+
 function editAiProfile(uid) {
   const profile = state.aiProfiles.find((item) => item.uid === uid);
   if (!profile) return;
@@ -855,6 +900,8 @@ els.newProfile.addEventListener("click", async () => {
   }
 });
 
+els.comparisonForm.addEventListener("submit", saveComparisonProfiles);
+
 els.systemModeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -896,7 +943,7 @@ els.assetForm.addEventListener("submit", async (event) => {
     } else {
       const payload = assetPayloadFromForm();
       delete payload.status;
-      await sendJson("/api/assets", "POST", payload);
+      await sendJson("/api/admin/assets", "POST", payload);
     }
     resetAssetForm();
     await refresh();
@@ -1024,6 +1071,11 @@ document.addEventListener("click", (event) => {
   const editProfileUid = event.target.dataset.editAiProfile;
   if (editProfileUid) {
     editAiProfile(editProfileUid);
+    return;
+  }
+  const deleteProfileUid = event.target.dataset.deleteAiProfile;
+  if (deleteProfileUid) {
+    deleteAiProfile(deleteProfileUid).catch((error) => setStatus(els.aiModelStatus, "error", error.message));
     return;
   }
   const profileTarget = event.target.closest("[data-select-ai-profile]");

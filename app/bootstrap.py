@@ -15,14 +15,8 @@ from app.database import init_db
 
 REQUIRED_TOOLS = {
     "iproute2": "ip",
-    "netplan": "netplan",
-    "tailscale": "tailscale",
     "suricata": "suricata",
     "sqlite3": "sqlite3",
-    "wireshark": "wireshark",
-    "tshark": "tshark",
-    "dumpcap": "dumpcap",
-    "firewalld": "firewall-cmd",
     "zeek": "zeek",
     "zeekctl": "zeekctl",
     "zkg": "zkg",
@@ -30,13 +24,8 @@ REQUIRED_TOOLS = {
 
 APT_PACKAGES = {
     "iproute2": "iproute2",
-    "netplan": "netplan.io",
     "suricata": "suricata",
     "sqlite3": "sqlite3",
-    "wireshark": "wireshark",
-    "tshark": "tshark",
-    "dumpcap": "tshark",
-    "firewalld": "firewalld",
 }
 
 TOOL_PATH_CANDIDATES = {
@@ -251,17 +240,26 @@ def write_temp_text(text):
 
 
 def router_setup_wizard():
-    print("\nRouter setup:")
-    print("This optional step configures the Security VM as a two-interface router/firewall.")
-    if not yes_no("Configure router mode now?", default=False):
-        print("[+] Skipping router setup.")
+    print("\nDevelopment lab routing:")
+    print("This optional step routes isolated lab traffic through the sensor VM.")
+    print("It is not the intended production architecture; production monitoring should use mirrored/SPAN traffic.")
+    if not yes_no("Configure development lab routing now?", default=False):
+        print("[+] Skipping development lab routing.")
+        return
+    missing = [
+        name for name, binary in {"netplan": "netplan", "firewalld": "firewall-cmd"}.items()
+        if not resolve_tool_path(name, binary)
+    ]
+    if missing:
+        print(f"[!] Development lab routing requires: {', '.join(missing)}")
+        print("    Install netplan.io and firewalld, then rerun bootstrap.")
         return
 
     interfaces = detected_interfaces()
     route = default_route()
     if len(interfaces) < 2:
         print("[!] Fewer than two non-loopback interfaces were detected.")
-        print("    Router mode needs one external interface and one internal interface.")
+        print("    Development lab routing needs one external interface and one internal interface.")
         return
 
     print("\nDetected interfaces:")
@@ -435,10 +433,8 @@ def zeek_config_directory():
 
 def zeek_setup_wizard(config):
     print("\nZeek setup:")
-    if not yes_no("Enable Zeek?", default=True):
-        config["zeek"]["enabled"] = False
-        print("[+] Zeek disabled in config.")
-        return
+    config.setdefault("zeek", {})["enabled"] = True
+    print("[+] Zeek is a required sensor and will remain enabled.")
 
     detected = detected_interfaces()
     names = [item["name"] for item in detected]
@@ -449,8 +445,6 @@ def zeek_setup_wizard(config):
     json_logs = yes_no("Use Zeek JSON logs?", default=True)
     install_packages = yes_no("Install configured Zeek community packages with zkg?", default=False)
 
-    config.setdefault("zeek", {})
-    config["zeek"]["enabled"] = True
     config["zeek"]["interface"] = interface
     config["zeek"]["json_logs"] = json_logs
     config["zeek"]["package_install_enabled"] = install_packages
@@ -548,9 +542,9 @@ def main():
     if not recommendation["recommended"] and not yes_no("Continue bootstrap without the recommended Zeek platform?", default=False):
         return
 
-    print("Tailscale is required for this project.")
-    print("Please head over to Tailscale or the admin console to get your AI machine IP address.")
-    print("Example AI service/Tailscale endpoint: http://<ai-machine-ip>:11434\n")
+    print("Enter the address of a reachable local AI service.")
+    print("This may be localhost, a trusted LAN address, or a private overlay-network address.")
+    print("Example AI service endpoint: http://<ai-machine-ip>:11434\n")
 
     ai_ip = input("What is the IP address of your AI machine? ").strip()
     if not ai_ip:
@@ -588,15 +582,14 @@ def main():
     print(f"[+] SQLite database initialized: {db_path}")
 
     Path("evidence/sample_alerts").mkdir(parents=True, exist_ok=True)
-    Path("evidence/sample_pcaps").mkdir(parents=True, exist_ok=True)
 
     test_ai_model(ai_model_host, ai_model_name, config["ai_model"]["timeout_seconds"])
     router_setup_wizard()
 
     print("\nNext steps:")
     print("  1. Confirm Suricata is writing /var/log/suricata/eve.json")
-    print("  2. Run: python -m app.main ingest --config config.yaml")
-    print("  3. Run: python -m app.main dashboard --config config.yaml --host 0.0.0.0 --port 8000")
+    print("  2. Run: python -m app.main run-all --config config.yaml")
+    print("  3. Open http://127.0.0.1:8000 (use a trusted management address for remote access)")
 
 
 if __name__ == "__main__":

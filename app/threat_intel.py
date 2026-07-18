@@ -10,6 +10,7 @@ from app.security import redact_secrets
 
 from app.database import (
     replace_threat_intel_indicators,
+    threat_intel_provider_results,
     threat_intel_source_rows,
     threat_intel_usage_summary,
     update_threat_intel_source,
@@ -122,6 +123,43 @@ def sanitized_provider_status(config, conn=None):
             }
         )
     return items
+
+
+def ai_provider_status(config, conn):
+    """Return provider state safe for prompts, APIs, and stored evidence."""
+    return [
+        {
+            "name": item["name"],
+            "label": item["label"],
+            "kind": item["kind"],
+            "enabled": item["enabled"],
+            "status": item["status"],
+            "indicator_count": item["indicator_count"],
+            "last_success": item["last_success"],
+        }
+        for item in sanitized_provider_status(config, conn)
+    ]
+
+
+def provider_evidence_for_indicator(conn, config, indicator, indicator_type="ip"):
+    providers = ai_provider_status(config, conn)
+    if not indicator:
+        return [
+            {**provider, "match_count": 0, "matches": [], "result": "unavailable"}
+            for provider in providers
+        ]
+    results = threat_intel_provider_results(
+        conn,
+        indicator,
+        providers,
+        indicator_type=indicator_type,
+    )
+    for item in results:
+        if item.get("name") == "virustotal":
+            item["matches"] = []
+            item["match_count"] = 0
+            item["result"] = "not_requested" if item.get("enabled") else "not_active"
+    return results
 
 
 def _get(url, timeout=60):

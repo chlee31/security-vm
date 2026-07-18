@@ -13,13 +13,17 @@ const els = {
   sensorState: document.querySelector("#inv-sensor-state"),
   agreementState: document.querySelector("#inv-agreement-state"),
   timestamp: document.querySelector("#inv-timestamp"),
+  overview: document.querySelector("#inv-overview"),
   alert: document.querySelector("#inv-alert"),
+  findingCount: document.querySelector("#inv-finding-count"),
+  findingViewButtons: document.querySelectorAll("[data-finding-view]"),
   ai: document.querySelector("#inv-ai"),
   scoring: document.querySelector("#inv-scoring"),
   intel: document.querySelector("#inv-intel"),
   zeek: document.querySelector("#inv-zeek"),
-  createEvidence: document.querySelector("#inv-create-evidence"),
   reassess: document.querySelector("#inv-reassess"),
+  compare: document.querySelector("#inv-compare"),
+  comparison: document.querySelector("#inv-comparison"),
   refreshVt: document.querySelector("#inv-refresh-vt"),
   refresh: document.querySelector("#inv-refresh"),
   actionStatus: document.querySelector("#inv-action-status"),
@@ -35,6 +39,106 @@ const els = {
 };
 
 let currentInvestigation = null;
+let findingView = "unique";
+
+function modelIdentity(candidate) {
+  const provider = candidate.model_provider || "unknown provider";
+  const name = candidate.model_name || candidate.model_identity || "unknown model";
+  return `${provider}:${name}`;
+}
+
+const threatIntelProviders = [
+  "otx", "threatfox", "urlhaus", "sslbl", "spamhaus_drop",
+  "openphish", "ipsum", "feodo", "virustotal"
+];
+
+function renderModelThreatIntel(candidate) {
+  const analysis = candidate.threat_intel_analysis || {};
+  return `
+    <section class="candidate-threat-intel">
+      <div class="candidate-section-heading">
+        <h3>Threat Intelligence Interpretation</h3>
+        <span class="status-pill">${escapeHtml(label(analysis.influence || "unavailable"))}</span>
+      </div>
+      <p>${escapeHtml(analysis.overall || "This legacy response did not include a dedicated threat-intelligence conclusion.")}</p>
+    </section>
+  `;
+}
+
+function renderModelCandidate(candidate, vote) {
+  const selected = vote?.selection === candidate.anonymous_slot;
+  return `
+    <article class="model-candidate ${selected ? "winner" : ""} ${candidate.status === "failed" ? "failed" : ""}">
+      <header>
+        <span class="candidate-letter">${escapeHtml(candidate.anonymous_slot)}</span>
+        <div>
+          <strong>${escapeHtml(modelIdentity(candidate))}</strong>
+          <small>profile ${escapeHtml(candidate.ai_profile_uid || "unknown")} · ${candidate.elapsed_ms ?? 0}ms</small>
+        </div>
+        ${selected ? `<span class="status-pill active">selected</span>` : ""}
+      </header>
+      ${candidate.status === "failed" ? `
+        <div class="empty">Request failed: ${escapeHtml(candidate.error_message || "No error detail was stored.")}</div>
+      ` : `
+        <div class="candidate-verdict">
+          <strong>${escapeHtml(candidate.classification || "No classification")}</strong>
+          <span>${escapeHtml(candidate.confidence || "Unknown")} confidence · adjustment ${candidate.risk_adjustment ?? 0}</span>
+        </div>
+        <section>
+          <h3>Case Summary</h3>
+          <p>${escapeHtml(candidate.summary || "No summary returned.")}</p>
+        </section>
+        ${renderModelThreatIntel(candidate)}
+        <dl class="candidate-evidence">
+          <div><dt>Who</dt><dd>${escapeHtml(candidate.who_summary || "Not established")}</dd></div>
+          <div><dt>What</dt><dd>${escapeHtml(candidate.what_summary || "Not established")}</dd></div>
+          <div><dt>When</dt><dd>${escapeHtml(candidate.when_summary || "Not established")}</dd></div>
+          <div><dt>Where</dt><dd>${escapeHtml(candidate.where_summary || "Not established")}</dd></div>
+          <div><dt>Why</dt><dd>${escapeHtml(candidate.why_summary || "Not established")}</dd></div>
+          <div><dt>How</dt><dd>${escapeHtml(candidate.how_summary || "Not established")}</dd></div>
+        </dl>
+        <section class="candidate-next-steps">
+          <h3>Recommended Next Steps</h3>
+          <ol>${(candidate.next_steps || []).map((step) => `<li>${escapeHtml(step)}</li>`).join("") || `<li>No concrete next steps returned.</li>`}</ol>
+        </section>
+        <details class="model-raw-response">
+          <summary>View complete raw model response</summary>
+          <pre class="raw-json">${escapeHtml(candidate.raw_response || "No raw response stored.")}</pre>
+        </details>
+        <footer>run ${escapeHtml(candidate.model_run_id || "not recorded")} · prompt ${escapeHtml(candidate.prompt_version || "unknown")}</footer>
+      `}
+    </article>
+  `;
+}
+
+async function renderComparisonRuns(runs) {
+  if (!runs?.length) {
+    els.comparison.innerHTML = `<div class="empty comparison-empty">No three-model comparison has been run for this case.</div>`;
+    return;
+  }
+  const latest = await getJson(`/api/ai-comparisons/${encodeURIComponent(runs[0].comparison_uid)}`);
+  const vote = latest.votes?.[0];
+  els.comparison.innerHTML = `
+    <div class="comparison-inline-head">
+      <div>
+        <strong>${escapeHtml(latest.comparison_uid)}</strong>
+        <small>${latest.candidate_count || 0}/3 responses · ${escapeHtml(label(latest.status))}</small>
+      </div>
+      <a class="nav-link" href="/compare?run=${encodeURIComponent(latest.comparison_uid)}&case=${encodeURIComponent(latest.case_uid)}" target="_blank" rel="noopener">Open Comparison Workspace</a>
+    </div>
+    <div class="model-candidate-grid investigation-model-grid">
+      ${(latest.candidates || []).map((candidate) => renderModelCandidate(candidate, vote)).join("")}
+    </div>
+    ${runs.length > 1 ? `
+      <details class="previous-comparison-runs">
+        <summary>Previous comparison runs (${runs.length - 1})</summary>
+        <div class="workbook-list">
+          ${runs.slice(1).map((run) => `<a class="workbook-row investigation-link" href="/compare?run=${encodeURIComponent(run.comparison_uid)}&case=${encodeURIComponent(run.case_uid)}" target="_blank" rel="noopener"><strong>${escapeHtml(run.comparison_uid)}</strong><small>${run.candidate_count || 0}/3 responses · ${escapeHtml(label(run.status))}</small></a>`).join("")}
+        </div>
+      </details>
+    ` : ""}
+  `;
+}
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -109,7 +213,7 @@ function row(title, body, meta = "") {
   `;
 }
 
-function intelBlock(title, profile, providers, asset) {
+function intelEndpointRow(title, profile, asset) {
   return `
     <div class="workbook-row">
       <strong>${title}</strong>
@@ -117,15 +221,146 @@ function intelBlock(title, profile, providers, asset) {
       <small>
         ${asset ? `Asset: ${asset.name} (${label(asset.device_type)}) score ${asset.asset_score}` : "No registered asset"}
       </small>
-      <div class="intel-provider-results">
-        ${(providers || []).map((provider) => `
-          <div class="intel-provider-result ${provider.result}">
-            <strong>${escapeHtml(provider.label || label(provider.name))}</strong>
-            <span>${provider.result === "not_active" ? "Not active" : provider.result === "matched" ? `${provider.match_count} match${provider.match_count === 1 ? "" : "es"}` : "No match"}</span>
-            ${(provider.matches || []).slice(0, 3).map((match) => `<small>${escapeHtml(match.category || "malicious indicator")} · confidence ${match.confidence ?? "not supplied"}${match.malware_family ? ` · ${escapeHtml(match.malware_family)}` : ""}</small>`).join("")}
-          </div>
-        `).join("")}
-      </div>
+    </div>
+  `;
+}
+
+function caseThreatIntelProviders(data) {
+  const endpoints = [
+    { label: "Source IP", value: data.src_ip, providers: data.src_threat_intel || [] },
+    { label: "Destination IP", value: data.dest_ip, providers: data.dest_threat_intel || [] }
+  ];
+  return threatIntelProviders.map((name) => {
+    const records = endpoints.flatMap((endpoint) => endpoint.providers
+      .filter((provider) => provider.name === name)
+      .map((provider) => ({ endpoint, provider })));
+    const matches = records.filter(({ provider }) => provider.result === "matched");
+    const enabled = records.some(({ provider }) => provider.enabled);
+    const unavailable = enabled && records.length > 0 && records.every(({ provider }) => provider.result === "unavailable");
+    const notRequested = records.some(({ provider }) => provider.result === "not_requested");
+    const state = matches.length
+      ? "matched"
+      : unavailable
+        ? "unavailable"
+        : notRequested
+          ? "not_requested"
+          : enabled
+            ? "no_match"
+            : "not_active";
+    const exemplar = records[0]?.provider || {};
+    return {
+      name,
+      label: exemplar.label || label(name),
+      state,
+      enabled,
+      indicatorCount: Math.max(0, ...records.map(({ provider }) => Number(provider.indicator_count || 0))),
+      status: exemplar.status || (enabled ? "ready" : "not_active"),
+      matches
+    };
+  });
+}
+
+function renderCaseThreatIntel(data) {
+  return `
+    <div class="comparison-provider-matrix case-threat-intel-grid">
+      ${caseThreatIntelProviders(data).map((item) => `
+        <article class="comparison-provider ${escapeHtml(item.state)}">
+          <header>
+            <strong>${escapeHtml(item.label)}</strong>
+            <span>${escapeHtml(label(item.state))}</span>
+          </header>
+          <small>${item.enabled ? `${item.indicatorCount} cached indicators · ${escapeHtml(label(item.status))}` : "Provider not active"}</small>
+          ${item.matches.map(({ endpoint, provider }) => `
+            <p><b>${escapeHtml(endpoint.label)} ${escapeHtml(endpoint.value || "unknown")}</b>: ${(provider.matches || []).slice(0, 3).map((match) => escapeHtml(`${match.category || "indicator match"}${match.confidence != null ? ` (${match.confidence}% confidence)` : ""}${match.malware_family ? ` · ${match.malware_family}` : ""}`)).join(" · ") || `${provider.match_count || 0} provider matches`}</p>
+          `).join("") || `<p>No source or destination observable matched this provider.</p>`}
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function findingTimestamp(finding) {
+  const parsed = new Date(finding.finding_timestamp || 0).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function findingGroupKey(finding) {
+  return [
+    finding.sensor,
+    finding.finding_type,
+    finding.finding_name,
+    finding.source_ip,
+    finding.destination_ip,
+    finding.protocol
+  ].map((value) => String(value || "").toLowerCase()).join("|");
+}
+
+function uniqueFindings(findings) {
+  const groups = new Map();
+  for (const finding of findings) {
+    const key = findingGroupKey(finding);
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        finding,
+        count: 1,
+        firstSeen: finding.finding_timestamp,
+        lastSeen: finding.finding_timestamp
+      });
+      continue;
+    }
+    existing.count += 1;
+    if (findingTimestamp(finding) < findingTimestamp({ finding_timestamp: existing.firstSeen })) existing.firstSeen = finding.finding_timestamp;
+    if (findingTimestamp(finding) >= findingTimestamp({ finding_timestamp: existing.lastSeen })) {
+      existing.lastSeen = finding.finding_timestamp;
+      existing.finding = finding;
+    }
+  }
+  return [...groups.values()].sort((left, right) => findingTimestamp(right.finding) - findingTimestamp(left.finding));
+}
+
+function findingRow(group, showEventUid) {
+  const finding = group.finding;
+  const countLabel = `${group.count} occurrence${group.count === 1 ? "" : "s"}`;
+  const timeRange = group.count > 1
+    ? `${displayTimestamp(group.firstSeen)} to ${displayTimestamp(group.lastSeen)}`
+    : displayTimestamp(finding.finding_timestamp);
+  return `
+    <article class="finding-row">
+      <header>
+        <span class="sensor-badge ${escapeHtml(String(finding.sensor || "unknown").toLowerCase())}">${escapeHtml(String(finding.sensor || "unknown").toUpperCase())}</span>
+        <strong>${escapeHtml(finding.finding_name || "Unnamed finding")}</strong>
+        <span class="finding-count">${escapeHtml(countLabel)}</span>
+      </header>
+      <p>${escapeHtml(finding.source_ip || "unknown")}:${finding.source_port || ""} -&gt; ${escapeHtml(finding.destination_ip || "unknown")}:${finding.destination_port || ""} ${escapeHtml(finding.protocol || "")}</p>
+      <small>${escapeHtml(timeRange)} · severity ${finding.severity ?? "unknown"} · confidence ${finding.confidence ?? "unknown"}${showEventUid ? ` · ${escapeHtml(finding.event_uid || label(finding.finding_type))}` : ""}</small>
+    </article>
+  `;
+}
+
+function renderSensorFindings(data) {
+  const findings = [...(data.sensor_findings || [])].sort((left, right) => findingTimestamp(right) - findingTimestamp(left));
+  const grouped = uniqueFindings(findings);
+  const visible = findingView === "all"
+    ? findings.map((finding) => ({ finding, count: 1, firstSeen: finding.finding_timestamp, lastSeen: finding.finding_timestamp }))
+    : grouped;
+  els.findingCount.textContent = `${grouped.length} unique · ${findings.length} total`;
+  els.findingViewButtons.forEach((button) => {
+    const selected = button.dataset.findingView === findingView;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  els.alert.innerHTML = `
+    <div class="finding-summary">
+      ${row(
+        "Fusion Summary",
+        `${label(data.sensor_state || "unknown")} · ${label(data.agreement_state || "unknown")}`,
+        `${label(data.correlation_method || "none")} · confidence ${data.correlation_confidence ?? "unknown"}${data.community_id ? ` · Community ID ${escapeHtml(data.community_id)}` : ""}`
+      )}
+      ${row("Traffic", `${escapeHtml(data.src_ip || "unknown")}:${data.src_port || ""} -&gt; ${escapeHtml(data.dest_ip || "unknown")}:${data.dest_port || ""}`, escapeHtml(data.protocol || ""))}
+    </div>
+    <div class="finding-scroll-list">
+      ${visible.map((group) => findingRow(group, findingView === "all")).join("") || row("Primary Finding", escapeHtml(data.signature || "No finding stored"), `${escapeHtml(data.category || "unknown category")} · priority ${data.priority || "unknown"}`)}
     </div>
   `;
 }
@@ -133,30 +368,24 @@ function intelBlock(title, profile, providers, asset) {
 function renderZeekContext(data) {
   const context = data.zeek_context || {};
   const items = context.items || [];
-  const byType = items.reduce((acc, item) => {
-    const key = item.log_type || "unknown";
-    acc[key] = (acc[key] || 0) + 1;
-    return acc;
-  }, {});
-  const evidenceRows = data.incident_evidence || [];
+  const summary = context.summary || {};
+  const byType = summary.log_counts || {};
   els.zeek.innerHTML = `
     <div class="workbook-row">
       <strong>Correlation Window</strong>
       <p>${context.window_start || "unknown"} to ${context.window_end || "unknown"}</p>
-      <small>${items.length} Zeek rows matched by detection IPs and time window.</small>
+      <small>${items.length} bounded Zeek rows matched by flow, UID, endpoints, or repeated source behavior.</small>
     </div>
     <div class="workbook-row">
       <strong>Log Types</strong>
       <p>${Object.entries(byType).map(([key, value]) => `${label(key)} ${value}`).join(" · ") || "No Zeek context rows found."}</p>
       <small>Notice rows can initiate detections. Weird and protocol rows are supporting context.</small>
     </div>
-    ${evidenceRows.slice(0, 5).map((item) => `
-      <div class="workbook-row">
-        <strong>Incident Evidence #${item.id}</strong>
-        <p>${item.status || item.summary_status || "unknown"} · ${item.incident_directory || "no incident directory"}</p>
-        <small>${item.zeek_logs_path || "No Zeek evidence file"} · ${item.evidence_manifest_path || "No manifest"}</small>
-      </div>
-    `).join("")}
+    ${row("Observed Network Metadata", `DNS ${summary.dns_queries?.length || 0} · TLS names ${summary.tls_server_names?.length || 0} · HTTP hosts ${summary.http_hosts?.length || 0}`, `originator bytes ${summary.originator_bytes || 0} · responder bytes ${summary.responder_bytes || 0} · duration ${summary.connection_duration_seconds || 0}s`)}
+    ${row("Repeated Activity", `${summary.case_finding_count || data.alert_count || 0} case findings over ${summary.case_window_seconds || data.time_window_seconds || 0}s`, summary.periodicity ? `${label(summary.periodicity)} intervals · average ${summary.average_interval_seconds ?? "unknown"}s` : "No reliable periodicity conclusion")}
+    ${summary.dns_queries?.length ? row("DNS Queries", summary.dns_queries.map(escapeHtml).join(" · ")) : ""}
+    ${summary.tls_server_names?.length ? row("TLS Server Names", summary.tls_server_names.map(escapeHtml).join(" · ")) : ""}
+    ${summary.http_hosts?.length ? row("HTTP Hosts", summary.http_hosts.map(escapeHtml).join(" · ")) : ""}
     <div class="mini-list dense expanded-list">
       ${items.slice(0, 25).map((item) => `
         <div>
@@ -184,30 +413,34 @@ function render(data) {
   els.agreementState.textContent = `${label(data.agreement_state || "unknown")} · ${label(data.correlation_method || "none")}`;
   els.timestamp.textContent = displayTimestamp(data.timestamp || data.first_seen);
 
-  const findings = data.sensor_findings || [];
-  els.alert.innerHTML = [
-    row(
-      "Fusion Summary",
-      `${label(data.sensor_state || "unknown")} · ${label(data.agreement_state || "unknown")}`,
-      `${label(data.correlation_method || "none")} · confidence ${data.correlation_confidence ?? "unknown"}${data.community_id ? ` · Community ID ${escapeHtml(data.community_id)}` : ""}`
-    ),
-    ...findings.map((finding) => row(
-      `${label(finding.sensor)} · ${finding.event_uid || label(finding.finding_type)}`,
-      escapeHtml(finding.finding_name || "Unnamed finding"),
-      `${escapeHtml(displayTimestamp(finding.finding_timestamp))} · ${escapeHtml(finding.source_ip || "unknown")}:${finding.source_port || ""} -> ${escapeHtml(finding.destination_ip || "unknown")}:${finding.destination_port || ""} ${escapeHtml(finding.protocol || "")} · severity ${finding.severity ?? "unknown"} · confidence ${finding.confidence ?? "unknown"}`
-    )),
-    findings.length ? "" : row("Primary Finding", data.signature, `${data.category || "unknown category"} · priority ${data.priority || "unknown"}`),
-    row("Traffic", `${data.src_ip || "unknown"}:${data.src_port || ""} -> ${data.dest_ip || "unknown"}:${data.dest_port || ""}`, data.protocol || ""),
-    row("Timestamp", data.timestamp || data.first_seen || "unknown"),
-  ].filter(Boolean).join("");
+  const nextSteps = Array.isArray(data.ai_next_steps) ? data.ai_next_steps : [];
+  els.overview.innerHTML = [
+    row("Summary", escapeHtml(data.ai_summary || data.ai_reason || "No AI case summary stored yet.")),
+    row("Who", escapeHtml(data.ai_who || `${data.src_ip || "Unknown source"} and ${data.dest_ip || "unknown destination"}`)),
+    row("What", escapeHtml(data.ai_what || data.signature || "Network sensor activity")),
+    row("When", escapeHtml(data.ai_when || `${displayTimestamp(data.first_seen)} to ${displayTimestamp(data.last_seen)}`)),
+    row("Where", escapeHtml(data.ai_where || `${data.src_ip || "?"}:${data.src_port || "?"} to ${data.dest_ip || "?"}:${data.dest_port || "?"}`)),
+    row("Why", escapeHtml(data.ai_why || data.ai_reason || "Review the sensor evidence and deterministic score.")),
+    row("How", escapeHtml(data.ai_how || `Correlated using ${label(data.correlation_method || "single_sensor")}.`)),
+    row("Next Steps", nextSteps.length ? nextSteps.map(escapeHtml).join(" · ") : escapeHtml(data.ai_recommended_action || "Review the evidence and record an analyst decision."))
+  ].join("");
+
+  renderSensorFindings(data);
 
   const assessments = data.ai_assessments || [];
+  const selectedIntelAnalysis = data.ai_threat_intel_analysis || {};
   els.ai.innerHTML = [
     row("Classification", data.ai_classification || "No AI opinion", `${data.ai_confidence || "No"} confidence`),
     row("AI Profile UID", data.ai_profile_uid || "legacy-profile", "Selected Admin profile stamped into this report"),
     row("Model Identity", data.ai_model_identity || "unknown model", `provider ${data.ai_model_provider || "unknown"} · name ${data.ai_model_name || "unknown"}`),
     row("Model Run", data.ai_model_run_id || "not recorded", `${data.ai_prompt_version || "unknown prompt"} · ${data.ai_elapsed_ms ?? 0}ms`),
     row("Reason", data.ai_reason || "No AI reason stored."),
+    row(
+      "Threat Intelligence Conclusion",
+      selectedIntelAnalysis.overall || "No dedicated threat-intelligence conclusion stored for this response.",
+      `Influence: ${label(selectedIntelAnalysis.influence || "unavailable")}`
+    ),
+    row("Evidence Boundaries", "Network metadata only", "No raw packet capture, decrypted payload, endpoint telemetry, or user identity was supplied to the model."),
     row("Recommended Action", data.ai_recommended_action || "none", `Risk adjustment ${data.ai_risk_adjustment ?? 0}`),
     ...assessments.map((item) => row(
       `${label(item.assessment_type)} · ${item.model_name || "unknown model"}`,
@@ -249,8 +482,9 @@ function render(data) {
 
   const vtRows = data.virustotal_verifications || [];
   els.intel.innerHTML = [
-    intelBlock("Source IP", data.src_ip_profile, data.src_threat_intel, data.src_asset),
-    intelBlock("Destination IP", data.dest_ip_profile, data.dest_threat_intel, data.dest_asset),
+    intelEndpointRow("Source IP", data.src_ip_profile, data.src_asset),
+    intelEndpointRow("Destination IP", data.dest_ip_profile, data.dest_asset),
+    renderCaseThreatIntel(data),
     row(
       "VirusTotal Verification",
       vtRows.length ? `${vtRows.length} stored verification record${vtRows.length === 1 ? "" : "s"}` : "Not requested",
@@ -276,7 +510,7 @@ function render(data) {
   els.raw.innerHTML = `
     <div class="workbook-row">
       <strong>Raw AI Response</strong>
-      <pre class="raw-json">${data.ai_raw_response || "No raw AI response stored."}</pre>
+      <pre class="raw-json">${escapeHtml(data.ai_raw_response || "No raw AI response stored.")}</pre>
     </div>
   `;
 
@@ -286,7 +520,8 @@ function render(data) {
 
 function classificationForAction(action) {
   if (action === "log_only") return "Safe";
-  if (action === "would_block" || action === "temporary_block") return "Dangerous";
+  if (action === "escalate") return "Dangerous";
+  if (action === "investigate") return "High Risk";
   return "Human Review Required";
 }
 
@@ -311,25 +546,6 @@ async function submitReview(event) {
   }
 }
 
-async function createEvidence() {
-  if (!currentInvestigation?.detection_id) return;
-  els.createEvidence.disabled = true;
-  els.createEvidence.textContent = "Creating...";
-  try {
-    await sendJson(`/api/detections/${currentInvestigation.detection_id}/investigation`, "POST", {
-      seconds_before: 120,
-      seconds_after: 120,
-      ip_filter_enabled: true
-    });
-    await refresh();
-  } catch (error) {
-    els.zeek.innerHTML = `<div class="empty">${error.message}</div>`;
-  } finally {
-    els.createEvidence.disabled = false;
-    els.createEvidence.textContent = "Preserve Forensic Evidence";
-  }
-}
-
 async function reassess() {
   if (!currentInvestigation?.case_uid) return;
   els.reassess.disabled = true;
@@ -342,6 +558,21 @@ async function reassess() {
     setActionStatus("error", error.message);
   } finally {
     els.reassess.disabled = false;
+  }
+}
+
+async function runComparison() {
+  if (!currentInvestigation?.case_uid) return;
+  els.compare.disabled = true;
+  setActionStatus("", "Running three AI requests sequentially. This can take several minutes; keep this page open.");
+  try {
+    const result = await sendJson(`/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/ai-comparison`, "POST");
+    await refresh();
+    setActionStatus("ok", `${result.candidate_count || 0}/3 model responses completed and are displayed below.`);
+  } catch (error) {
+    setActionStatus("error", error.message);
+  } finally {
+    els.compare.disabled = false;
   }
 }
 
@@ -371,7 +602,13 @@ async function refresh() {
     const path = caseUid
       ? `/api/cases/${encodeURIComponent(caseUid)}`
       : `/api/investigation/${encodeURIComponent(detectionId)}`;
-    render(await getJson(path));
+    const data = await getJson(path);
+    render(data);
+    if (data.case_uid) {
+      await renderComparisonRuns(await getJson(`/api/cases/${encodeURIComponent(data.case_uid)}/ai-comparisons?limit=10`));
+    } else {
+      await renderComparisonRuns([]);
+    }
   } catch (error) {
     els.updated.textContent = "Investigation API error";
     els.alert.innerHTML = `<div class="empty">${error.message}</div>`;
@@ -380,7 +617,11 @@ async function refresh() {
 
 refresh();
 els.reviewForm.addEventListener("submit", submitReview);
-els.createEvidence.addEventListener("click", createEvidence);
 els.reassess.addEventListener("click", reassess);
+els.compare.addEventListener("click", runComparison);
 els.refreshVt.addEventListener("click", refreshVirusTotal);
 els.refresh.addEventListener("click", refresh);
+els.findingViewButtons.forEach((button) => button.addEventListener("click", () => {
+  findingView = button.dataset.findingView === "all" ? "all" : "unique";
+  if (currentInvestigation) renderSensorFindings(currentInvestigation);
+}));

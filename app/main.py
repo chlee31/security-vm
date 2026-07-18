@@ -25,7 +25,6 @@ from app.database import (
     insert_alert,
     insert_app_event,
     insert_detection,
-    insert_firewall_block,
     insert_ai_assessment,
     insert_ai_report,
     insert_score_breakdown,
@@ -43,14 +42,19 @@ from app.database import (
     zeek_flow_for_uid,
 )
 from app.decision_engine import decide, safe_risk_adjustment
-from app.firewall import temporary_block_firewalld
 from app.normalizer import detection_type_from_alert, normalize_suricata_event
 from app.ai_client import ask_ai_model, build_prompt_audit, check_ai_model, model_metadata, model_run_id
-from app.notifications import notify_dangerous_decision
 from app.risk_score import cap_score, deterministic_score
 from app.suricata_reader import follow_file, permission_help
 from app.sensor_fusion import suricata_finding, zeek_detection, zeek_finding
-from app.threat_intel import FETCHERS, PRE_AI_PROVIDERS, PROVIDERS, provider_config
+from app.threat_intel import (
+    FETCHERS,
+    PRE_AI_PROVIDERS,
+    PROVIDERS,
+    ai_provider_status,
+    provider_config,
+    provider_evidence_for_indicator,
+)
 from app.threat_intel_worker import run_threat_intel_worker
 from app.zeek_ingest import run_zeek_ingest_loop
 from app.zeek_inventory import zeek_status
@@ -80,12 +84,15 @@ def compact_threat_intel(conn, config, ip_address):
         if provider_config(config, source)["enabled"]
     }
     return {
+        "indicator": ip_address,
+        "indicator_type": "ip",
         "local_profile": ip_enrichment_profile(ip_address),
         "matches": [
             match for match in threat_intel_matches(conn, ip_address, "ip")
             if match.get("source") in active_sources
         ],
         "legacy_otx": latest_threat_intel_for_ip(conn, ip_address, "otx") if "otx" in active_sources else None,
+        "providers": provider_evidence_for_indicator(conn, config, ip_address),
     }
 
 
@@ -141,8 +148,18 @@ def compact_observable_threat_intel(conn, config, alert):
             )
             if match.get("source") in active_sources
         ]
-        if matches:
-            results.append({**observable, "matches": matches})
+        results.append(
+            {
+                **observable,
+                "matches": matches,
+                "providers": provider_evidence_for_indicator(
+                    conn,
+                    config,
+                    observable["indicator"],
+                    observable["indicator_type"],
+                ),
+            }
+        )
     return results
 
 
@@ -199,13 +216,26 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
             "severity": item.get("severity"),
             "confidence": item.get("confidence"),
             "community_id": item.get("community_id"),
+            "timestamp": item.get("finding_timestamp"),
+            "source_ip": item.get("source_ip"),
+            "source_port": item.get("source_port"),
+            "destination_ip": item.get("destination_ip"),
+            "destination_port": item.get("destination_port"),
+            "protocol": item.get("protocol"),
         }
         for item in findings
     ]
-    zeek_context = zeek_context_for_detection(conn, detection_id, seconds=120, limit=50) if detection_id else {"items": []}
+    correlation_config = config.get("correlation", {})
+    zeek_context = zeek_context_for_detection(
+        conn,
+        detection_id,
+        seconds=int(correlation_config.get("zeek_context_window_seconds", 120)),
+        limit=int(correlation_config.get("zeek_context_limit", 100)),
+    ) if detection_id else {"items": [], "summary": {}}
     zeek_context = {
         "window_start": zeek_context.get("window_start"),
         "window_end": zeek_context.get("window_end"),
+        "summary": zeek_context.get("summary") or {},
         "items": [
             {
                 "log_type": item.get("log_type"),
@@ -224,6 +254,7 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
     }
     return {
         "sensor_fusion": {
+            "case_uid": (detection or {}).get("case_uid"),
             "sensor_state": (detection or {}).get("sensor_state", "suricata_only"),
             "agreement_state": (detection or {}).get("agreement_state", "single_sensor"),
             "correlation_method": (detection or {}).get("correlation_method", "single_sensor"),
@@ -231,9 +262,18 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
             "community_id": (detection or {}).get("community_id"),
             "findings": findings,
         },
+        "repeated_activity": {
+            "finding_count": int((detection or {}).get("alert_count") or len(findings)),
+            "unique_destination_ports": int((detection or {}).get("unique_dest_ports") or 0),
+            "unique_destination_hosts": int((detection or {}).get("unique_dest_hosts") or 0),
+            "window_seconds": int((detection or {}).get("time_window_seconds") or 0),
+            "periodicity": (zeek_context.get("summary") or {}).get("periodicity"),
+            "average_interval_seconds": (zeek_context.get("summary") or {}).get("average_interval_seconds"),
+        },
         "zeek_context": zeek_context,
         "threat_intel": {
             "policy": "Bulk and cached providers are matched before AI. VirusTotal is excluded here and reserved for post-AI verification of Dangerous classifications.",
+            "provider_status": ai_provider_status(config, conn),
             "src_ip": compact_threat_intel(conn, config, alert.get("src_ip")),
             "dest_ip": compact_threat_intel(conn, config, alert.get("dest_ip")),
             "alert_observables": compact_observable_threat_intel(conn, config, alert),
@@ -326,6 +366,14 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             "risk_adjustment": 0,
             "reason": f"AI model unavailable: {exc}",
             "recommended_action": "human_review",
+            "summary": "The local AI model was unavailable, so this case requires analyst review.",
+            "who": f"{alert.get('src_ip') or 'Unknown source'} and {alert.get('dest_ip') or 'unknown destination'}.",
+            "what": alert.get("signature") or "A network sensor finding was recorded.",
+            "when": f"Observed at {alert.get('timestamp') or 'an unknown time'}.",
+            "where": f"{alert.get('src_ip') or '?'}:{alert.get('src_port') or '?'} to {alert.get('dest_ip') or '?'}:{alert.get('dest_port') or '?'}.",
+            "why": "Automated explanation was unavailable; review the deterministic score and sensor evidence.",
+            "how": "Python correlated the stored Suricata and Zeek evidence without an AI response.",
+            "next_steps": ["Review the original sensor findings and related Zeek context."],
             "raw_response": "",
             "elapsed_ms": int(runtime_config.get("ai_model", {}).get("timeout_seconds", 90)) * 1000,
         }
@@ -351,7 +399,6 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
         evidence_sources={
             "sensor_findings": [item.get("event_uid") for item in findings],
             "score_breakdown": score_breakdown,
-            "raw_pcap_sent": False,
         },
     )
     response = decide(conn, runtime_config, alert, detection, ai_report)
@@ -385,50 +432,9 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             "threat_intel",
             f"VirusTotal verification could not be completed for detection {detection_id}: {type(exc).__name__}",
         )
-    if response["final_action"] == "temporary_block":
-        timeout = runtime_config.get("firewall", {}).get("block_timeout_seconds", 3600)
-        firewall_config = runtime_config.get("firewall", {})
-        status, elapsed_ms, firewall_rule, firewall_zone = temporary_block_firewalld(
-            response["target_ip"],
-            timeout,
-            response.get("target_direction") or "source",
-            external_zone=firewall_config.get("external_zone", "external"),
-            internal_zone=firewall_config.get("internal_zone", "internal"),
-        )
-        response["response_status"] = status
-        response["response_time_ms"] = elapsed_ms
-        if status == "blocked":
-            insert_firewall_block(
-                conn,
-                {
-                    "detection_id": detection_id,
-                    "ip_address": response["target_ip"],
-                    "direction": response.get("target_direction"),
-                    "zone": firewall_zone,
-                    "reason": f"{response['final_classification']} score={response['final_score']}",
-                    "firewall_rule": firewall_rule,
-                    "timeout_seconds": timeout,
-                    "status": "active",
-                    "response_status": status,
-                    "response_time_ms": elapsed_ms,
-                },
-            )
-
     response_id = insert_response(conn, response)
     response["response_id"] = response_id
     upsert_pending_review(conn, response)
-    if (
-        response.get("final_classification") == "Dangerous"
-        and runtime_config.get("notifications", {}).get("email", {}).get("enabled")
-    ):
-        notification = notify_dangerous_decision(conn, runtime_config, alert, detection, response, ai_report)
-        insert_app_event(
-            conn,
-            "warning" if notification.get("status") == "failed" else "info",
-            "notifications",
-            f"Email notification {notification.get('status')}",
-            notification,
-        )
     insert_app_event(
         conn,
         "info",
@@ -454,7 +460,7 @@ def run_ingest(config_path):
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     correlator = Correlator(config)
     eve_path = config.get("suricata", {}).get("eve_json_path", "/var/log/suricata/eve.json")
-    mode = config.get("system", {}).get("mode", "alert_only")
+    mode = "analysis"
     print(f"[+] Security VM ingest starting in {mode} mode")
     insert_app_event(conn, "info", "ingest", f"Security VM ingest starting in {mode} mode")
 
@@ -483,6 +489,7 @@ def run_ingest(config_path):
             alert,
             "suricata",
             tolerance_seconds=int(config.get("correlation", {}).get("sensor_time_tolerance_seconds", 10)),
+            same_sensor_window_seconds=int(config.get("correlation", {}).get("same_sensor_window_seconds", 300)),
         )
         if match:
             detection_id = match["id"]
@@ -568,6 +575,7 @@ def run_zeek_ingest(config_path):
             event,
             "zeek",
             tolerance_seconds=int(runtime_config.get("correlation", {}).get("sensor_time_tolerance_seconds", 10)),
+            same_sensor_window_seconds=int(runtime_config.get("correlation", {}).get("same_sensor_window_seconds", 300)),
         )
         if match:
             detection_id = match["id"]
@@ -680,9 +688,6 @@ def run_all(
     config_path,
     host,
     port,
-    external_interface=None,
-    internal_interface=None,
-    pcap_dir=None,
     restart_suricata=True,
 ):
     config = load_config(config_path)
@@ -690,15 +695,6 @@ def run_all(
     schema_conn = init_db(database_path)
     schema_conn.close()
     print(f"[+] Database schema ready: {database_path}", flush=True)
-    pcap_config = config.get("pcap", {})
-    external_interface = external_interface or pcap_config.get("external_interface", "ens33")
-    internal_interface = internal_interface or pcap_config.get("internal_interface") or config.get("assets", {}).get(
-        "internal_interface", "ens37"
-    )
-    pcap_dir = pcap_dir or pcap_config.get("rolling_dir", "/var/log/pcap")
-    project_root = Path(__file__).resolve().parents[1]
-    pcap_script = project_root / "scripts" / "start_pcap_capture.sh"
-
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         eve_path = Path(config.get("suricata", {}).get("eve_json_path", "/var/log/suricata/eve.json"))
         try:
@@ -711,10 +707,10 @@ def run_all(
 
     privileged_prefix = []
     if hasattr(os, "geteuid") and os.geteuid() != 0:
-        print("[+] Authenticating once for sensor and packet-capture management", flush=True)
+        print("[+] Authenticating once for sensor management", flush=True)
         authorization = subprocess.run(["sudo", "-v"], check=False)
         if authorization.returncode != 0:
-            print("[!] Sudo authentication failed; run-all cannot manage the sensors or packet capture.", flush=True)
+            print("[!] Sudo authentication failed; run-all cannot manage the required sensors.", flush=True)
             return
         privileged_prefix = ["sudo", "-n"]
 
@@ -734,18 +730,6 @@ def run_all(
         return
 
     commands = []
-    if pcap_config.get("enabled", True):
-        commands.append((
-            "pcap",
-            [
-                "bash",
-                str(pcap_script),
-                external_interface,
-                internal_interface,
-                pcap_dir,
-            ],
-            False,
-        ))
     commands.append((
         "ingest",
         [sys.executable, "-m", "app.main", "ingest", "--config", config_path],
@@ -916,7 +900,6 @@ def run_ai_backfill(config_path, limit):
             "priority": row.get("priority"),
             "flow_id": row.get("flow_id"),
             "community_id": row.get("community_id"),
-            "pcap_point": row.get("pcap_point"),
             "raw_json": row.get("raw_json"),
         }
         detection = {
@@ -979,7 +962,7 @@ def run_ai_backfill(config_path, limit):
                 row["detection_id"],
                 report,
                 assessment_type="backfill",
-                evidence_sources={"raw_pcap_sent": False, "score_breakdown": breakdown},
+                evidence_sources={"score_breakdown": breakdown},
             )
             insert_score_breakdown(
                 conn,
@@ -1053,13 +1036,10 @@ def main():
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", default=8000, type=int)
 
-    run_all_parser = sub.add_parser("run-all", help="Start PCAP capture, ingest, and dashboard together")
+    run_all_parser = sub.add_parser("run-all", help="Start required sensors, ingestion, enrichment, and dashboard")
     run_all_parser.add_argument("--config", default="config.yaml")
     run_all_parser.add_argument("--host", default="127.0.0.1")
     run_all_parser.add_argument("--port", default=8000, type=int)
-    run_all_parser.add_argument("--external-interface", default=None)
-    run_all_parser.add_argument("--internal-interface", default=None)
-    run_all_parser.add_argument("--pcap-dir", default=None)
     run_all_parser.add_argument("--skip-suricata-restart", action="store_true")
 
     zeek_ingest = sub.add_parser("zeek-ingest", help="Tail Zeek JSON logs and store notice/weird/context events")
@@ -1084,9 +1064,6 @@ def main():
             args.config,
             args.host,
             args.port,
-            external_interface=args.external_interface,
-            internal_interface=args.internal_interface,
-            pcap_dir=args.pcap_dir,
             restart_suricata=not args.skip_suricata_restart,
         )
     elif args.command == "ai-backfill":

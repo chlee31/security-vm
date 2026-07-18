@@ -4,22 +4,21 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Model Comparison</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260717-case-evidence-browser">
   </head>
   <body>
     <main class="shell workbook-shell">
       <section class="topbar">
         <div>
-          <p class="eyebrow">AI Comparison</p>
-          <h1>Model Opinion Comparison</h1>
+          <p class="eyebrow">AI Model Evaluation</p>
+          <h1>Case Summary Comparison</h1>
         </div>
         <div class="status">
           <span class="dot"></span>
           <span id="compare-updated">Loading</span>
+          <button id="compare-refresh" class="toolbar-button" type="button">Refresh</button>
           <span class="divider"></span>
           <a class="nav-link" href="/">Dashboard</a>
-          <span class="divider"></span>
-          <a class="nav-link" href="/outcome?type=human_review">Investigate</a>
           <span class="divider"></span>
           <a class="nav-link" href="/admin">Admin</a>
         </div>
@@ -27,50 +26,86 @@
 
       <section class="workbook-metrics">
         <article class="metric">
-          <span>Models</span>
-          <strong id="cmp-models">0</strong>
-          <small>Provider/model identities</small>
+          <span>Comparison Runs</span>
+          <strong id="cmp-runs">0</strong>
+          <small>Case-level evaluations</small>
         </article>
         <article class="metric">
-          <span>AI Reports</span>
-          <strong id="cmp-reports">0</strong>
-          <small>Stored opinions</small>
+          <span>Awaiting Review</span>
+          <strong id="cmp-pending">0</strong>
+          <small>Awaiting analyst selection</small>
         </article>
         <article class="metric">
-          <span>Avg Adjust</span>
-          <strong id="cmp-adjust">0</strong>
-          <small>Risk adjustment</small>
+          <span>Reviewed</span>
+          <strong id="cmp-reviewed">0</strong>
+          <small>Model selections recorded</small>
         </article>
         <article class="metric">
-          <span>Avg Time</span>
-          <strong id="cmp-time">0</strong>
-          <small>Milliseconds</small>
+          <span>Ties / Rejected</span>
+          <strong id="cmp-neutral">0</strong>
+          <small>No single winner</small>
         </article>
       </section>
 
-      <section class="workbook-grid">
-        <section class="panel wide-panel">
+      <section class="comparison-layout">
+        <section class="panel comparison-queue-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Comparison</p>
-              <h2>Model Outcomes</h2>
+              <p class="eyebrow">Cases</p>
+              <h2>Review Queue</h2>
             </div>
           </div>
-          <div id="cmp-models-list" class="workbook-list"></div>
+          <div id="cmp-runs-list" class="workbook-list comparison-run-list"></div>
         </section>
 
-        <section class="panel wide-panel">
+        <section class="panel comparison-review-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Recent</p>
-              <h2>Latest AI Opinions</h2>
+              <p class="eyebrow">Model Responses</p>
+              <h2 id="cmp-case-title">Select a Comparison</h2>
             </div>
+            <small id="cmp-model-state" class="panel-hint">Model identities shown for direct comparison</small>
           </div>
-          <div id="cmp-recent" class="alerts compact-alerts"></div>
+          <div id="cmp-candidates" class="model-candidate-grid"></div>
+          <form id="cmp-vote-form" class="comparison-vote-form" hidden>
+            <fieldset>
+              <legend>Which response gives the best evidence-grounded case summary and next steps?</legend>
+              <div class="comparison-vote-options">
+                <label><input type="radio" name="selection" value="A" required><span>Response A</span></label>
+                <label><input type="radio" name="selection" value="B"><span>Response B</span></label>
+                <label><input type="radio" name="selection" value="C"><span>Response C</span></label>
+                <label><input type="radio" name="selection" value="tie"><span>Tie</span></label>
+                <label><input type="radio" name="selection" value="reject_all"><span>Reject All</span></label>
+              </div>
+            </fieldset>
+            <div class="form-grid">
+              <label class="field">
+                <span>Analyst name</span>
+                <input id="cmp-analyst" type="text" placeholder="Example: analyst" required>
+              </label>
+              <label class="field wide-field">
+                <span>Review notes</span>
+                <textarea id="cmp-notes" placeholder="Why was this response more useful, or why were all responses insufficient?"></textarea>
+              </label>
+              <button class="wide-button" type="submit">Submit Model Selection</button>
+            </div>
+          </form>
+          <div id="cmp-vote-status" class="connection-status">Select an unreviewed comparison to begin.</div>
         </section>
+      </section>
+
+      <section class="panel wide-panel comparison-scorecard-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Evaluation Results</p>
+            <h2>Model Selection Scorecard</h2>
+          </div>
+          <small class="panel-hint">Selections recorded by model profile</small>
+        </div>
+        <div id="cmp-scorecard" class="workbook-list"></div>
       </section>
     </main>
 
-    <script src="/static/compare.js?v=20260704-ai-naming"></script>
+    <script src="/static/compare.js?v=20260717-case-evidence-browser"></script>
   </body>
 </html>

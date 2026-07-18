@@ -17,7 +17,12 @@ from app.database import (
 )
 from app.decision_engine import decide, safe_risk_adjustment
 from app.risk_score import deterministic_score
-from app.threat_intel import PRE_AI_PROVIDERS, provider_config
+from app.threat_intel import (
+    PRE_AI_PROVIDERS,
+    ai_provider_status,
+    provider_config,
+    provider_evidence_for_indicator,
+)
 from app.virustotal import verify_dangerous
 
 
@@ -34,6 +39,8 @@ def _ip_intel(conn, config, ip_address):
         return None
     active = _active_sources(config)
     return {
+        "indicator": ip_address,
+        "indicator_type": "ip",
         "matches": [
             item
             for item in threat_intel_matches(conn, ip_address, "ip")
@@ -42,10 +49,11 @@ def _ip_intel(conn, config, ip_address):
         "legacy_otx": latest_threat_intel_for_ip(conn, ip_address, "otx")
         if "otx" in active
         else None,
+        "providers": provider_evidence_for_indicator(conn, config, ip_address),
     }
 
 
-def _stored_observable_intel(workspace, active_sources):
+def _stored_observable_intel(conn, config, workspace, active_sources):
     items = []
     for usage in workspace.get("threat_intel_usage") or []:
         if usage.get("source") == "virustotal" or usage.get("source") not in active_sources:
@@ -59,6 +67,12 @@ def _stored_observable_intel(workspace, active_sources):
                 "indicator": usage.get("indicator"),
                 "indicator_type": usage.get("indicator_type"),
                 "matches": [{**details, "source": usage.get("source")}],
+                "providers": provider_evidence_for_indicator(
+                    conn,
+                    config,
+                    usage.get("indicator"),
+                    usage.get("indicator_type") or "unknown",
+                ),
             }
         )
     return items
@@ -96,12 +110,12 @@ def _primary_alert(workspace):
     }
 
 
-def build_reassessment_evidence(conn, config, workspace, alert, detection):
+def build_reassessment_evidence(conn, config, workspace, alert, detection, assessment_type="reassessment"):
     zeek_context = workspace.get("zeek_context") or {"items": []}
     active_sources = _active_sources(config)
     return {
         "case_uid": workspace.get("case_uid"),
-        "assessment_type": "reassessment",
+        "assessment_type": assessment_type,
         "sensor_fusion": {
             "sensor_state": detection.get("sensor_state"),
             "agreement_state": detection.get("agreement_state"),
@@ -117,12 +131,13 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection):
         },
         "threat_intel": {
             "policy": "Cached and bulk providers inform the deterministic score. VirusTotal remains separate verification evidence.",
+            "provider_status": ai_provider_status(config, conn),
             "src_ip": _ip_intel(conn, config, alert.get("src_ip")),
             "dest_ip": _ip_intel(conn, config, alert.get("dest_ip")),
-            "alert_observables": _stored_observable_intel(workspace, active_sources),
+            "alert_observables": _stored_observable_intel(conn, config, workspace, active_sources),
         },
         "existing_virustotal_verification": workspace.get("virustotal_verifications") or [],
-        "previous_assessments": [
+        "previous_assessments": [] if assessment_type in {"blind_comparison", "model_comparison"} else [
             {
                 "assessment_type": item.get("assessment_type"),
                 "model_name": item.get("model_name"),
@@ -143,7 +158,7 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection):
     }
 
 
-def reassess_case(conn, config, case_uid):
+def prepare_case_context(conn, config, case_uid, assessment_type="reassessment"):
     workspace = case_workspace(conn, case_uid)
     if not workspace:
         raise ValueError("Case not found")
@@ -180,12 +195,27 @@ def reassess_case(conn, config, case_uid):
     }
     detection["asset_context"] = asset_context_for_alert(conn, alert)
     findings = sensor_findings_for_detection(conn, detection_id)
-    evidence = build_reassessment_evidence(conn, config, workspace, alert, detection)
+    evidence = build_reassessment_evidence(
+        conn,
+        config,
+        workspace,
+        alert,
+        detection,
+        assessment_type=assessment_type,
+    )
     breakdown = deterministic_score(alert, detection, findings, evidence)
     detection["python_initial_score"] = breakdown["python_score"]
     detection["forced_review"] = breakdown["forced_review"]
     detection["forced_review_reason"] = breakdown["forced_review_reason"]
     evidence["deterministic_scoring"] = breakdown
+    return workspace, alert, detection, evidence, breakdown, findings
+
+
+def reassess_case(conn, config, case_uid):
+    workspace, alert, detection, evidence, breakdown, findings = prepare_case_context(
+        conn, config, case_uid
+    )
+    detection_id = workspace["detection_id"]
     update_detection_python_score(conn, detection_id, breakdown["python_score"])
 
     report = ask_ai_model(config, alert, detection, evidence_context=evidence)

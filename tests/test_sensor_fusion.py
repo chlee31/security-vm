@@ -8,8 +8,10 @@ from app.database import (
     init_db,
     insert_detection,
     insert_sensor_finding,
+    insert_zeek_event,
     latest_sensor_alerts,
     sensor_findings_for_detection,
+    zeek_context_for_detection,
 )
 from app.normalizer import normalize_suricata_event
 from app.sensor_fusion import zeek_detection
@@ -236,6 +238,140 @@ class SensorFusionTests(unittest.TestCase):
         self.assertIn("Absence of a finding from one sensor", prompt)
         self.assertIn('"sensor_state": "multi_sensor"', prompt)
         self.assertIn("SSL::Invalid_Server_Cert", prompt)
+
+    def test_repeated_suricata_scan_joins_developing_case(self):
+        detection_id = insert_detection(
+            self.conn,
+            self.base_detection(
+                community_id=None,
+                detection_type="port_scan",
+                src_port=40000,
+                dest_port=22,
+            ),
+        )
+        insert_sensor_finding(
+            self.conn,
+            detection_id,
+            {
+                "sensor": "suricata",
+                "sensor_event_id": 301,
+                "finding_type": "signature_alert",
+                "finding_name": "Scan attempt",
+                "severity": 2,
+                "confidence": 0.8,
+                "raw_event": {},
+            },
+        )
+        repeated = {
+            "timestamp": "2026-07-11T12:02:00+00:00",
+            "src_ip": "192.168.11.50",
+            "dest_ip": "203.0.113.20",
+            "src_port": 40001,
+            "dest_port": 443,
+            "protocol": "tcp",
+            "signature": "Scan attempt",
+            "detection_type": "port_scan",
+        }
+
+        match, method, confidence = find_correlated_detection(
+            self.conn,
+            repeated,
+            "suricata",
+            same_sensor_window_seconds=300,
+        )
+
+        self.assertEqual(match["id"], detection_id)
+        self.assertEqual(method, "same_sensor_behavior")
+        self.assertEqual(confidence, 0.78)
+
+    def test_shared_tls_name_correlates_related_flows(self):
+        detection_id = insert_detection(
+            self.conn,
+            self.base_detection(
+                community_id=None,
+                detection_type="unknown",
+                dest_port=443,
+            ),
+        )
+        insert_sensor_finding(
+            self.conn,
+            detection_id,
+            {
+                "sensor": "suricata",
+                "sensor_event_id": 401,
+                "finding_type": "signature_alert",
+                "finding_name": "Suspicious TLS activity",
+                "severity": 2,
+                "confidence": 0.8,
+                "raw_event": {"tls": {"sni": "example.test"}},
+            },
+        )
+        zeek_notice = {
+            "timestamp": "2026-07-11T12:00:20+00:00",
+            "source_ip": "192.168.11.50",
+            "destination_ip": "203.0.113.10",
+            "source_port": 50001,
+            "destination_port": 8443,
+            "protocol": "tcp",
+            "detection_type": "unknown",
+            "raw_json": {"server_name": "example.test"},
+        }
+
+        match, method, confidence = find_correlated_detection(
+            self.conn,
+            zeek_notice,
+            "zeek",
+            tolerance_seconds=10,
+            same_sensor_window_seconds=300,
+        )
+
+        self.assertEqual(match["id"], detection_id)
+        self.assertEqual(method, "shared_observable")
+        self.assertEqual(confidence, 0.82)
+
+    def test_zeek_context_is_bounded_and_summarized(self):
+        detection_id = insert_detection(
+            self.conn,
+            self.base_detection(community_id=None, detection_type="beaconing"),
+        )
+        events = [
+            {
+                "zeek_uid": f"C{index}",
+                "log_type": "conn",
+                "timestamp": f"2026-07-11T12:00:0{index}+00:00",
+                "source_ip": "192.168.11.50",
+                "source_port": 50000 + index,
+                "destination_ip": "203.0.113.10",
+                "destination_port": 443,
+                "protocol": "tcp",
+                "event_name": "ssl",
+                "message": "TLS connection",
+                "raw_json": {"duration": 1.5, "orig_bytes": 100, "resp_bytes": 200},
+            }
+            for index in range(1, 4)
+        ]
+        events.append(
+            {
+                "zeek_uid": "UNRELATED",
+                "log_type": "dns",
+                "timestamp": "2026-07-11T12:00:02+00:00",
+                "source_ip": "192.0.2.55",
+                "destination_ip": "192.0.2.53",
+                "protocol": "udp",
+                "event_name": "A",
+                "message": "unrelated.example",
+                "raw_json": {"query": "unrelated.example"},
+            }
+        )
+        for event in events:
+            insert_zeek_event(self.conn, event)
+
+        context = zeek_context_for_detection(self.conn, detection_id, seconds=30)
+
+        self.assertEqual(context["summary"]["event_count"], 3)
+        self.assertEqual(context["summary"]["originator_bytes"], 300)
+        self.assertEqual(context["summary"]["responder_bytes"], 600)
+        self.assertNotIn("unrelated.example", context["summary"]["dns_queries"])
 
 
 if __name__ == "__main__":

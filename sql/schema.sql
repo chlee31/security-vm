@@ -232,10 +232,20 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   risk_adjustment INTEGER,
   reason TEXT,
   recommended_action TEXT,
+  summary TEXT,
+  who_summary TEXT,
+  what_summary TEXT,
+  when_summary TEXT,
+  where_summary TEXT,
+  why_summary TEXT,
+  how_summary TEXT,
+  next_steps_json TEXT,
+  threat_intel_analysis_json TEXT,
   raw_response TEXT,
   elapsed_ms INTEGER,
   prompt_sha256 TEXT,
   prompt_chars INTEGER,
+  -- Deprecated audit fields retained for existing database compatibility.
   pcap_summary_sha256 TEXT,
   pcap_summary_chars INTEGER,
   pcap_summary_included INTEGER DEFAULT 0,
@@ -318,6 +328,74 @@ CREATE TABLE IF NOT EXISTS ai_profiles (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   last_selected_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS ai_comparison_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comparison_uid TEXT NOT NULL UNIQUE,
+  case_uid TEXT NOT NULL,
+  detection_id INTEGER NOT NULL,
+  evidence_sha256 TEXT,
+  prompt_version TEXT,
+  threat_intel_evidence_json TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  candidate_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT,
+  FOREIGN KEY (detection_id) REFERENCES detections(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_comparison_runs_case
+  ON ai_comparison_runs(case_uid, id DESC);
+
+CREATE TABLE IF NOT EXISTS ai_comparison_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comparison_run_id INTEGER NOT NULL,
+  anonymous_slot TEXT NOT NULL,
+  ai_profile_uid TEXT NOT NULL,
+  model_provider TEXT,
+  model_name TEXT,
+  model_identity TEXT,
+  model_run_id TEXT,
+  prompt_version TEXT,
+  prompt_sha256 TEXT,
+  classification TEXT,
+  confidence TEXT,
+  risk_adjustment INTEGER,
+  summary TEXT,
+  who_summary TEXT,
+  what_summary TEXT,
+  when_summary TEXT,
+  where_summary TEXT,
+  why_summary TEXT,
+  how_summary TEXT,
+  next_steps_json TEXT,
+  threat_intel_analysis_json TEXT,
+  recommended_action TEXT,
+  raw_response TEXT,
+  elapsed_ms INTEGER,
+  status TEXT NOT NULL DEFAULT 'complete',
+  error_message TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id),
+  UNIQUE(comparison_run_id, anonymous_slot),
+  UNIQUE(comparison_run_id, ai_profile_uid)
+);
+
+CREATE TABLE IF NOT EXISTS ai_comparison_votes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comparison_run_id INTEGER NOT NULL,
+  analyst_name TEXT NOT NULL,
+  selection TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_comparison_votes_run
+  ON ai_comparison_votes(comparison_run_id, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_comparison_votes_one_per_run
+  ON ai_comparison_votes(comparison_run_id);
 
 CREATE TABLE IF NOT EXISTS responses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

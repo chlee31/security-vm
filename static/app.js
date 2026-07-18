@@ -5,7 +5,6 @@ const els = {
   reviewCount: document.querySelector("#review-count"),
   highRiskCount: document.querySelector("#high-risk-count"),
   dangerCount: document.querySelector("#danger-count"),
-  totalAssets: document.querySelector("#total-assets"),
   topDetection: document.querySelector("#top-detection"),
   systemMode: document.querySelector("#system-mode"),
   zeekNoticeCount: document.querySelector("#zeek-notice-count"),
@@ -22,13 +21,6 @@ const els = {
   alerts: document.querySelector("#alerts"),
   aiReports: document.querySelector("#ai-opinions"),
   detections: document.querySelector("#detections"),
-  allowlist: document.querySelector("#allowlist"),
-  allowlistForm: document.querySelector("#allowlist-form"),
-  assets: document.querySelector("#assets"),
-  assetForm: document.querySelector("#asset-form"),
-  assetType: document.querySelector("#asset-type"),
-  assetInterface: document.querySelector("#asset-interface"),
-  assetScore: document.querySelector("#asset-score"),
   events: document.querySelector("#events"),
   checkAiModel: document.querySelector("#check-ai-model"),
   resetLogs: document.querySelector("#reset-logs"),
@@ -74,10 +66,6 @@ function outcomeWorkbookUrl(outcome) {
   if (outcome) params.set("type", outcome);
   if (selectedDetectionType) params.set("detection_type", selectedDetectionType);
   return `/outcome?${params.toString()}`;
-}
-
-function assetInventoryUrl() {
-  return "/asset-inventory";
 }
 
 function investigationUrl(detectionId, caseUid = "") {
@@ -374,13 +362,12 @@ function renderMetrics(metrics) {
   els.reviewCount.textContent = metrics.outcome_counts?.human_review ?? 0;
   els.highRiskCount.textContent = metrics.outcome_counts?.high_risk ?? 0;
   els.dangerCount.textContent = metrics.outcome_counts?.dangerous ?? 0;
-  els.totalAssets.textContent = metrics.total_assets ?? 0;
   els.zeekNoticeCount.textContent = metrics.zeek_notice_count ?? 0;
   els.zeekWeirdCount.textContent = metrics.zeek_weird_count ?? 0;
-  els.investigationsReady.textContent = metrics.investigations_ready ?? 0;
+  els.investigationsReady.textContent = metrics.total_detections ?? 0;
   els.topDetection.textContent = detections[0] ? detectionLabel(detections[0].detection_type) : "None";
-  els.systemMode.textContent = metrics.mode || "alert_only";
-  els.mode.textContent = metrics.mode || "alert_only";
+  els.systemMode.textContent = "analysis";
+  els.mode.textContent = "analysis";
   document.querySelectorAll("[data-outcome-filter]").forEach((card) => {
     card.classList.toggle("selected", card.dataset.outcomeFilter === selectedOutcome);
   });
@@ -506,6 +493,25 @@ function renderEvents(events) {
   `).join("") || `<div class="empty">No runtime logs yet. Start ingest or check the AI model.</div>`;
 }
 
+function sensorFindingSummary(findings) {
+  const groups = new Map();
+  for (const finding of findings || []) {
+    const sensor = String(finding.sensor || "unknown").toUpperCase();
+    const name = finding.finding_name || finding.finding_type || "finding";
+    const key = `${sensor}|${name}`;
+    const existing = groups.get(key) || { sensor, name, count: 0 };
+    existing.count += 1;
+    groups.set(key, existing);
+  }
+  const unique = [...groups.values()];
+  if (!unique.length) return "";
+  const preview = unique.slice(0, 3).map((item) =>
+    `${item.sensor}: ${item.name}${item.count > 1 ? ` (${item.count} occurrences)` : ""}`
+  );
+  if (unique.length > preview.length) preview.push(`+${unique.length - preview.length} more unique findings`);
+  return `${unique.length} unique · ${(findings || []).length} total events · ${preview.join(" · ")}`;
+}
+
 function renderDecisionEvidence(rows) {
   const outcomeLabel = selectedOutcome ? detectionLabel(selectedOutcome) : "All Outcomes";
   els.decisionEvidence.innerHTML = rows.map((row) => `
@@ -520,7 +526,7 @@ function renderDecisionEvidence(rows) {
           <span>Sensor Finding</span>
           <strong>${row.signature || "Network detection"}</strong>
           <small>${detectionLabel(row.sensor_state || "single_sensor")} · ${row.src_ip || "unknown"}:${row.src_port || ""} -> ${row.dest_ip || "unknown"}:${row.dest_port || ""}</small>
-          <small>${(row.sensor_findings || []).map((finding) => `${String(finding.sensor || "unknown").toUpperCase()}: ${finding.finding_name || finding.finding_type || "finding"}`).join(" · ") || `priority ${row.priority || "unknown"}`}</small>
+          <small>${escapeHtml(sensorFindingSummary(row.sensor_findings) || `priority ${row.priority || "unknown"}`)}</small>
         </div>
         <div>
           <span>Correlation</span>
@@ -552,73 +558,6 @@ function renderDecisionEvidence(rows) {
   `).join("") || `<div class="empty">No ${outcomeLabel} decision evidence rows for this selection yet.</div>`;
 }
 
-function formatRemaining(seconds) {
-  if (seconds === null || seconds === undefined) return "No expiry";
-  if (seconds <= 0) return "Expired";
-  const hours = Math.ceil(seconds / 3600);
-  if (hours < 48) return `${hours}h left`;
-  return `${Math.ceil(hours / 24)}d left`;
-}
-
-function renderAllowlist(entries) {
-  els.allowlist.innerHTML = entries.map((entry) => `
-    <div class="list-item allow-item">
-      <div class="row tight">
-        <strong>${entry.name || entry.ip_address}</strong>
-        <span>${formatRemaining(entry.remaining_seconds)}</span>
-      </div>
-      <p>${entry.ip_address}</p>
-      <p>${entry.reason || "No reason provided."}</p>
-      <small>Added by ${entry.added_by || "unknown"} · expires ${entry.expiry_time || "never"}</small>
-      <button class="text-button" type="button" data-allow-remove="${entry.id}">Deactivate</button>
-    </div>
-  `).join("") || `<div class="empty">No active allowlist entries.</div>`;
-}
-
-function renderAssetTypeOptions(types) {
-  const currentValue = els.assetType.value;
-  els.assetType.innerHTML = (types || []).map((type) => `
-    <option value="${type.value}" data-score="${type.default_score}">
-      ${type.label} (${type.default_score})
-    </option>
-  `).join("");
-  if (currentValue) els.assetType.value = currentValue;
-  if (!els.assetScore.value) {
-    const selected = els.assetType.selectedOptions[0];
-    els.assetScore.value = selected ? selected.dataset.score : "";
-  }
-}
-
-function renderAssets(payload) {
-  renderAssetTypeOptions(payload.types || []);
-  if (!els.assetInterface.value) {
-    els.assetInterface.placeholder = payload.default_interface || "ens37";
-  }
-
-  const summary = payload.summary || {};
-  const assets = payload.assets || [];
-  els.assets.innerHTML = `
-    <div class="list-item">
-      <div class="row tight">
-        <strong>Tracked inventory records</strong>
-        <span>${summary.total || 0}</span>
-      </div>
-      <p>Manual inventory for the internal interface, used as decision context.</p>
-    </div>
-    ${assets.map((asset) => `
-      <div class="list-item asset-item">
-        <div class="row tight">
-          <strong>${asset.name}</strong>
-          <span>score ${asset.asset_score}</span>
-        </div>
-        <p>${asset.ip_address} · ${detectionLabel(asset.device_type)} · ${asset.network_interface || "ens37"}</p>
-        <small>${asset.function || "No function"}${asset.notes ? ` · ${asset.notes}` : ""}</small>
-        <button class="text-button" type="button" data-asset-remove="${asset.id}">Deactivate</button>
-      </div>
-    `).join("")}
-  `;
-}
-
 async function refresh(options = {}) {
   const preserveScroll = Boolean(options.preserveScroll);
   const scrollX = window.scrollX;
@@ -630,13 +569,11 @@ async function refresh(options = {}) {
       ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`
       : `/api/decision-evidence?limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`;
     const summaryRequest = getJson("/api/dashboard-summary?limit=12").catch((error) => ({ _error: error.message }));
-    const [metrics, summary, alerts, aiReports, allowlist, assets, events, evidence] = await Promise.all([
+    const [metrics, summary, alerts, aiReports, events, evidence] = await Promise.all([
       getJson("/api/metrics"),
       summaryRequest,
       getJson(`/api/latest-alerts?limit=50&sensor=${encodeURIComponent(selectedSensorFilter)}`),
       getJson("/api/ai-opinions?limit=50"),
-      getJson("/api/allowlist?limit=25"),
-      getJson("/api/assets?limit=25"),
       getJson("/api/events?limit=40"),
       getJson(evidencePath)
     ]);
@@ -644,8 +581,6 @@ async function refresh(options = {}) {
     renderSummary(summary);
     renderAlerts(alerts);
     renderAiModelReports(aiReports);
-    renderAllowlist(allowlist);
-    renderAssets(assets);
     renderEvents(events);
     renderDecisionEvidence(evidence);
     els.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -653,8 +588,6 @@ async function refresh(options = {}) {
     els.updated.textContent = "Dashboard API error";
     els.alerts.innerHTML = `<div class="empty">${error.message}</div>`;
     els.aiReports.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.allowlist.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.assets.innerHTML = `<div class="empty">${error.message}</div>`;
     els.events.innerHTML = `<div class="empty">${error.message}</div>`;
     els.decisionEvidence.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryIpPie.innerHTML = `<div class="empty">${error.message}</div>`;
@@ -681,46 +614,12 @@ async function checkAiModel() {
 }
 
 async function resetLogs() {
-  const confirmText = window.prompt("Type RESET to clear dashboard logs, alerts, detections, AI reports, reviews, evidence, and cached threat intel. Asset inventory and allowlist entries are kept.");
+  const confirmText = window.prompt("Type RESET to clear dashboard logs, cases, AI reports, reviews, and cached threat intelligence. Registered IP roles are kept.");
   if (confirmText !== "RESET") return;
   await sendJson("/api/reset-logs", "POST", { confirm: confirmText });
   selectedDetectionType = null;
   selectedOutcome = null;
   writeHashFilters();
-  refresh();
-}
-
-async function addAllowlistEntry(event) {
-  event.preventDefault();
-  const form = new FormData(els.allowlistForm);
-  await sendJson("/api/allowlist", "POST", {
-    ip_address: form.get("ip_address"),
-    name: form.get("name"),
-    duration_hours: Number(form.get("duration_hours")),
-    reason: form.get("reason"),
-    added_by: form.get("added_by") || "dashboard"
-  });
-  els.allowlistForm.reset();
-  document.querySelector("#allowlist-hours").value = 24;
-  refresh();
-}
-
-async function addAsset(event) {
-  event.preventDefault();
-  const form = new FormData(els.assetForm);
-  const score = form.get("asset_score");
-  await sendJson("/api/assets", "POST", {
-    ip_address: form.get("ip_address"),
-    name: form.get("name"),
-    device_type: form.get("device_type"),
-    network_interface: form.get("network_interface"),
-    asset_score: score === "" ? null : Number(score),
-    function: form.get("function"),
-    notes: form.get("notes")
-  });
-  els.assetForm.reset();
-  const selected = els.assetType.selectedOptions[0];
-  els.assetScore.value = selected ? selected.dataset.score : "";
   refresh();
 }
 
@@ -763,36 +662,10 @@ async function handleDashboardClick(event) {
     return;
   }
 
-  const assetInventoryButton = event.target.closest ? event.target.closest("[data-asset-inventory]") : null;
-  if (assetInventoryButton) {
-    window.open(assetInventoryUrl(), "_blank", "noopener");
-    return;
-  }
-
-  const removeId = event.target.dataset.allowRemove;
-  if (removeId) {
-    await sendJson(`/api/allowlist/${removeId}`, "DELETE");
-    refresh();
-    return;
-  }
-
-  const assetRemoveId = event.target.dataset.assetRemove;
-  if (assetRemoveId) {
-    await sendJson(`/api/assets/${assetRemoveId}`, "DELETE");
-    refresh();
-    return;
-  }
-
 }
 
 els.refresh.addEventListener("click", refresh);
 els.checkAiModel.addEventListener("click", checkAiModel);
 els.resetLogs.addEventListener("click", resetLogs);
-els.allowlistForm.addEventListener("submit", addAllowlistEntry);
-els.assetForm.addEventListener("submit", addAsset);
-els.assetType.addEventListener("change", () => {
-  const selected = els.assetType.selectedOptions[0];
-  els.assetScore.value = selected ? selected.dataset.score : "";
-});
 document.addEventListener("click", handleDashboardClick);
 refresh();

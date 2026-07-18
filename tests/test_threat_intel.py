@@ -9,7 +9,7 @@ from app.database import (
     threat_intel_matches,
     threat_intel_provider_results,
 )
-from app.threat_intel import sanitized_provider_status
+from app.threat_intel import ai_provider_status, provider_evidence_for_indicator, sanitized_provider_status
 from app.main import alert_observables, verify_dangerous_with_virustotal
 from app.decision_engine import decide
 from app.virustotal import eligible_ip
@@ -63,6 +63,30 @@ class ThreatIntelTests(unittest.TestCase):
         statuses = {item["name"]: item for item in sanitized_provider_status(config, self.conn)}
 
         self.assertEqual(statuses["threatfox"]["status"], "missing_key")
+
+    def test_ai_provider_evidence_lists_every_source_without_credentials(self):
+        config = {
+            "threat_intel": {
+                "providers": {
+                    "threatfox": {
+                        "enabled": True,
+                        "api_key": "must-never-enter-model-evidence",
+                        "refresh_hours": 6,
+                    }
+                }
+            }
+        }
+        providers = ai_provider_status(config, self.conn)
+        evidence = provider_evidence_for_indicator(
+            self.conn, config, "203.0.113.8", "ip"
+        )
+
+        self.assertEqual(len(providers), 9)
+        self.assertEqual(len(evidence), 9)
+        serialized = json.dumps({"providers": providers, "evidence": evidence})
+        self.assertNotIn("must-never-enter-model-evidence", serialized)
+        self.assertIn("threatfox", serialized)
+        self.assertIn("virustotal", serialized)
 
     def test_legacy_otx_settings_are_migrated(self):
         config = {

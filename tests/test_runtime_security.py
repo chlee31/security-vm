@@ -1,17 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app.firewall import firewalld_zone
 from app.main import run_zeek_ingest
 from app.security import redact_secrets
 
 
 class RuntimeSecurityTests(unittest.TestCase):
-    def test_firewall_zone_is_explicit_for_internal_and_external_traffic(self):
-        self.assertEqual(firewalld_zone("8.8.8.8", "source"), "external")
-        self.assertEqual(firewalld_zone("192.168.11.50", "source"), "internal")
-        self.assertEqual(firewalld_zone("8.8.8.8", "outbound_destination"), "internal")
-
     def test_configured_credentials_are_redacted(self):
         config = {
             "threat_intel": {

@@ -191,6 +191,8 @@ function renderEvidence(rows) {
 }
 
 async function refresh() {
+  const refreshButton = document.querySelector("#workbook-refresh");
+  refreshButton.disabled = true;
   els.title.textContent = label(detectionType);
   const encoded = encodeURIComponent(detectionType);
   try {
@@ -213,8 +215,10 @@ async function refresh() {
   } catch (error) {
     els.updated.textContent = "Workbook API error";
     els.ipPie.innerHTML = `<div class="empty">${error.message}</div>`;
+  } finally {
+    refreshButton.disabled = false;
   }
 }
 
 refresh();
-setInterval(refresh, 5000);
+document.querySelector("#workbook-refresh").addEventListener("click", refresh);

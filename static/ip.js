@@ -135,7 +135,7 @@ function renderProfile(data) {
   const providers = data.threat_intel || [];
   els.profile.innerHTML = [
     profileRow("Local classification", `${profile.location || "unknown"} · ${profile.scope || "unknown"}`, profile.reason || ""),
-    profileRow("Registered asset", asset ? `${asset.name} · ${label(asset.device_type)} · score ${asset.asset_score}` : "No registered asset", asset ? `${asset.function || "No function"} · ${asset.network_interface || "unknown interface"}` : "Add this IP in Admin or Asset Inventory if it is an internal machine."),
+    profileRow("Registered role", asset ? `${asset.name} · ${label(asset.device_type)} · score ${asset.asset_score}` : "No registered role", asset ? `${asset.function || "No role details"} · ${asset.network_interface || "unknown interface"}` : "Register this internal IP address in Admin if it needs business-impact context."),
     ...providers.map((provider) => profileRow(
       provider.label || label(provider.name),
       provider.result === "not_active" ? "Not active" : provider.result === "matched" ? `${provider.match_count} matching indicator${provider.match_count === 1 ? "" : "s"}` : "Active · no match",

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Security VM Dashboard</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260717-case-evidence-browser">
   </head>
   <body>
     <main class="shell">
@@ -23,8 +23,6 @@
           <a class="nav-link" href="/outcome?type=human_review" target="_blank" rel="noopener">Investigate</a>
           <span class="divider"></span>
           <a class="nav-link" href="/compare" target="_blank" rel="noopener">Compare</a>
-          <span class="divider"></span>
-          <a class="nav-link" href="/asset-inventory" target="_blank" rel="noopener">Asset Inventory</a>
           <span class="divider"></span>
           <a class="nav-link" href="/admin" target="_blank" rel="noopener">Admin</a>
         </div>
@@ -61,20 +59,15 @@
           <strong id="danger-count">0</strong>
           <small>Open dangerous decisions</small>
         </article>
-        <article class="metric" data-asset-inventory="true" role="button" tabindex="0" title="Open asset inventory in a new tab">
-          <span>Asset Inventory</span>
-          <strong id="total-assets">0</strong>
-          <small>Open internal records</small>
-        </article>
         <article class="metric">
           <span>Top Detection</span>
           <strong id="top-detection">None</strong>
           <small>By count</small>
         </article>
         <article class="metric">
-          <span>System Mode</span>
-          <strong id="system-mode">alert_only</strong>
-          <small>Firewall guarded</small>
+          <span>Platform Role</span>
+          <strong id="system-mode">analysis</strong>
+          <small>Passive investigation</small>
         </article>
         <article class="metric sensor-metric">
           <span>Zeek Notices</span>
@@ -87,9 +80,9 @@
           <small>Protocol anomalies</small>
         </article>
         <article class="metric sensor-metric">
-          <span>Evidence Ready</span>
+          <span>Cases</span>
           <strong id="investigations-ready">0</strong>
-          <small>Incident records</small>
+          <small>Centralized investigations</small>
         </article>
       </section>
 
@@ -193,65 +186,6 @@
           <section class="panel">
             <div class="panel-head compact">
               <div>
-                <p class="eyebrow">Inventory</p>
-                <h2>Asset Inventory</h2>
-              </div>
-            </div>
-            <form id="asset-form" class="form-grid">
-              <label class="field">
-                <span>Machine IP address</span>
-                <input id="asset-ip" name="ip_address" type="text" placeholder="Example: 192.168.11.50" required>
-              </label>
-              <label class="field">
-                <span>Asset name</span>
-                <input id="asset-name" name="name" type="text" placeholder="Example: Marino's Desktop" required>
-              </label>
-              <label class="field">
-                <span>Device type</span>
-                <select id="asset-type" name="device_type" required></select>
-              </label>
-              <label class="field">
-                <span>Network interface</span>
-                <input id="asset-interface" name="network_interface" type="text" placeholder="Example: ens37">
-              </label>
-              <label class="field">
-                <span>Asset score, 0-10</span>
-                <input id="asset-score" name="asset_score" type="number" min="0" max="10" placeholder="Example: 10">
-              </label>
-              <label class="field">
-                <span>Machine function</span>
-                <input id="asset-function" name="function" type="text" placeholder="Example: Windows test endpoint">
-              </label>
-              <label class="field wide-field">
-                <span>Notes</span>
-                <textarea id="asset-notes" name="notes" placeholder="Example: Runs Atomic Red Team tests from ens37"></textarea>
-              </label>
-              <button class="wide-button" type="submit">Save Inventory Record</button>
-            </form>
-            <div id="assets" class="list asset-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
-                <p class="eyebrow">Allowlist</p>
-                <h2>Trusted IPs</h2>
-              </div>
-            </div>
-            <form id="allowlist-form" class="form-grid">
-              <input id="allowlist-ip" name="ip_address" type="text" placeholder="IP address" required>
-              <input id="allowlist-name" name="name" type="text" placeholder="Name">
-              <input id="allowlist-hours" name="duration_hours" type="number" min="1" max="8760" value="24" required>
-              <input id="allowlist-by" name="added_by" type="text" placeholder="Added by">
-              <textarea id="allowlist-reason" name="reason" placeholder="Reason" required></textarea>
-              <button class="wide-button" type="submit">Add</button>
-            </form>
-            <div id="allowlist" class="list allowlist-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
                 <p class="eyebrow">Correlation</p>
                 <h2>Detection Types</h2>
               </div>
@@ -287,14 +221,14 @@
               <span>Manual asset score</span>
               <span>Cached enrichment</span>
               <span>MITRE + risk score</span>
-              <span>AI model opinion for every alert</span>
-              <span>Alert-only decision by default</span>
+              <span>Bounded local AI case explanation</span>
+              <span>Human review and final classification</span>
             </div>
           </section>
         </aside>
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260714-alert-layout"></script>
+    <script src="/static/app.js?v=20260717-case-evidence-browser"></script>
   </body>
 </html>

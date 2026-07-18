@@ -1,190 +1,87 @@
 # Security VM
 
-Security VM is an Ubuntu-based security dashboard prototype. It watches Suricata alerts and Zeek behavioral logs, preserves optional rolling PCAP evidence locally, stores cases in SQLite, asks a configured AI model for a bounded second opinion, and shows analyst review information in a browser dashboard.
+Security VM is an open-source, AI-assisted network investigation prototype for small businesses and resource-limited IT teams. It combines live Suricata alerts and Zeek network metadata into centralized cases, enriches those cases with registered IP role context and threat intelligence, calculates an explainable risk score, and asks a bounded local AI model to explain the evidence.
 
-The system starts in safe `alert_only` mode. The AI model can recommend actions, but Python makes the final decision. Firewall blocking is disabled unless `prevention` mode is explicitly enabled.
+The project is an **analysis platform**, not a firewall, intrusion-prevention system, endpoint agent, or packet-forensics product. Python retains control of correlation, scoring, classifications, and safety rules. The AI model receives structured metadata, never API keys or raw packet captures.
 
-## System Workflow
+## Workflow
 
-See the [complete Security VM workflow](docs/SECURITY_VM_WORKFLOW.md) for a visual map of bootstrap, network sensors, correlation, threat intelligence, AI triage, scoring, firewall response, and analyst review.
-
-## Screenshots
-
-Main dashboard with Suricata detections, asset inventory, enrichment status, and visible risk scores:
-
-![Security VM dashboard overview](docs/images/dashboard-overview.png)
-
-Detection workbooks break down each alert type with IP share, AI opinions, timeline, evidence, and recent alerts:
-
-![DNS tunneling detection workbook](docs/images/dns-tunneling-workbook.png)
-
-![Port scan detection workbook](docs/images/port-scan-workbook.png)
-
-![Unknown detection workbook](docs/images/unknown-detection-workbook.png)
-
-Admin controls let users update AI model settings, registered machines, asset status, and local tool checks:
-
-![Admin controls](docs/images/admin-controls.png)
-
-Home AI/GPU usage during triage with an NVIDIA GeForce RTX 4070 Ti SUPER:
-
-![GPU usage while running the AI model at home](docs/images/gpu-ai-home.png)
-
-## What It Shows
-
-- Unified latest alerts with Suricata and Zeek findings, timestamps, flows, and sensor labels
-- Zeek notice, weird, and protocol context logs
-- Detection types and investigation drilldowns
-- Dedicated detection workbook tabs with IP share, AI opinion, timeline, and evidence
-- Dedicated outcome workbook tabs for Safe, Human Review, High Risk, and Dangerous decisions
-- Dedicated asset inventory workbook for registered internal machines and their matched detections
-- AI opinions for alerts
-- AI model comparison by provider/model identity, classification, average adjustment, and average response time
-- Case-centered decision evidence: event UIDs, timestamps, sensor findings, deterministic score breakdown, AI reason, verification, and final action
-- Zeek sensor status, correlated findings, and incident evidence paths
-- Human-review queue
-- Temporary allowlist entries
-- Manual internal asset inventory for lab machines on `ens37`
-- Admin controls for registered machine IPs, AI service URL/model settings, and installed tool checks
-- Runtime logs and enrichment status
-
-## Feature Status
-
-These features are available in the dashboard today. Some still have planned refinements listed in their notes.
-
-Asset inventory:
-
-- Add internal machines manually by IP address, name, device type, function, and notes.
-- Device type applies a default asset score.
-- Current lab target is the internal `ens37` network.
-- Open `/asset-inventory` from the dashboard to review registered machines, score distribution, device types, and matching detections.
-- Asset context is shown in detection detail and decision evidence.
-- When alert traffic matches a registered source or destination IP, the asset score contributes to the bounded asset-criticality and traffic-direction category.
-- The matched asset details and applied score are sent to the AI model as analyst-defined context.
-
-Human review tuning:
-
-- Analysts can confirm or override human-review alerts.
-- Reviews can be labeled as true positive, false positive, authorized test, or unknown.
-- Labels are stored in SQLite for later tuning work.
-- The model does not automatically learn from those labels yet.
-
-Case identity and scoring:
-
-- Every correlated detection receives a stable `CASE-YYYYMMDD-NNNNNN` UID.
-- Suricata alerts receive `SUR-YYYYMMDD-NNNNNN` UIDs and Zeek findings receive `ZEK-YYYYMMDD-NNNNNN` UIDs.
-- A case keeps its Suricata findings, Zeek findings and context, threat-intelligence usage, AI assessments, score history, analyst feedback, response history, and VirusTotal verification together.
-- Python calculates a deterministic score from 0 to 90: sensor severity 0-20, behavior/time correlation 0-20, cached threat intelligence 0-20, MITRE relevance 0-10, asset/direction 0-10, and Suricata-Zeek corroboration 0-10.
-- The AI model can adjust the score by only -10 to +10. Python clamps the final score to 0-100 and retains control of the outcome and response.
-- Outcomes are `Safe` 0-29, `Human Review Required` 30-69, `High Risk` 70-84, and `Dangerous` 85-100.
-- Materially disputed sensor findings force `Human Review Required`, regardless of the numerical score.
-
-Threat enrichment:
-
-- Local IP classification works now.
-- Open `/admin#threat-intel` to enable and configure threat-intelligence providers.
-- Supported cached feeds are ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, and Feodo Tracker.
-- OTX remains a live API provider with connection testing and a manual top-10 public-IP lookup from Admin.
-- VirusTotal is a post-AI verification provider. Python queries public source/destination IPs only after the AI model returns `Dangerous`, then caches and stores the result.
-- VirusTotal never adds or subtracts score points and a no-detection result never lowers a classification.
-- Private, loopback, link-local, multicast, reserved, and Tailscale `100.64.0.0/10` addresses are never sent to VirusTotal.
-- Active bulk feeds are refreshed on their configured schedule and normalized into SQLite. A failed refresh keeps the last successful cache.
-- API keys are saved only in the local `config.yaml`; never commit that file or paste keys into issues or screenshots.
-- Python sends matching cached intelligence to the AI model. The model does not browse or call provider APIs itself.
-- Provider cards show indicator counts plus how many detection prompts actually used each feed and when it was last used.
-- Investigation and IP-address pages show each provider as matched, no match, or `Not active`.
-
-PCAP evidence:
-
-- Rolling PCAP capture remains an optional local forensic source and is not displayed as a dashboard panel.
-- PCAP files and packet summaries are not included in initial AI triage or reassessment prompts.
-- Analysts can preserve an explicit incident evidence package for later packet-level review when rolling capture is enabled.
-- Raw PCAP bytes and threat-intelligence API keys are never sent to the AI model.
-
-Zeek evidence:
-
-- Zeek is configured as a second network sensor. Bootstrap asks which detected interface it should monitor; the project default is `ens37`.
-- Zeek `notice.log` is treated as an alert-like finding; `weird.log` is retained as investigation context.
-- Every Suricata alert and every Zeek `notice.log` finding enters the same AI and Python decision pipeline.
-- Correlated Suricata and Zeek findings are stored under one detection as separate sensor findings; `weird.log` remains supporting context unless another detection corroborates it.
-- Sensor correlation uses Community ID first, then bidirectional IP/port/protocol matching with timestamp tolerance.
-- Zeek `conn`, `dns`, `http`, `ssl`, `files`, `ssh`, and `x509` logs are treated as supporting context.
-- The dashboard combines Zeek and Suricata findings under the same latest-alert and decision-evidence rows.
-- Investigation pages can create a server-generated evidence folder with filtered Zeek context and a manifest.
-- Investigation pages open by case UID, show all related sensor records and score history, and provide explicit reassessment and VirusTotal refresh controls.
-- Zeek community detections are managed through `zkg` packages, not Suricata-style rule files.
-- The default reviewed community package list contains `ncsa/bro-simple-scan` and `jbaggs/anomalous-dns`. Bootstrap asks before installing either package with `zkg`.
-
-Multi-sensor correlation:
-
-Enable Community ID in the EVE output section of `/etc/suricata/suricata.yaml`:
-
-```yaml
-community-id: true
-community-id-seed: 0
+```text
+Mirrored or lab-routed network traffic
+             |
+             v
+      Suricata + Zeek
+             |
+             v
+ Original events stored in SQLite
+             |
+             v
+ Deterministic correlation and case construction
+             |
+             v
+ Registered IP + cached threat-intelligence enrichment
+             |
+             v
+ Explainable Python score (0-90)
+             |
+             v
+ Bounded local AI adjustment (-10 to +10)
+             |
+             v
+ Centralized case + human review
 ```
 
-Load matching Community ID policies from `/opt/zeek/share/zeek/site/local.zeek`:
+See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed data flow.
 
-```zeek
-@load policy/protocols/conn/community-id-logging
-@load policy/frameworks/notice/community-id
-```
+## Core Features
 
-Then validate and restart both sensors:
+- Required live Suricata and Zeek sensors
+- Original Suricata EVE alerts and Zeek JSON records stored in SQLite
+- Stable case, Suricata-event, and Zeek-event UIDs
+- Community ID, Zeek UID, bidirectional flow, timestamp, and repeated-behavior correlation
+- Conservative same-sensor grouping for scans, DNS tunneling, beaconing, brute force, and repeated identical findings
+- Bounded Zeek context from `conn`, `dns`, `http`, `ssl`, `notice`, `weird`, `files`, `ssh`, and `x509` logs
+- Admin-managed IP addresses, assigned roles, and business-impact scores
+- Cached threat-intelligence providers plus post-AI VirusTotal verification
+- Six-category deterministic score with a complete SQLite audit trail
+- Evidence-grounded AI explanation of who, what, when, where, why, how, and next steps
+- Analyst confirmation, override, notes, and tuning labels
+- Manual dashboard refresh so the page does not jump while an analyst is reading
 
-```bash
-sudo ./scripts/enable_community_id.sh
-```
+## Scoring Policy
 
-The script backs up both sensor configurations, sets seed `0`, validates both configurations, and only then restarts Suricata and deploys Zeek. Both sensors must use the same Community ID seed. New events receive Community IDs; existing SQLite rows are not rewritten. When Community ID is unavailable, Security VM falls back to flow fields and overlapping event timestamps.
+Python calculates at most 90 points:
 
-Dashboard reset:
+| Category | Maximum |
+| --- | ---: |
+| Sensor finding severity | 20 |
+| Behavior and time correlation | 20 |
+| Cached threat intelligence | 20 |
+| MITRE ATT&CK relevance | 10 |
+| Registered IP importance and traffic direction | 10 |
+| Suricata-Zeek corroboration | 10 |
 
-- The Runtime panel has a reset control for clearing dashboard history during demos.
-- Reset clears alerts, detections, AI reports, responses, review queue, evidence, runtime logs, and cached threat-intel rows.
-- Reset keeps the asset inventory, allowlist entries, and local configuration.
+The AI adjustment is independently clamped to `-10..+10`. The final score is clamped to `0..100`:
 
-Admin controls:
+- `0-29`: Safe
+- `30-69`: Human Review Required
+- `70-84`: High Risk
+- `85-100`: Dangerous
 
-- Open `/admin` from the dashboard header.
-- Use the Threat Intelligence tab to enable providers, set API keys and refresh intervals, refresh active bulk feeds, and run OTX connection/manual lookup checks. VirusTotal is invoked by the detection pipeline, not the feed-refresh button.
-- Switch between `alert_only`, `detection`, and `prevention` mode.
-- View firewalld setup commands, running status, applied rich rules, dangerous detections awaiting enforcement, active firewall blocks, firewall history, and unblock or mark an IP safe.
-- Change the AI service URL, model name, and timeout without editing `config.yaml` manually.
-- Set a provider label such as `ollama`, `nvidia`, or `deepseek` so reports can be compared by engine.
-- Suggested model names include `llama3.1:8b`, `llama3.2:latest`, and DeepSeek options for future testing.
-- View and edit registered internal machine IP addresses stored in SQLite.
-- Mark inventory records inactive to preserve tracking history, or permanently delete mistaken entries from admin controls.
-- Configure Gmail alerts for Dangerous decisions, send a test email, and review sent/failed/skipped notification history.
-- View required system tools and Python packages detected on the Security VM, including version numbers when available.
-- Copy install or update commands from the admin page. Run system package commands in the terminal because they usually require `sudo`.
-- If `dumpcap` is installed but marked permission-limited, add the user to the `wireshark` group or run packet capture with sudo.
-
-Gmail alerts:
-
-- Use a dedicated Gmail sender account for the application.
-- Enable 2-Step Verification on that Gmail account and create a Gmail app password.
-- Do not use the normal Gmail login password. Google rejects normal account passwords for this SMTP workflow.
-- Gmail app passwords are usually shown as 16 characters, often grouped with spaces. The dashboard removes spaces before saving, but the saved value should still be 16 characters.
-- In `/admin`, enter the sender Gmail address, the 16-character app password, recipient email list, cooldown minutes, and optional dashboard base URL.
-- Use "Save and Send Test Email" before relying on Dangerous alert notifications.
-- The dashboard does not display the saved app password after it is stored.
+Materially disputed sensor evidence forces Human Review Required. VirusTotal is post-AI verification evidence and never changes the score or lowers a classification.
 
 ## Prerequisites
 
-Recommended OS:
+Recommended and tested OS:
 
 ```text
 Ubuntu 22.04 or newer
 ```
 
-The tested Zeek bootstrap path is not recommended on Ubuntu releases older than 22.04. Bootstrap detects `/etc/os-release`, displays the result, and asks before continuing on an unsupported host.
-
-Required system tools:
+Required system components:
 
 ```text
-python3
+python3 (3.10 or newer recommended)
 python3-venv
 python3-pip
 suricata
@@ -193,630 +90,182 @@ zeek
 zeekctl
 zkg
 sqlite3
-wireshark-common
-tshark
-dumpcap
+iproute2
 curl
+git
 ```
 
-Optional tools:
+Zeek is required, not an optional worker. Bootstrap warns before continuing on Ubuntu releases older than 22.04 because the supported Zeek package path may not work reliably there.
 
-```text
-tailscale      needed if the AI service is reached over Tailscale
-firewalld      needed only for prevention-mode firewall blocking
-git            needed for cloning and branch workflow
-```
+Python's standard library includes the `sqlite3` module. The application creates and migrates `security_vm.db`; the SQLite CLI is useful for manual inspection but is not what makes database access possible.
 
-These are not required for the basic dashboard, ingest, SQLite storage, and Suricata alert viewing flow. Install them only when using the related optional workflow.
-
-Install common Ubuntu dependencies:
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip sqlite3 curl suricata suricata-update wireshark-common tshark
-```
-
-Bootstrap installs Zeek from the official Zeek OBS repository when Zeek is missing on a supported Ubuntu host. To run that guided setup:
-
-```bash
-python -m app.bootstrap
-```
-
-If automatic installation fails, follow the official Zeek binary package instructions, then rerun:
-
-```bash
-python -m app.bootstrap
-python -m app.main zeek-status --config config.yaml
-```
-
-Zeek community detections are installed with `zkg`. Add reviewed packages to `config.yaml`:
-
-```yaml
-zeek:
-  community_packages:
-    - ncsa/bro-simple-scan
-    - jbaggs/anomalous-dns
-  package_install_enabled: true
-```
-
-Then rerun bootstrap and approve each package install. Do not add unreviewed community packages just because they exist online.
-
-## Installed By Python
-
-These packages are installed by:
-
-```bash
-pip install -r requirements.txt
-```
-
-Current Python packages:
-
-```text
-fastapi     dashboard API framework
-uvicorn     web server for the dashboard
-PyYAML      config.yaml parsing
-requests    AI model and HTTP API calls
-```
-
-FastAPI also installs supporting packages such as `pydantic` and `starlette`.
-
-Everything else imported by the app, such as `sqlite3`, `json`, `ipaddress`, `argparse`, `pathlib`, `datetime`, and `subprocess`, comes from the Python standard library.
-
-Python version:
-
-```text
-Python 3.8 or newer
-```
-
-Check:
-
-```bash
-python3 --version
-```
-
-## Quick Start
-
-Clone and enter the project:
+## Installation
 
 ```bash
 git clone https://github.com/chlee31/security-vm.git
 cd security-vm
-```
+git switch dev
 
-Create the Python environment:
-
-```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-```
-
-Run bootstrap:
-
-```bash
+cp config.yaml.example config.yaml
 python -m app.bootstrap
 ```
 
-Bootstrap preserves an existing `config.yaml` unless you approve changes, initializes or migrates `security_vm.db`, checks the Ubuntu version and required tools, and tests the AI model endpoint. Zeek is a required sensor: bootstrap provides its official installation, interface selection, `node.cfg`, and JSON logging setup. Installation of reviewed `zkg` community packages remains optional.
+Bootstrap checks the OS and required tools, initializes SQLite, configures the AI endpoint, guides Zeek interface/JSON-log setup, and can enable matching Community IDs. Reviewed Zeek packages can be installed through `zkg` when approved.
 
-Bootstrap can also guide router setup:
+## Start Everything
 
-- Detects available network interfaces with `ip -j addr`.
-- Shows the current default external route.
-- Asks which interface is external/internet and which is internal/lab.
-- Suggests `192.168.11.1/24` as the internal router address, or lets you enter another CIDR.
-- Generates a permanent netplan file for the two-interface router layout.
-- Enables IPv4 forwarding with `/etc/sysctl.d/99-security-vm-router.conf`.
-- Enables firewalld masquerading on the external zone.
-- Prints the manual IPv4 settings to use on lab devices, including IP, gateway, prefix, and DNS.
-
-Router setup is optional and asks before applying system changes.
-
-## Run The System
-
-Start the full local stack with one command:
+With the virtual environment active:
 
 ```bash
-cd ~/Documents/security-vm
-source venv/bin/activate
-sudo ./venv/bin/python -m app.main run-all --config config.yaml --port 8000
+python -m app.main run-all --config config.yaml
 ```
 
-This starts:
+This command starts or checks:
+
+1. Suricata service and EVE ingestion
+2. Required Zeek service and JSON-log ingestion
+3. Configured threat-intelligence refresh worker
+4. Dashboard API
+
+Normal worker output is quiet; errors and unexpected exits are printed in the terminal.
+
+The safe dashboard default is:
 
 ```text
-Suricata service restart/check
-rolling PCAP capture
-Suricata EVE ingest
-Zeek ingest
-scheduled threat-intelligence feed refresh
-dashboard API and web UI
+http://127.0.0.1:8000
 ```
 
-Suricata ingest, Zeek ingest, and the dashboard are required workers. `run-all` stops instead of operating with only one sensor when Zeek is disabled, missing, cannot start, or its ingest worker exits. Rolling PCAP capture and scheduled bulk threat-intelligence refresh are optional workers and start only when configured.
-
-Normal logs are kept quiet. If a process fails or prints an error, the launcher prints the error line and a short recent log tail in the terminal.
-
-The dashboard loads once and updates only when you press **Refresh**. This prevents new ingest data from moving the page while an analyst is reading evidence.
-
-By default, `run-all` uses:
-
-```text
-external interface: ens33
-internal interface: ens37
-pcap directory: /var/log/pcap
-Zeek interface: selected during bootstrap (default ens37)
-Zeek log directory: /opt/zeek/logs/current
-dashboard: http://127.0.0.1:8000/
-```
-
-The localhost binding is the safe default because the dashboard does not yet provide built-in authentication. To make it reachable from a trusted management network, bind it deliberately to that management IP:
+For access from a trusted management network:
 
 ```bash
-sudo ./venv/bin/python -m app.main run-all \
-  --config config.yaml \
-  --host 192.168.57.134 \
-  --port 8000
+python -m app.main run-all --config config.yaml --host 192.168.57.134 --port 8000
 ```
 
-Binding to `0.0.0.0` exposes the dashboard on every VM interface and prints a security warning. Use it only on a controlled lab network:
+Binding to `0.0.0.0` exposes the unauthenticated prototype on every interface and prints a warning. Use it only on a controlled lab/management network with host firewall restrictions.
+
+## Sensor Checks
 
 ```bash
-sudo ./venv/bin/python -m app.main run-all \
-  --config config.yaml \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --external-interface ens33 \
-  --internal-interface ens37 \
-  --pcap-dir /var/log/pcap
-```
-
-Command-line interface overrides only affect that one run. To make the launcher use different capture interfaces every time, edit `config.yaml`:
-
-```yaml
-pcap:
-  enabled: true
-  rolling_dir: /var/log/pcap
-  external_interface: ens33
-  internal_interface: ens37
-
-zeek:
-  enabled: true
-  interface: ens37
-  log_directory: /opt/zeek/logs/current
-  json_logs: true
-  community_packages: []
-```
-
-Zeek-only checks:
-
-```bash
-python -m app.main zeek-status --config config.yaml
-python -m app.main zeek-ingest --config config.yaml
-```
-
-Open `http://127.0.0.1:8000/zeek` or select **Open Zeek Telemetry** from the dashboard's Zeek panel. This page shows whether Zeek is running, the SQLite event total, the latest ingested timestamp, per-log reader checkpoints, hourly volume, TLS and certificate metadata, file observations, DNS and HTTP summaries, and recent Zeek records. Use its **Refresh** button to load new data without moving the page while you inspect it.
-
-To verify the complete Zeek path manually, check all three layers:
-
-```bash
-# 1. Sensor process and source log files
+sudo systemctl status suricata --no-pager
 python -m app.main zeek-status --config config.yaml
 sudo /opt/zeek/bin/zeekctl status
-sudo ls -lh /opt/zeek/logs/current/{conn,dns,ssl,files,x509,notice,weird}.log
-
-# 2. Live JSON records written by Zeek
-sudo tail -f /opt/zeek/logs/current/ssl.log
-
-# 3. Records stored by zeek-ingest in SQLite
-sqlite3 security_vm.db \
-  "SELECT log_type, COUNT(*), MAX(timestamp) FROM zeek_events GROUP BY log_type ORDER BY COUNT(*) DESC;"
-sqlite3 security_vm.db \
-  "SELECT log_type, offset, updated_at FROM zeek_ingest_checkpoints ORDER BY log_type;"
 ```
 
-An advancing log-file size proves the sensor is observing traffic. An advancing checkpoint offset and `updated_at` value prove `zeek-ingest` is reading that file. A rising `zeek_events` count and recent `MAX(timestamp)` prove the records reached SQLite and the dashboard API. `files.log` describes file metadata, hashes, MIME types, and observed byte counts; it does not mean Zeek retained every transferred file's contents.
-
-PCAP capture can be disabled without changing the sensor and dashboard pipeline:
-
-```yaml
-pcap:
-  enabled: false
-```
-
-When disabled, `run-all` does not start the optional capture worker. When enabled, captures remain local forensic evidence and are not sent to the AI model.
-
-Use the interface names shown by:
-
-```bash
-ip -br link
-```
-
-This project setting only controls which interfaces Security VM captures from. If you need to permanently change the Ubuntu machine's actual interface IP addresses, gateway, DNS, or router behavior, use the bootstrap router setup or edit netplan separately.
-
-If the Security VM itself has internet but an internal Windows machine does not, verify that firewalld has an explicit internal-to-external forwarding policy. Modern firewalld does not permit cross-zone forwarding merely because masquerading is enabled:
-
-```bash
-sudo firewall-cmd --permanent --new-policy=security-vm-route
-sudo firewall-cmd --permanent --policy=security-vm-route --add-ingress-zone=internal
-sudo firewall-cmd --permanent --policy=security-vm-route --add-egress-zone=external
-sudo firewall-cmd --permanent --policy=security-vm-route --set-target=ACCEPT
-sudo firewall-cmd --permanent --zone=external --add-masquerade
-sudo firewall-cmd --reload
-sudo firewall-cmd --info-policy=security-vm-route
-```
-
-Run `--new-policy` only when `security-vm-route` is not already listed by `sudo firewall-cmd --permanent --get-policies`. Bootstrap now performs that check automatically. The Windows machine must use the Security VM's internal address as its default gateway; for example, when `ens37` is `192.168.11.40/24`, use gateway `192.168.11.40` and a DNS server such as `1.1.1.1`.
-
-If Suricata is managed differently on your machine, skip the service restart:
-
-```bash
-sudo ./venv/bin/python -m app.main run-all --config config.yaml --skip-suricata-restart
-```
-
-Use `sudo ./venv/bin/python`, not `sudo python`, so sudo still uses the project virtual environment.
-
-Open:
-
-```text
-http://127.0.0.1:8000/
-```
-
-From another machine, use:
-
-```text
-http://<security-vm-ip or Tailscale IP address>:8000/
-```
-
-Admin controls:
-
-```text
-http://<security-vm-ip>:8000/admin
-```
-
-Fallback manual commands for troubleshooting:
-
-Terminal 1: start or watch Suricata
-
-```bash
-sudo systemctl restart suricata
-sudo journalctl -u suricata -f
-```
-
-Terminal 2: start ingest
-
-```bash
-cd ~/Documents/security-vm
-source venv/bin/activate
-sudo ./venv/bin/python -m app.main ingest --config config.yaml
-```
-
-Terminal 3: start dashboard
-
-```bash
-cd ~/Documents/security-vm
-source venv/bin/activate
-python -m app.main dashboard --config config.yaml --host 127.0.0.1 --port 8000
-```
-
-Terminal 4: start rolling PCAP capture
-
-```bash
-cd ~/Documents/security-vm
-chmod +x scripts/start_pcap_capture.sh
-./scripts/start_pcap_capture.sh ens33 ens37 /var/log/pcap
-```
-
-This records:
-
-```text
-ens33 -> external capture
-ens37 -> internal capture
-```
-
-## Test It
-
-Generate simple traffic:
-
-```bash
-ping 8.8.8.8
-```
-
-Watch Suricata output:
+Confirm data is arriving:
 
 ```bash
 sudo tail -f /var/log/suricata/eve.json
+sudo tail -f /opt/zeek/logs/current/conn.log
 ```
 
-If ingest is running, alerts should appear in SQLite and on the dashboard.
+The dashboard's Zeek page shows runtime state, log counts, TLS, DNS, HTTP, file observations, checkpoints, and recent records.
 
-## Suricata Setup
+## Community ID
 
-Check network interfaces:
+Community ID is the highest-confidence way to correlate the same bidirectional flow across Suricata and Zeek. Both sensors must use seed `0`:
 
 ```bash
-ip -br link
+sudo ./scripts/enable_community_id.sh
 ```
 
-Current lab interface convention:
+When Community ID is unavailable, the platform falls back to Zeek UID relationships and bidirectional flow/time matching. Related multi-connection behavior can still be grouped into a developing case using conservative same-sensor rules.
 
-```text
-ens33  external network
-ens37  internal network
-```
+## Investigation Cases
 
-Check active Suricata rules:
+Every case receives a UID such as `CASE-20260717-000123`. Its investigation page contains:
 
-```bash
-sudo grep -n -A 20 -B 5 "rule-files:" /etc/suricata/suricata.yaml
-```
+- all linked Suricata and Zeek findings;
+- exact timestamps and network endpoints;
+- correlation method, confidence, and Community ID when available;
+- bounded Zeek connection/protocol context;
+- repeated-activity and periodicity summary;
+- registered IP role and traffic-direction context;
+- provider-by-provider threat-intelligence results;
+- deterministic score breakdown;
+- AI case explanation and evidence boundaries;
+- optional side-by-side responses from three configured AI profiles;
+- VirusTotal verification records;
+- analyst review history and controls.
 
-Expected default-rule setup:
+The **Reassess Case** button makes one explicit AI request using the latest stored evidence. **Refresh VirusTotal** refreshes eligible global IPs only and does not automatically trigger another AI call.
+
+### Three-Model Comparison
+
+Create at least three active AI profiles under `/admin`, then choose exactly three in **Comparison profiles**. From a case investigation, select **Run Three-Model Comparison**. Python freezes one evidence package and sends it to the three profiles sequentially, waiting for each response before starting the next request.
+
+All three responses appear directly on the case investigation page with model names, profile UIDs, summaries, six-part explanations, ordered investigation steps, and expandable raw responses. Open the run in `/compare` to select the most useful response, mark a tie, or reject all responses. The comparison scorecard reports which profile has been selected most often.
+
+Model comparison is an evaluation feature. Candidate adjustments do not stack, do not replace the official case assessment, and do not alter Python's recorded classification or response.
+
+## Threat Intelligence
+
+Configure providers under `/admin` in the Threat Intelligence tab. Supported cached/bulk sources include ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, Feodo Tracker, and cached OTX results.
+
+VirusTotal is queried only after the AI classifies a case as Dangerous, or after a reassessment becomes Dangerous. Private, loopback, link-local, multicast, reserved, and `100.64.0.0/10` addresses are never queried. API keys are masked from API responses and must never be committed.
+
+## AI Service
+
+The AI endpoint is configured in `config.yaml` or `/admin`:
 
 ```yaml
-default-rule-path: /var/lib/suricata/rules
-
-rule-files:
-  - suricata.rules
+ai_model:
+  host: http://127.0.0.1:11434
+  model: llama3.1:8b
+  provider: ollama
 ```
 
-Update default rules:
+Profiles are retained for repeatable model experiments. Each AI report stores provider, model, profile UID, run UID, prompt version/hash, elapsed time, classification, confidence, bounded adjustment, and the six-part explanation.
 
-```bash
-sudo suricata-update
-```
+Saved profiles can be deleted from `/admin`. Historical reports and comparison results keep their recorded model identity. Deleting a comparison profile removes it from future three-model runs, and deleting the selected runtime profile automatically selects another active profile. The final saved profile cannot be deleted until a replacement exists.
 
-Test and restart Suricata:
+Every AI response must also return two to five ordered next steps. Each step should name the observable or sensor evidence to inspect and the question the analyst should answer; generic advice such as only "investigate further" is rejected by the prompt contract.
 
-```bash
-sudo suricata -T -c /etc/suricata/suricata.yaml
-sudo systemctl restart suricata
-sudo systemctl status suricata
-```
-
-If Suricata complains about `eth0`, edit `/etc/suricata/suricata.yaml` and use the real interface names:
-
-```yaml
-af-packet:
-  - interface: ens33
-  - interface: ens37
-```
-
-## AI Model Setup
-
-The AI model service should be reachable from the Security VM over Tailscale:
-
-```text
-http://<tailscale-ip>:11434
-```
-
-Test it:
-
-```bash
-curl http://<tailscale-ip>:11434/api/tags
-```
-
-If the dashboard shows an API error after configuring Tailscale, confirm the AI model service is listening on an address Tailscale can reach. A common issue is that the model server is only bound to `127.0.0.1`, which means it works on the AI machine itself but not from the Security VM over Tailscale.
-
-For Ollama, configure it to listen on the Tailscale-reachable interface, then restart Ollama:
-
-```bash
-sudo systemctl edit ollama
-```
-
-Add:
-
-```ini
-[Service]
-Environment="OLLAMA_HOST=0.0.0.0:11434"
-```
-
-Then run:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart ollama
-curl http://<tailscale-ip>:11434/api/tags
-```
-
-On a Windows Ollama host, run PowerShell or CMD as Administrator:
+If an Ollama-compatible service is on a Windows host reached over Tailscale, it must listen beyond localhost. In Administrator PowerShell:
 
 ```powershell
 setx OLLAMA_HOST "0.0.0.0:11434" /M
 taskkill /IM ollama.exe /F
 netsh advfirewall firewall add rule name="Allow Ollama 11434" dir=in action=allow protocol=TCP localport=11434
-```
-
-Then reopen Ollama.
-
-If the AI host is using Tailscale Serve, expose the local Ollama port:
-
-```powershell
 tailscale serve --bg --tcp=11434 tcp://localhost:11434
 tailscale serve status
 ```
 
-From the Ubuntu Security VM, test the Windows host over Tailscale:
+Then test from Security VM:
 
 ```bash
-curl http://<windows-tailscale-ip>:11434/api/tags
+curl http://YOUR_TAILSCALE_IP:11434/api/tags
 ```
 
-Example:
+## Development Lab Routing
+
+The intended real deployment is passive monitoring from a switch SPAN/mirror port. Bootstrap retains an optional **development-only** routing wizard so isolated test VMs can send observable traffic through the Security VM. It configures netplan, IPv4 forwarding, and NAT only when explicitly selected.
+
+Do not describe this lab arrangement as the product architecture. In production, the monitoring interface should receive copied traffic and should not become the organization's gateway or firewall.
+
+## Testing
 
 ```bash
-curl http://100.99.223.100:11434/api/tags
+source venv/bin/activate
+python -m unittest discover -s tests -v
+python -m compileall app
 ```
 
-Use the same reachable URL in the Admin AI profile, for example `http://<tailscale-ip>:11434`.
+Suggested evaluation scenarios:
 
-The default model used during development:
+1. Repeated Suricata-only scan activity
+2. Suricata-Zeek Community ID correlation
+3. Zeek DNS/HTTP/TLS context retrieval
+4. Registered IP and threat-intelligence enrichment
+5. AI factual accuracy and unsupported-claim rate
 
-```text
-llama3.2:latest
-```
+## Security Notes
 
-Ingest asks the configured AI model for an opinion whenever Suricata or an alert-like Zeek finding starts or updates a case. If the model service is unavailable, the sensor records and deterministic score are still stored and the dashboard records the failure.
-
-Each AI report stores:
-
-```text
-ai_profile_uid   stable UID for the selected Admin AI profile
-model_provider   example: ollama, nvidia, deepseek
-model_name       example: llama3.1:8b
-model_identity   example: ollama:llama3.1:8b
-model_run_id     unique ID for that specific AI opinion
-prompt_version   prompt template version used for the request
-prompt_sha256    hash of the full prompt sent to the AI model
-prompt_chars     prompt size in characters
-pcap_summary_sha256 / pcap_summary_chars / pcap_summary_included
-                 retained audit fields; new triage and reassessment reports keep these empty/false
-elapsed_ms       model response time
-```
-
-Use the Admin page to create AI profiles such as `Home GPU`, `Local Llama 3.1`, `NVIDIA NIM`, or `DeepSeek`. Selecting a profile writes it to `config.yaml`, and every new AI report is stamped with that profile UID plus a unique run ID so different engines can be compared later.
-
-## Investigation And Reassessment
-
-Open an investigation from any dashboard alert or decision. The URL uses the stable case UID, for example:
-
-```text
-http://127.0.0.1:8000/investigation?case=CASE-20260714-000001
-```
-
-The case workspace shows the complete Suricata and Zeek timeline, sensor event UIDs, deterministic category breakdown, AI assessment history, cached/bulk threat intelligence, VirusTotal verification, analyst feedback, and response history.
-
-**Reassess Case** recalculates the current deterministic score and sends one new evidence package to the selected AI profile. An existing VirusTotal result is included as verification evidence. If the reassessment AI classification becomes `Dangerous`, Python performs the post-reassessment VirusTotal check after that response and does not make a third AI request.
-
-**Refresh VirusTotal** is an explicit analyst action. It refreshes eligible global case IPs without triggering an AI request. API keys are not returned by dashboard APIs, written into evidence, or sent to the model.
-
-## Useful Commands
-
-Initialize or repair the SQLite schema:
-
-```bash
-./venv/bin/python -c "from app.database import init_db; conn = init_db('security_vm.db'); conn.close()"
-```
-
-Backfill missing AI reports for the currently configured model identity:
-
-```bash
-python -m app.main ai-backfill --config config.yaml --limit 500
-```
-
-If you switch from one model to another, run `ai-backfill` again. The command skips only detections that already have a report from the current `provider:model` identity, so it can create side-by-side opinions for comparison.
-
-Check Python syntax:
-
-```bash
-./venv/bin/python -m compileall app
-```
-
-Check PCAP files:
-
-```bash
-sudo ls -lh /var/log/pcap
-```
-
-## Common Problems
-
-### Suricata keeps restarting
-
-Check logs:
-
-```bash
-sudo journalctl -u suricata -n 80 --no-pager
-```
-
-If you see `eth0: No such device`, Suricata is listening on the wrong interface. Use:
-
-```bash
-ip -br link
-```
-
-Then update `/etc/suricata/suricata.yaml`.
-
-### Ingest cannot read eve.json
-
-Run ingest with the virtualenv Python under sudo:
-
-```bash
-sudo ./venv/bin/python -m app.main ingest --config config.yaml
-```
-
-### Dashboard shows no alerts
-
-Check these:
-
-```bash
-sudo systemctl status suricata
-sudo tail -f /var/log/suricata/eve.json
-sudo ./venv/bin/python -m app.main ingest --config config.yaml
-```
-
-Also confirm dashboard and ingest use the same `database.path` in `config.yaml`.
-
-### Dashboard API says no such table
-
-Initialize the database:
-
-```bash
-./venv/bin/python -c "from app.database import init_db; conn = init_db('security_vm.db'); conn.close()"
-```
-
-### Dashboard API error after Tailscale setup
-
-If the dashboard can load but AI-related API calls fail, test the model endpoint from the Security VM:
-
-```bash
-curl http://<tailscale-ip>:11434/api/tags
-```
-
-If this fails, the AI service is usually not listening on the Tailscale-reachable address, Windows Firewall is blocking the port, or Tailscale Serve is not exposing the local service. Update the model service binding, restart it, confirm the firewall rule, check `tailscale serve status`, and save the reachable Tailscale URL in `/admin`.
-
-## Project Layout
-
-```text
-security-vm/
-  app/                         Python backend
-  rules/local.rules            Optional local Suricata rules
-  scripts/start_pcap_capture.sh Rolling PCAP capture helper
-  sql/schema.sql               SQLite schema
-  static/                      Dashboard frontend
-  config.yaml.example          Example config
-  requirements.txt             Python dependencies
-```
-
-## Safety Notes
-
-- Default mode is `alert_only`.
-- Python makes final decisions.
-- The AI model does not execute firewall actions.
-- PCAP files and packet summaries are not sent to the AI model.
-- VirusTotal is verification evidence only and never changes the numerical score.
-- Alerts and evidence are stored before any action.
-- Allowlist and safelist checks happen before blocking.
-- Temporary firewall blocks only happen in explicit `prevention` mode.
-- `alert_only` stores alerts and shows dangerous decisions without enforcement.
-- `detection` runs the same scoring path as prevention, but queues dangerous would-block decisions for analyst approval instead of calling firewalld automatically.
-- `prevention` can call firewalld for high-confidence dangerous decisions.
-- firewalld operations always name the configured external or internal zone explicitly.
-- Gmail notifications are only intended for Dangerous decisions and use a cooldown to avoid repeated emails for the same target.
-
-## Current Notes
-
-Anything not listed in the main run flow should be treated as an optional or planned workflow until it is documented here with setup and test steps.
-
-## README Rule
-
-When adding or pulling new features, update this README if the change affects:
-
-- setup steps
-- required packages
-- config values
-- run commands
-- dashboard behavior
-- troubleshooting
-- safety behavior
-
-This keeps the repo usable for teammates who clone it fresh.
+- `config.yaml`, databases, logs, and API keys must not be committed.
+- The dashboard has no built-in authentication; bind it conservatively.
+- The AI never executes system-response commands.
+- Raw packet captures are outside the active product workflow and are not sent to AI.
+- Network metadata cannot prove endpoint process, user identity, or decrypted payload content.
+- Analyst judgment remains required for consequential response decisions.

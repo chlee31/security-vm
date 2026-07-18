@@ -80,6 +80,7 @@ def ensure_migrations(conn):
     ensure_sensor_fusion_tables(conn)
     ensure_case_identity_columns(conn)
     ensure_decision_audit_tables(conn)
+    ensure_ai_comparison_tables(conn)
     migrate_legacy_ai_reports(conn)
 
     conn.execute(
@@ -144,6 +145,86 @@ def ensure_migrations(conn):
         )
         """
     )
+
+
+def ensure_ai_comparison_tables(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS ai_comparison_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          comparison_uid TEXT NOT NULL UNIQUE,
+          case_uid TEXT NOT NULL,
+          detection_id INTEGER NOT NULL,
+          evidence_sha256 TEXT,
+          threat_intel_evidence_json TEXT,
+          prompt_version TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          candidate_count INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          completed_at TEXT,
+          FOREIGN KEY (detection_id) REFERENCES detections(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_comparison_runs_case
+          ON ai_comparison_runs(case_uid, id DESC);
+        CREATE TABLE IF NOT EXISTS ai_comparison_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          comparison_run_id INTEGER NOT NULL,
+          anonymous_slot TEXT NOT NULL,
+          ai_profile_uid TEXT NOT NULL,
+          model_provider TEXT,
+          model_name TEXT,
+          model_identity TEXT,
+          model_run_id TEXT,
+          prompt_version TEXT,
+          prompt_sha256 TEXT,
+          classification TEXT,
+          confidence TEXT,
+          risk_adjustment INTEGER,
+          summary TEXT,
+          who_summary TEXT,
+          what_summary TEXT,
+          when_summary TEXT,
+          where_summary TEXT,
+          why_summary TEXT,
+          how_summary TEXT,
+          next_steps_json TEXT,
+          threat_intel_analysis_json TEXT,
+          recommended_action TEXT,
+          raw_response TEXT,
+          elapsed_ms INTEGER,
+          status TEXT NOT NULL DEFAULT 'complete',
+          error_message TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id),
+          UNIQUE(comparison_run_id, anonymous_slot),
+          UNIQUE(comparison_run_id, ai_profile_uid)
+        );
+        CREATE TABLE IF NOT EXISTS ai_comparison_votes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          comparison_run_id INTEGER NOT NULL,
+          analyst_name TEXT NOT NULL,
+          selection TEXT NOT NULL,
+          notes TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_comparison_votes_run
+          ON ai_comparison_votes(comparison_run_id, id DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_comparison_votes_one_per_run
+          ON ai_comparison_votes(comparison_run_id);
+        """
+    )
+    run_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(ai_comparison_runs)").fetchall()
+    }
+    if "threat_intel_evidence_json" not in run_columns:
+        conn.execute("ALTER TABLE ai_comparison_runs ADD COLUMN threat_intel_evidence_json TEXT")
+    candidate_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(ai_comparison_candidates)").fetchall()
+    }
+    if "threat_intel_analysis_json" not in candidate_columns:
+        conn.execute("ALTER TABLE ai_comparison_candidates ADD COLUMN threat_intel_analysis_json TEXT")
 
 
 def table_exists(conn, table_name):
@@ -272,9 +353,19 @@ def ensure_ai_report_columns(conn, table_name):
         "elapsed_ms": f"ALTER TABLE {table_name} ADD COLUMN elapsed_ms INTEGER",
         "prompt_sha256": f"ALTER TABLE {table_name} ADD COLUMN prompt_sha256 TEXT",
         "prompt_chars": f"ALTER TABLE {table_name} ADD COLUMN prompt_chars INTEGER",
+        # Retained only so pre-scope-change databases can be migrated safely.
         "pcap_summary_sha256": f"ALTER TABLE {table_name} ADD COLUMN pcap_summary_sha256 TEXT",
         "pcap_summary_chars": f"ALTER TABLE {table_name} ADD COLUMN pcap_summary_chars INTEGER",
         "pcap_summary_included": f"ALTER TABLE {table_name} ADD COLUMN pcap_summary_included INTEGER DEFAULT 0",
+        "summary": f"ALTER TABLE {table_name} ADD COLUMN summary TEXT",
+        "who_summary": f"ALTER TABLE {table_name} ADD COLUMN who_summary TEXT",
+        "what_summary": f"ALTER TABLE {table_name} ADD COLUMN what_summary TEXT",
+        "when_summary": f"ALTER TABLE {table_name} ADD COLUMN when_summary TEXT",
+        "where_summary": f"ALTER TABLE {table_name} ADD COLUMN where_summary TEXT",
+        "why_summary": f"ALTER TABLE {table_name} ADD COLUMN why_summary TEXT",
+        "how_summary": f"ALTER TABLE {table_name} ADD COLUMN how_summary TEXT",
+        "next_steps_json": f"ALTER TABLE {table_name} ADD COLUMN next_steps_json TEXT",
+        "threat_intel_analysis_json": f"ALTER TABLE {table_name} ADD COLUMN threat_intel_analysis_json TEXT",
     }
     for column, statement in report_migrations.items():
         if column not in report_columns:
@@ -561,6 +652,293 @@ def new_ai_profile_uid():
     return f"ai-{uuid.uuid4().hex[:12]}"
 
 
+def new_ai_comparison_uid():
+    return f"cmp-{uuid.uuid4().hex[:16]}"
+
+
+def create_ai_comparison_run(
+    conn,
+    case_uid,
+    detection_id,
+    evidence_sha256,
+    prompt_version,
+    threat_intel_evidence=None,
+):
+    comparison_uid = new_ai_comparison_uid()
+    cur = conn.execute(
+        """
+        INSERT INTO ai_comparison_runs (
+          comparison_uid, case_uid, detection_id, evidence_sha256, prompt_version,
+          threat_intel_evidence_json,
+          status, candidate_count
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'running', 0)
+        """,
+        (
+            comparison_uid,
+            case_uid,
+            detection_id,
+            evidence_sha256,
+            prompt_version,
+            json.dumps(threat_intel_evidence or {}, sort_keys=True),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid, comparison_uid
+
+
+def insert_ai_comparison_candidate(conn, comparison_run_id, slot, profile_uid, report=None, error=None):
+    report = report or {}
+    status = "failed" if error else "complete"
+    cur = conn.execute(
+        """
+        INSERT INTO ai_comparison_candidates (
+          comparison_run_id, anonymous_slot, ai_profile_uid, model_provider,
+          model_name, model_identity, model_run_id, prompt_version, prompt_sha256,
+          classification, confidence, risk_adjustment, summary, who_summary,
+          what_summary, when_summary, where_summary, why_summary, how_summary,
+          next_steps_json, threat_intel_analysis_json, recommended_action,
+          raw_response, elapsed_ms, status,
+          error_message
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            comparison_run_id,
+            slot,
+            profile_uid,
+            report.get("model_provider"),
+            report.get("model_name"),
+            report.get("model_identity"),
+            report.get("model_run_id"),
+            report.get("prompt_version"),
+            report.get("prompt_sha256"),
+            report.get("classification"),
+            report.get("confidence"),
+            int(report.get("risk_adjustment") or 0),
+            report.get("summary"),
+            report.get("who"),
+            report.get("what"),
+            report.get("when"),
+            report.get("where"),
+            report.get("why"),
+            report.get("how"),
+            json.dumps(report.get("next_steps") or []),
+            json.dumps(report.get("threat_intel_analysis") or {}, sort_keys=True),
+            report.get("recommended_action"),
+            report.get("raw_response"),
+            int(report.get("elapsed_ms") or 0),
+            status,
+            str(error) if error else None,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def finish_ai_comparison_run(conn, comparison_run_id, status, candidate_count, error_message=None):
+    conn.execute(
+        """
+        UPDATE ai_comparison_runs
+        SET status = ?, candidate_count = ?, error_message = ?, completed_at = ?
+        WHERE id = ?
+        """,
+        (status, int(candidate_count), error_message, utc_now(), comparison_run_id),
+    )
+    conn.commit()
+
+
+def _comparison_votes(conn, comparison_run_id):
+    rows = conn.execute(
+        """
+        SELECT id, analyst_name, selection, notes, created_at
+        FROM ai_comparison_votes
+        WHERE comparison_run_id = ?
+        ORDER BY id DESC
+        """,
+        (comparison_run_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def ai_comparison_detail(conn, comparison_uid):
+    run = conn.execute(
+        """
+        SELECT id, comparison_uid, case_uid, detection_id, evidence_sha256,
+               prompt_version, threat_intel_evidence_json, status,
+               candidate_count, error_message,
+               created_at, completed_at
+        FROM ai_comparison_runs
+        WHERE comparison_uid = ?
+        """,
+        (comparison_uid,),
+    ).fetchone()
+    if not run:
+        return None
+    result = dict(run)
+    votes = _comparison_votes(conn, result["id"])
+    rows = conn.execute(
+        """
+        SELECT id, anonymous_slot, ai_profile_uid, model_provider, model_name,
+               model_identity, model_run_id, prompt_version, prompt_sha256,
+               classification, confidence, risk_adjustment, summary,
+               who_summary, what_summary, when_summary, where_summary,
+               why_summary, how_summary, next_steps_json,
+               threat_intel_analysis_json, recommended_action,
+               raw_response, elapsed_ms, status, error_message, created_at
+        FROM ai_comparison_candidates
+        WHERE comparison_run_id = ?
+        ORDER BY anonymous_slot
+        """,
+        (result["id"],),
+    ).fetchall()
+    candidates = []
+    try:
+        result["threat_intel_evidence"] = json.loads(
+            result.pop("threat_intel_evidence_json") or "{}"
+        )
+    except (TypeError, ValueError):
+        result["threat_intel_evidence"] = {}
+    for row in rows:
+        item = dict(row)
+        try:
+            item["next_steps"] = json.loads(item.pop("next_steps_json") or "[]")
+        except (TypeError, ValueError):
+            item["next_steps"] = []
+        try:
+            item["threat_intel_analysis"] = json.loads(
+                item.pop("threat_intel_analysis_json") or "{}"
+            )
+        except (TypeError, ValueError):
+            item["threat_intel_analysis"] = {}
+        if item.get("raw_response") and (
+            item.get("summary") in {None, "", "AI model did not provide a reason."}
+            or item.get("who_summary") == "Not established from the supplied evidence."
+        ):
+            try:
+                from app.ai_client import normalize_report, parse_model_response
+
+                recovered = normalize_report(parse_model_response(item["raw_response"]))
+                for source_key, item_key in {
+                    "classification": "classification",
+                    "confidence": "confidence",
+                    "risk_adjustment": "risk_adjustment",
+                    "summary": "summary",
+                    "who": "who_summary",
+                    "what": "what_summary",
+                    "when": "when_summary",
+                    "where": "where_summary",
+                    "why": "why_summary",
+                    "how": "how_summary",
+                    "recommended_action": "recommended_action",
+                }.items():
+                    item[item_key] = recovered.get(source_key)
+                item["next_steps"] = recovered.get("next_steps") or []
+                item["threat_intel_analysis"] = recovered.get("threat_intel_analysis") or {}
+            except (TypeError, ValueError):
+                pass
+        candidates.append(item)
+    result["candidates"] = candidates
+    result["votes"] = votes
+    result["identities_revealed"] = True
+    result.pop("id", None)
+    return result
+
+
+def list_ai_comparison_runs(conn, limit=50, case_uid=None):
+    params = []
+    where = ""
+    if case_uid:
+        where = "WHERE runs.case_uid = ?"
+        params.append(case_uid)
+    params.append(int(limit))
+    rows = conn.execute(
+        f"""
+        SELECT runs.comparison_uid, runs.case_uid, runs.detection_id,
+               runs.status, runs.candidate_count, runs.created_at,
+               runs.completed_at, COUNT(votes.id) AS vote_count
+        FROM ai_comparison_runs AS runs
+        LEFT JOIN ai_comparison_votes AS votes ON votes.comparison_run_id = runs.id
+        {where}
+        GROUP BY runs.id
+        ORDER BY runs.id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def vote_ai_comparison(conn, comparison_uid, analyst_name, selection, notes=""):
+    run = conn.execute(
+        "SELECT id FROM ai_comparison_runs WHERE comparison_uid = ?",
+        (comparison_uid,),
+    ).fetchone()
+    if not run:
+        return False
+    existing_vote = conn.execute(
+        "SELECT id FROM ai_comparison_votes WHERE comparison_run_id = ? LIMIT 1",
+        (run["id"],),
+    ).fetchone()
+    if existing_vote:
+        raise ValueError("This comparison has already been reviewed")
+    allowed = {"A", "B", "C", "tie", "reject_all"}
+    if selection not in allowed:
+        raise ValueError("Selection must be A, B, C, tie, or reject_all")
+    if selection in {"A", "B", "C"}:
+        candidate = conn.execute(
+            """
+            SELECT id FROM ai_comparison_candidates
+            WHERE comparison_run_id = ? AND anonymous_slot = ? AND status = 'complete'
+            """,
+            (run["id"], selection),
+        ).fetchone()
+        if not candidate:
+            raise ValueError("The selected response is not available")
+    conn.execute(
+        """
+        INSERT INTO ai_comparison_votes (
+          comparison_run_id, analyst_name, selection, notes
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (run["id"], analyst_name or "analyst", selection, notes),
+    )
+    conn.commit()
+    return True
+
+
+def ai_comparison_scorecard(conn):
+    rows = conn.execute(
+        """
+        SELECT candidates.ai_profile_uid, candidates.model_provider,
+               candidates.model_name, candidates.model_identity,
+               COUNT(votes.id) AS wins
+        FROM ai_comparison_votes AS votes
+        JOIN ai_comparison_candidates AS candidates
+          ON candidates.comparison_run_id = votes.comparison_run_id
+         AND candidates.anonymous_slot = votes.selection
+        WHERE votes.selection IN ('A', 'B', 'C')
+        GROUP BY candidates.ai_profile_uid, candidates.model_identity
+        ORDER BY wins DESC, candidates.model_identity ASC
+        """
+    ).fetchall()
+    totals = conn.execute(
+        """
+        SELECT COUNT(*) AS votes,
+               SUM(CASE WHEN selection = 'tie' THEN 1 ELSE 0 END) AS ties,
+               SUM(CASE WHEN selection = 'reject_all' THEN 1 ELSE 0 END) AS rejected
+        FROM ai_comparison_votes
+        """
+    ).fetchone()
+    return {
+        "models": [dict(row) for row in rows],
+        "votes": int(totals["votes"] or 0),
+        "ties": int(totals["ties"] or 0),
+        "rejected": int(totals["rejected"] or 0),
+    }
+
+
 def list_ai_profiles(conn, limit=100):
     rows = conn.execute(
         """
@@ -637,6 +1015,12 @@ def update_ai_profile(conn, uid, profile):
             uid,
         ),
     )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_ai_profile(conn, uid):
+    cur = conn.execute("DELETE FROM ai_profiles WHERE uid = ?", (uid,))
     conn.commit()
     return cur.rowcount > 0
 
@@ -953,11 +1337,12 @@ def insert_ai_report(conn, detection_id, report):
         INSERT INTO ai_reports (
           detection_id, ai_profile_uid, model_provider, model_name, model_identity,
           model_endpoint, model_run_id, prompt_version, classification, confidence,
-          risk_adjustment, reason, recommended_action, raw_response, elapsed_ms,
-          prompt_sha256, prompt_chars, pcap_summary_sha256,
-          pcap_summary_chars, pcap_summary_included
+          risk_adjustment, reason, recommended_action, summary,
+          who_summary, what_summary, when_summary, where_summary,
+          why_summary, how_summary, next_steps_json, threat_intel_analysis_json,
+          raw_response, elapsed_ms, prompt_sha256, prompt_chars
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection_id,
@@ -973,13 +1358,19 @@ def insert_ai_report(conn, detection_id, report):
             sqlite_int(report.get("risk_adjustment", 0)),
             sqlite_value(report.get("reason")),
             sqlite_value(report.get("recommended_action")),
+            sqlite_value(report.get("summary")),
+            sqlite_value(report.get("who")),
+            sqlite_value(report.get("what")),
+            sqlite_value(report.get("when")),
+            sqlite_value(report.get("where")),
+            sqlite_value(report.get("why")),
+            sqlite_value(report.get("how")),
+            sqlite_value(report.get("next_steps") or []),
+            sqlite_value(report.get("threat_intel_analysis") or {}),
             sqlite_value(report.get("raw_response")),
             sqlite_int(report.get("elapsed_ms", 0)),
             sqlite_value(report.get("prompt_sha256")),
             sqlite_int(report.get("prompt_chars", 0)),
-            sqlite_value(report.get("pcap_summary_sha256")),
-            sqlite_int(report.get("pcap_summary_chars", 0)),
-            sqlite_int(report.get("pcap_summary_included", 0)),
         ),
     )
     conn.commit()
@@ -1342,7 +1733,117 @@ def _event_time(value):
     return parsed.astimezone(timezone.utc)
 
 
-def find_correlated_detection(conn, event, sensor, tolerance_seconds=10):
+def _event_endpoints(event):
+    return (
+        event.get("src_ip") or event.get("source_ip"),
+        event.get("dest_ip") or event.get("destination_ip"),
+        event.get("src_port") or event.get("source_port"),
+        event.get("dest_port") or event.get("destination_port"),
+    )
+
+
+def _event_name(event):
+    return str(
+        event.get("signature")
+        or event.get("event_name")
+        or event.get("message")
+        or ""
+    ).strip().lower()
+
+
+OBSERVABLE_KEYS = {
+    "query",
+    "host",
+    "hostname",
+    "server_name",
+    "sni",
+    "uri",
+    "url",
+    "md5",
+    "sha1",
+    "sha256",
+    "ja3",
+    "ja3s",
+    "fingerprint",
+    "certificate_fingerprint",
+    "cert_chain_fps",
+}
+
+
+def _event_observables(event):
+    observables = set()
+
+    def collect(value, key=""):
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                collect(parsed, key)
+                return
+            if key in OBSERVABLE_KEYS:
+                normalized = value.strip().lower()
+                if len(normalized) >= 3:
+                    observables.add(normalized)
+            return
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                collect(child_value, str(child_key).lower().replace(".", "_"))
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                collect(item, key)
+            return
+        if value is not None and key in OBSERVABLE_KEYS:
+            observables.add(str(value).strip().lower())
+
+    collect(event)
+    collect(event.get("raw_json"), "raw_json")
+    collect(event.get("raw_event"), "raw_event")
+    return observables
+
+
+def _candidate_observables(conn, detection_ids):
+    if not detection_ids:
+        return {}
+    placeholders = ",".join("?" for _ in detection_ids)
+    rows = conn.execute(
+        f"SELECT detection_id, raw_event FROM sensor_findings WHERE detection_id IN ({placeholders})",
+        tuple(detection_ids),
+    ).fetchall()
+    by_detection = {detection_id: set() for detection_id in detection_ids}
+    for row in rows:
+        by_detection[row["detection_id"]].update(_event_observables({"raw_event": row["raw_event"]}))
+    return by_detection
+
+
+def _same_sensor_behavior_match(event, candidate):
+    src, dst, _src_port, _dst_port = _event_endpoints(event)
+    if not src or src != candidate.get("src_ip"):
+        return False
+    incoming_type = str(event.get("detection_type") or "unknown").lower()
+    candidate_type = str(candidate.get("detection_type") or "unknown").lower()
+    if incoming_type != candidate_type:
+        return False
+    protocol = str(event.get("protocol") or "").lower()
+    candidate_protocol = str(candidate.get("protocol") or "").lower()
+    if protocol and candidate_protocol and protocol != candidate_protocol:
+        return False
+    if incoming_type == "port_scan":
+        return True
+    if incoming_type in {"dns_tunneling", "beaconing", "brute_force"}:
+        return bool(dst and dst == candidate.get("dest_ip"))
+    return bool(dst and dst == candidate.get("dest_ip") and _event_name(event) == str(candidate.get("finding_name") or "").lower())
+
+
+def find_correlated_detection(
+    conn,
+    event,
+    sensor,
+    tolerance_seconds=10,
+    same_sensor_window_seconds=300,
+):
     community_id = str(event.get("community_id") or "").strip()
     if community_id:
         row = conn.execute(
@@ -1358,6 +1859,36 @@ def find_correlated_detection(conn, event, sensor, tolerance_seconds=10):
         if row:
             return dict(row), "community_id", 1.0
 
+        row = conn.execute(
+            """
+            SELECT detections.*
+            FROM detections
+            JOIN sensor_findings ON sensor_findings.detection_id = detections.id
+            WHERE detections.community_id = ? AND sensor_findings.sensor = ?
+            ORDER BY detections.id DESC LIMIT 1
+            """,
+            (community_id, sensor),
+        ).fetchone()
+        if row:
+            return dict(row), "community_id_same_sensor", 0.95
+
+    zeek_uid = str(event.get("zeek_uid") or "").strip()
+    if sensor == "zeek" and zeek_uid:
+        row = conn.execute(
+            """
+            SELECT detections.*
+            FROM detections
+            JOIN sensor_findings ON sensor_findings.detection_id = detections.id
+            JOIN zeek_events ON sensor_findings.sensor = 'zeek'
+                            AND sensor_findings.sensor_event_id = zeek_events.id
+            WHERE zeek_events.zeek_uid = ?
+            ORDER BY detections.id DESC LIMIT 1
+            """,
+            (zeek_uid,),
+        ).fetchone()
+        if row:
+            return dict(row), "zeek_uid", 0.95
+
     candidates = conn.execute(
         """
         SELECT DISTINCT detections.*
@@ -1369,10 +1900,7 @@ def find_correlated_detection(conn, event, sensor, tolerance_seconds=10):
         (sensor,),
     ).fetchall()
     event_time = _event_time(event.get("timestamp"))
-    src = event.get("src_ip") or event.get("source_ip")
-    dst = event.get("dest_ip") or event.get("destination_ip")
-    src_port = event.get("src_port") or event.get("source_port")
-    dst_port = event.get("dest_port") or event.get("destination_port")
+    src, dst, src_port, dst_port = _event_endpoints(event)
     protocol = str(event.get("protocol") or "").lower()
     for row in candidates:
         candidate = dict(row)
@@ -1393,6 +1921,56 @@ def find_correlated_detection(conn, event, sensor, tolerance_seconds=10):
             if reverse and (dst_port, src_port) != candidate_ports:
                 continue
         return candidate, "flow_time", 0.85
+
+    incoming_observables = _event_observables(event)
+    if incoming_observables:
+        observable_candidates = conn.execute(
+            """
+            SELECT DISTINCT detections.*
+            FROM detections
+            JOIN sensor_findings ON sensor_findings.detection_id = detections.id
+            ORDER BY detections.id DESC LIMIT 250
+            """
+        ).fetchall()
+        candidate_items = [dict(row) for row in observable_candidates]
+        observable_map = _candidate_observables(
+            conn, [candidate["id"] for candidate in candidate_items]
+        )
+        incoming_type = str(event.get("detection_type") or "unknown").lower()
+        for candidate in candidate_items:
+            candidate_time = _event_time(candidate.get("last_seen") or candidate.get("first_seen"))
+            if event_time and candidate_time:
+                elapsed = abs((event_time - candidate_time).total_seconds())
+                if elapsed > same_sensor_window_seconds:
+                    continue
+            candidate_type = str(candidate.get("detection_type") or "unknown").lower()
+            if incoming_type != candidate_type and "unknown" not in {incoming_type, candidate_type}:
+                continue
+            candidate_endpoints = {candidate.get("src_ip"), candidate.get("dest_ip")}
+            if src not in candidate_endpoints and dst not in candidate_endpoints:
+                continue
+            if incoming_observables & observable_map.get(candidate["id"], set()):
+                return candidate, "shared_observable", 0.82
+
+    same_sensor_candidates = conn.execute(
+        """
+        SELECT detections.*, sensor_findings.finding_name
+        FROM detections
+        JOIN sensor_findings ON sensor_findings.detection_id = detections.id
+        WHERE sensor_findings.sensor = ?
+        ORDER BY detections.id DESC LIMIT 250
+        """,
+        (sensor,),
+    ).fetchall()
+    for row in same_sensor_candidates:
+        candidate = dict(row)
+        candidate_time = _event_time(candidate.get("last_seen") or candidate.get("first_seen"))
+        if event_time and candidate_time:
+            elapsed = (event_time - candidate_time).total_seconds()
+            if elapsed < 0 or elapsed > same_sensor_window_seconds:
+                continue
+        if _same_sensor_behavior_match(event, candidate):
+            return candidate, "same_sensor_behavior", 0.78
     return None, "none", 0.0
 
 
@@ -1401,10 +1979,25 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
     if not detection:
         return None
     score = min(90, int(detection.get("python_initial_score") or 0))
-    finding_count = conn.execute(
-        "SELECT COUNT(*) FROM sensor_findings WHERE detection_id = ?",
+    finding_rows = conn.execute(
+        """
+        SELECT sensor_findings.sensor, sensor_findings.finding_name,
+               COALESCE(alerts.timestamp, zeek_events.timestamp, sensor_findings.created_at) AS finding_time,
+               COALESCE(alerts.src_ip, zeek_events.source_ip) AS src_ip,
+               COALESCE(alerts.dest_ip, zeek_events.destination_ip) AS dest_ip,
+               COALESCE(alerts.dest_port, zeek_events.destination_port) AS dest_port
+        FROM sensor_findings
+        LEFT JOIN alerts ON sensor_findings.sensor = 'suricata'
+                        AND alerts.id = sensor_findings.sensor_event_id
+        LEFT JOIN zeek_events ON sensor_findings.sensor = 'zeek'
+                            AND zeek_events.id = sensor_findings.sensor_event_id
+        WHERE sensor_findings.detection_id = ?
+        ORDER BY finding_time, sensor_findings.id
+        """,
         (detection_id,),
-    ).fetchone()[0]
+    ).fetchall()
+    finding_count = len(finding_rows)
+    sensors = {row["sensor"] for row in finding_rows}
     first_seen = detection.get("first_seen") or event.get("timestamp")
     last_seen = event.get("timestamp") or detection.get("last_seen")
     first_dt = _event_time(first_seen)
@@ -1412,19 +2005,40 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
     if first_dt and event_dt:
         first_seen = min(first_dt, event_dt).isoformat()
         last_seen = max(_event_time(detection.get("last_seen")) or first_dt, event_dt).isoformat()
+    finding_times = [_event_time(row["finding_time"]) for row in finding_rows]
+    finding_times = [value for value in finding_times if value]
+    if finding_times:
+        first_seen = min(finding_times).isoformat()
+        last_seen = max(finding_times).isoformat()
+    unique_ports = {row["dest_port"] for row in finding_rows if row["dest_port"] is not None}
+    unique_hosts = {row["dest_ip"] for row in finding_rows if row["dest_ip"]}
+    window_seconds = 0
+    if finding_times:
+        window_seconds = int((max(finding_times) - min(finding_times)).total_seconds())
     existing_type = str(detection.get("detection_type") or "unknown")
     incoming_type = str(event.get("detection_type") or "unknown")
-    agreement_state = "supporting" if existing_type == incoming_type or "unknown" in {existing_type, incoming_type} else "partial"
+    multi_sensor = len(sensors) > 1
+    if multi_sensor:
+        agreement_state = "supporting" if existing_type == incoming_type or "unknown" in {existing_type, incoming_type} else "partial"
+        sensor_state = "multi_sensor"
+    else:
+        agreement_state = "repeated" if finding_count > 1 else "single_sensor"
+        sensor_state = f"{next(iter(sensors), 'suricata')}_only"
+    existing_confidence = float(detection.get("correlation_confidence") or 0)
+    if existing_confidence > float(correlation_confidence or 0):
+        correlation_confidence = existing_confidence
+        correlation_method = detection.get("correlation_method") or correlation_method
     conn.execute(
         """
         UPDATE detections
         SET first_seen = ?, last_seen = ?,
             first_alert_id = COALESCE(first_alert_id, ?),
             community_id = COALESCE(community_id, ?),
-            sensor_state = 'multi_sensor',
+            sensor_state = ?,
             agreement_state = ?, correlation_method = ?,
             correlation_confidence = ?, python_initial_score = ?,
-            alert_count = ?, status = 'correlated'
+            alert_count = ?, unique_dest_ports = ?, unique_dest_hosts = ?,
+            time_window_seconds = ?, status = ?
         WHERE id = ?
         """,
         (
@@ -1432,11 +2046,16 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
             last_seen,
             event.get("alert_id"),
             event.get("community_id"),
+            sensor_state,
             agreement_state,
             correlation_method,
             correlation_confidence,
             score,
-            max(int(detection.get("alert_count") or 0), finding_count),
+            finding_count,
+            len(unique_ports),
+            len(unique_hosts),
+            window_seconds,
+            "correlated" if multi_sensor else "developing",
             detection_id,
         ),
     )
@@ -1683,7 +2302,11 @@ def zeek_telemetry_summary(conn, limit=50):
 
 def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
     detection = conn.execute(
-        "SELECT id, first_seen, last_seen, src_ip, dest_ip FROM detections WHERE id = ?",
+        """
+        SELECT id, first_seen, last_seen, src_ip, dest_ip, community_id,
+               detection_type, alert_count, time_window_seconds
+        FROM detections WHERE id = ?
+        """,
         (detection_id,),
     ).fetchone()
     if not detection:
@@ -1700,14 +2323,32 @@ def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
     except ValueError:
         start_value = start_text
         end_value = end_text or start_text
+    related_uids = [
+        row["zeek_uid"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT zeek_events.zeek_uid
+            FROM sensor_findings
+            JOIN zeek_events ON sensor_findings.sensor = 'zeek'
+                            AND sensor_findings.sensor_event_id = zeek_events.id
+            WHERE sensor_findings.detection_id = ? AND zeek_events.zeek_uid IS NOT NULL
+            """,
+            (detection_id,),
+        ).fetchall()
+    ]
+    repeated_type = detection["detection_type"] in {
+        "port_scan", "dns_tunneling", "beaconing", "brute_force"
+    }
     rows = conn.execute(
         """
         SELECT *
         FROM zeek_events
         WHERE timestamp BETWEEN ? AND ?
           AND (
-            source_ip IN (?, ?)
-            OR destination_ip IN (?, ?)
+            (? != '' AND community_id = ?)
+            OR (source_ip = ? AND destination_ip = ?)
+            OR (source_ip = ? AND destination_ip = ?)
+            OR (? = 1 AND source_ip = ?)
           )
         ORDER BY timestamp ASC, id ASC
         LIMIT ?
@@ -1715,18 +2356,96 @@ def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
         (
             start_value,
             end_value,
+            detection["community_id"] or "",
+            detection["community_id"] or "",
             detection["src_ip"],
             detection["dest_ip"],
-            detection["src_ip"],
             detection["dest_ip"],
+            detection["src_ip"],
+            int(repeated_type),
+            detection["src_ip"],
             limit,
         ),
     ).fetchall()
+    items = [dict(row) for row in rows]
+    if related_uids:
+        uid_rows = conn.execute(
+            f"""
+            SELECT * FROM zeek_events
+            WHERE timestamp BETWEEN ? AND ?
+              AND zeek_uid IN ({','.join('?' for _ in related_uids)})
+            ORDER BY timestamp ASC, id ASC LIMIT ?
+            """,
+            (start_value, end_value, *related_uids, limit),
+        ).fetchall()
+        by_id = {item["id"]: item for item in items}
+        by_id.update({row["id"]: dict(row) for row in uid_rows})
+        items = sorted(by_id.values(), key=lambda item: (item.get("timestamp") or "", item["id"]))[:limit]
+
+    log_counts = {}
+    domains = set()
+    server_names = set()
+    http_hosts = set()
+    total_orig_bytes = 0
+    total_resp_bytes = 0
+    total_duration = 0.0
+    event_times = []
+    for item in items:
+        log_type = item.get("log_type") or "unknown"
+        log_counts[log_type] = log_counts.get(log_type, 0) + 1
+        try:
+            raw = json.loads(item.get("raw_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            raw = {}
+        query = raw.get("query")
+        server_name = raw.get("server_name")
+        host = raw.get("host")
+        if query:
+            domains.add(str(query))
+        if server_name:
+            server_names.add(str(server_name))
+        if host:
+            http_hosts.add(str(host))
+        total_orig_bytes += int(raw.get("orig_bytes") or raw.get("orig_ip_bytes") or 0)
+        total_resp_bytes += int(raw.get("resp_bytes") or raw.get("resp_ip_bytes") or 0)
+        try:
+            total_duration += float(raw.get("duration") or 0)
+        except (TypeError, ValueError):
+            pass
+        parsed_time = _event_time(item.get("timestamp"))
+        if parsed_time:
+            event_times.append(parsed_time)
+    intervals = [
+        round((current - previous).total_seconds(), 3)
+        for previous, current in zip(event_times, event_times[1:])
+    ]
+    average_interval = round(sum(intervals) / len(intervals), 3) if intervals else None
+    periodicity = None
+    if len(intervals) >= 3 and average_interval and average_interval > 0:
+        spread = max(intervals) - min(intervals)
+        periodicity = "regular" if spread / average_interval <= 0.25 else "irregular"
     return {
         "detection_id": detection_id,
         "window_start": start_value,
         "window_end": end_value,
-        "items": [dict(row) for row in rows],
+        "summary": {
+            "event_count": len(items),
+            "log_counts": log_counts,
+            "first_seen": items[0].get("timestamp") if items else None,
+            "last_seen": items[-1].get("timestamp") if items else None,
+            "dns_queries": sorted(domains)[:20],
+            "tls_server_names": sorted(server_names)[:20],
+            "http_hosts": sorted(http_hosts)[:20],
+            "originator_bytes": total_orig_bytes,
+            "responder_bytes": total_resp_bytes,
+            "connection_duration_seconds": round(total_duration, 3),
+            "average_interval_seconds": average_interval,
+            "periodicity": periodicity,
+            "related_zeek_uids": related_uids,
+            "case_finding_count": int(detection["alert_count"] or 0),
+            "case_window_seconds": int(detection["time_window_seconds"] or 0),
+        },
+        "items": items,
     }
 
 
@@ -2157,6 +2876,9 @@ def insert_app_event(conn, level, component, message, details=None):
 
 def reset_dashboard_logs(conn):
     tables = [
+        "ai_comparison_votes",
+        "ai_comparison_candidates",
+        "ai_comparison_runs",
         "alerts",
         "detections",
         "ai_reports",
@@ -2308,6 +3030,14 @@ def latest_ai_opinions(conn, limit=50):
           ai_reports.risk_adjustment,
           ai_reports.reason,
           ai_reports.recommended_action,
+          ai_reports.summary,
+          ai_reports.who_summary,
+          ai_reports.what_summary,
+          ai_reports.when_summary,
+          ai_reports.where_summary,
+          ai_reports.why_summary,
+          ai_reports.how_summary,
+          ai_reports.next_steps_json,
           ai_reports.elapsed_ms,
           ai_reports.prompt_sha256,
           ai_reports.prompt_chars,
@@ -2649,8 +3379,8 @@ def threat_intel_matches(conn, indicator, indicator_type="ip"):
     return matches
 
 
-def threat_intel_provider_results(conn, indicator, providers):
-    matches = threat_intel_matches(conn, indicator, "ip")
+def threat_intel_provider_results(conn, indicator, providers, indicator_type="ip"):
+    matches = threat_intel_matches(conn, indicator, indicator_type)
     by_source = {}
     for match in matches:
         by_source.setdefault(match["source"], []).append(match)
@@ -2665,7 +3395,7 @@ def threat_intel_provider_results(conn, indicator, providers):
                 provider_matches = [
                     {
                         "indicator": legacy.get("indicator"),
-                        "indicator_type": legacy.get("indicator_type") or "ip",
+                        "indicator_type": legacy.get("indicator_type") or indicator_type,
                         "source": name,
                         "category": legacy.get("reputation"),
                         "confidence": None,
@@ -2964,6 +3694,14 @@ def ip_detail(conn, ip_address, limit=100):
           ai_reports.risk_adjustment AS ai_risk_adjustment,
           ai_reports.reason AS ai_reason,
           ai_reports.recommended_action AS ai_recommended_action,
+          ai_reports.summary AS ai_summary,
+          ai_reports.who_summary AS ai_who,
+          ai_reports.what_summary AS ai_what,
+          ai_reports.when_summary AS ai_when,
+          ai_reports.where_summary AS ai_where,
+          ai_reports.why_summary AS ai_why,
+          ai_reports.how_summary AS ai_how,
+          ai_reports.next_steps_json AS ai_next_steps_json,
           ai_reports.ai_profile_uid AS ai_profile_uid,
           ai_reports.model_identity AS ai_model_identity,
           responses.final_score,
@@ -3090,14 +3828,7 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
         filters.append("detections.detection_type = ?")
         params.append(detection_type)
     if outcome == "dangerous":
-        filters.append(
-            """
-            (
-              lower(COALESCE(responses.final_classification, '')) LIKE '%dangerous%'
-              OR responses.final_action IN ('would_block', 'temporary_block')
-            )
-            """
-        )
+        filters.append("lower(COALESCE(responses.final_classification, '')) = 'dangerous'")
     elif outcome == "human_review":
         filters.append(
             """
@@ -3107,16 +3838,7 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
     elif outcome == "high_risk":
         filters.append("lower(COALESCE(responses.final_classification, '')) = 'high risk'")
     elif outcome == "safe":
-        filters.append(
-            """
-            NOT (
-              lower(COALESCE(responses.final_classification, '')) LIKE '%dangerous%'
-              OR responses.final_action IN ('would_block', 'temporary_block')
-              OR lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
-              OR responses.final_action = 'human_review'
-            )
-            """
-        )
+        filters.append("lower(COALESCE(responses.final_classification, '')) = 'safe'")
     filter_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
     params.append(limit)
 
@@ -3157,6 +3879,14 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           ai_reports.classification AS ai_classification,
           ai_reports.confidence AS ai_confidence,
           ai_reports.risk_adjustment AS ai_risk_adjustment,
+          ai_reports.summary AS ai_summary,
+          ai_reports.who_summary AS ai_who,
+          ai_reports.what_summary AS ai_what,
+          ai_reports.when_summary AS ai_when,
+          ai_reports.where_summary AS ai_where,
+          ai_reports.why_summary AS ai_why,
+          ai_reports.how_summary AS ai_how,
+          ai_reports.next_steps_json AS ai_next_steps_json,
           ai_reports.reason AS ai_reason,
           ai_reports.recommended_action AS ai_recommended_action,
           ai_reports.ai_profile_uid AS ai_profile_uid,
@@ -3168,20 +3898,6 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           ai_reports.elapsed_ms AS ai_elapsed_ms,
           ai_reports.prompt_sha256 AS ai_prompt_sha256,
           ai_reports.prompt_chars AS ai_prompt_chars,
-          ai_reports.pcap_summary_sha256 AS ai_pcap_summary_sha256,
-          ai_reports.pcap_summary_chars AS ai_pcap_summary_chars,
-          ai_reports.pcap_summary_included AS ai_pcap_summary_included,
-          (
-            SELECT COUNT(*)
-            FROM incident_evidence
-            WHERE incident_evidence.detection_id = detections.id
-          ) AS pcap_evidence_count,
-          (
-            SELECT COUNT(*)
-            FROM incident_evidence
-            WHERE incident_evidence.detection_id = detections.id
-              AND incident_evidence.ai_sent = 1
-          ) AS pcap_ai_sent_count,
           analyst_reviews.review_status,
           analyst_reviews.analyst_name,
           analyst_reviews.analyst_score,
@@ -3205,6 +3921,10 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
         item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
         item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
         item["sensor_findings"] = sensor_findings_for_detection(conn, item["detection_id"])
+        try:
+            item["ai_next_steps"] = json.loads(item.get("ai_next_steps_json") or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            item["ai_next_steps"] = []
         if not item.get("timestamp") and item["sensor_findings"]:
             item["timestamp"] = item["sensor_findings"][0].get("finding_timestamp")
         evidence.append(item)
@@ -3250,6 +3970,15 @@ def investigation_detail(conn, detection_id):
           ai_reports.risk_adjustment AS ai_risk_adjustment,
           ai_reports.reason AS ai_reason,
           ai_reports.recommended_action AS ai_recommended_action,
+          ai_reports.summary AS ai_summary,
+          ai_reports.who_summary AS ai_who,
+          ai_reports.what_summary AS ai_what,
+          ai_reports.when_summary AS ai_when,
+          ai_reports.where_summary AS ai_where,
+          ai_reports.why_summary AS ai_why,
+          ai_reports.how_summary AS ai_how,
+          ai_reports.next_steps_json AS ai_next_steps_json,
+          ai_reports.threat_intel_analysis_json AS ai_threat_intel_analysis_json,
           ai_reports.raw_response AS ai_raw_response,
           ai_reports.ai_profile_uid AS ai_profile_uid,
           ai_reports.model_provider AS ai_model_provider,
@@ -3261,9 +3990,6 @@ def investigation_detail(conn, detection_id):
           ai_reports.elapsed_ms AS ai_elapsed_ms,
           ai_reports.prompt_sha256 AS ai_prompt_sha256,
           ai_reports.prompt_chars AS ai_prompt_chars,
-          ai_reports.pcap_summary_sha256 AS ai_pcap_summary_sha256,
-          ai_reports.pcap_summary_chars AS ai_pcap_summary_chars,
-          ai_reports.pcap_summary_included AS ai_pcap_summary_included,
           ai_reports.created_at AS ai_created_at,
           responses.final_score,
           responses.final_classification,
@@ -3299,13 +4025,48 @@ def investigation_detail(conn, detection_id):
         return None
 
     item = dict(row)
+    if (
+        item.get("ai_raw_response")
+        and item.get("ai_summary") == "The model response could not be parsed."
+    ):
+        try:
+            from app.ai_client import normalize_report, parse_model_response
+
+            recovered = normalize_report(parse_model_response(item["ai_raw_response"]))
+            for source_key, item_key in {
+                "reason": "ai_reason",
+                "summary": "ai_summary",
+                "who": "ai_who",
+                "what": "ai_what",
+                "when": "ai_when",
+                "where": "ai_where",
+                "why": "ai_why",
+                "how": "ai_how",
+            }.items():
+                item[item_key] = recovered.get(source_key)
+            item["ai_next_steps"] = recovered.get("next_steps") or []
+            item["ai_threat_intel_analysis"] = recovered.get("threat_intel_analysis") or {}
+        except (TypeError, ValueError):
+            pass
+    try:
+        if "ai_next_steps" not in item:
+            item["ai_next_steps"] = json.loads(item.get("ai_next_steps_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        item["ai_next_steps"] = []
+    raw_threat_intel_analysis = item.pop("ai_threat_intel_analysis_json")
+    if raw_threat_intel_analysis:
+        try:
+            item["ai_threat_intel_analysis"] = json.loads(raw_threat_intel_analysis)
+        except (TypeError, json.JSONDecodeError):
+            item["ai_threat_intel_analysis"] = {}
+    else:
+        item.setdefault("ai_threat_intel_analysis", {})
     item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
     item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
     item["src_ip_profile"] = ip_enrichment_profile(item.get("src_ip"))
     item["dest_ip_profile"] = ip_enrichment_profile(item.get("dest_ip"))
     item["src_otx"] = latest_threat_intel_for_ip(conn, item.get("src_ip"), "otx")
     item["dest_otx"] = latest_threat_intel_for_ip(conn, item.get("dest_ip"), "otx")
-    item["incident_evidence"] = list_incident_evidence(conn, detection_id)
     item["sensor_findings"] = sensor_findings_for_detection(conn, detection_id)
     item["score_breakdowns"] = score_breakdowns_for_detection(conn, detection_id)
     item["virustotal_verifications"] = virustotal_verifications_for_detection(conn, detection_id)
@@ -3330,13 +4091,6 @@ def investigation_detail(conn, detection_id):
             SELECT indicator, indicator_type, source, stage, matched, details_json, used_at
             FROM threat_intel_usage WHERE detection_id = ? ORDER BY id
             """,
-            (detection_id,),
-        ).fetchall()
-    ]
-    item["firewall_history"] = [
-        dict(value)
-        for value in conn.execute(
-            "SELECT * FROM firewall_blocks WHERE detection_id = ? ORDER BY id",
             (detection_id,),
         ).fetchall()
     ]

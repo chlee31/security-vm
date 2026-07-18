@@ -8,11 +8,11 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import requests
 from pydantic import BaseModel
@@ -20,6 +20,8 @@ from pydantic import BaseModel
 from app.allowlist import add_allowlist_entry, deactivate_allowlist_entry, deactivate_allowlist_for_ip, list_allowlist_entries
 from app.config import load_config, save_config
 from app.database import (
+    ai_comparison_detail,
+    ai_comparison_scorecard,
     ai_model_comparison,
     asset_summary,
     case_workspace,
@@ -27,6 +29,7 @@ from app.database import (
     create_ai_profile,
     deactivate_asset,
     delete_asset,
+    delete_ai_profile,
     default_asset_score,
     default_asset_types,
     ensure_ai_profile_from_config,
@@ -49,8 +52,8 @@ from app.database import (
     insert_firewall_block,
     insert_notification_event,
     list_ai_profiles,
+    list_ai_comparison_runs,
     list_all_assets,
-    list_assets,
     list_firewall_candidates,
     list_firewall_history,
     list_firewall_blocks,
@@ -63,20 +66,27 @@ from app.database import (
     submit_analyst_review,
     update_response_manual_action,
     upsert_threat_intel_lookup,
-    threat_intel_provider_results,
     upsert_asset,
     update_asset,
     update_ai_profile,
+    vote_ai_comparison,
     zeek_context_for_detection,
     zeek_event_counts,
     zeek_telemetry_summary,
 )
 from app.bootstrap import detect_os_release, zeek_os_recommendation
 from app.enrichment import lookup_otx_ip, test_otx_connection
-from app.threat_intel import PROVIDERS, provider_config, refresh_provider, sanitized_provider_status
+from app.threat_intel import (
+    PROVIDERS,
+    provider_config,
+    provider_evidence_for_indicator,
+    refresh_provider,
+    sanitized_provider_status,
+)
 from app.firewall import firewalld_runtime_status, firewalld_setup_commands, remove_firewalld_block, temporary_block_firewalld
 from app.incident_evidence import create_incident_evidence
 from app.ai_client import check_ai_model, model_metadata
+from app.ai_comparison import run_model_comparison
 from app.case_assessment import reassess_case, refresh_case_virustotal
 from app.notifications import normalize_recipients, sanitized_email_settings, send_email
 from app.security import redact_secrets
@@ -133,6 +143,16 @@ class AIModelConfigRequest(BaseModel):
 class AIProfileRequest(AIModelConfigRequest):
     name: str
     status: str = "active"
+    notes: str = ""
+
+
+class AIComparisonSettingsRequest(BaseModel):
+    profile_uids: List[str]
+
+
+class AIComparisonVoteRequest(BaseModel):
+    analyst_name: str = "analyst"
+    selection: str
     notes: str = ""
 
 
@@ -197,9 +217,6 @@ ADMIN_SYSTEM_TOOLS = {
     "Suricata Update": {"binary": "suricata-update", "package": "suricata-update"},
     "SQLite CLI": {"binary": "sqlite3", "package": "sqlite3"},
     "curl": {"binary": "curl", "package": "curl"},
-    "dumpcap": {"binary": "dumpcap", "package": "wireshark-common"},
-    "tshark": {"binary": "tshark", "package": "tshark"},
-    "firewalld": {"binary": "firewall-cmd", "package": "firewalld"},
     "Tailscale": {"binary": "tailscale", "package": "tailscale"},
     "Zeek": {
         "binary": "zeek",
@@ -517,6 +534,29 @@ def create_app(config_path):
 
     @app.middleware("http")
     async def add_no_cache_headers(request, call_next):
+        retired_paths = {
+            "/api/admin/system-mode",
+            "/api/asset-inventory",
+            "/api/pcap-files",
+        }
+        retired_prefixes = (
+            "/api/admin/notifications/",
+            "/api/admin/firewall-",
+            "/api/assets",
+            "/api/allowlist",
+            "/api/incident-evidence/",
+        )
+        path = request.url.path
+        retired_detection_path = path.startswith("/api/detections/") and (
+            path.endswith("/investigation") or path.endswith("/incident-evidence")
+        )
+        if path in retired_paths or path.startswith(retired_prefixes) or retired_detection_path:
+            return JSONResponse(
+                status_code=410,
+                content={
+                    "detail": "This endpoint was retired when Security VM moved to passive case analysis."
+                },
+            )
         response = await call_next(request)
         if request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -552,11 +592,11 @@ def create_app(config_path):
 
     @app.get("/asset-inventory")
     def asset_inventory_workbook():
-        return static_page("asset_inventory.html")
+        return RedirectResponse(url="/admin#settings", status_code=307)
 
     @app.get("/assets")
     def legacy_asset_inventory_workbook():
-        return static_page("asset_inventory.html")
+        return RedirectResponse(url="/admin#settings", status_code=307)
 
     @app.get("/admin")
     def admin_controls():
@@ -585,34 +625,31 @@ def create_app(config_path):
                     "active_uid": profile_uid,
                     "items": list_ai_profiles(conn, limit),
                 },
+                "ai_comparison": {
+                    "profile_uids": config.get("ai_comparison", {}).get("profile_uids", []),
+                    "candidate_count": 3,
+                    "sequential": True,
+                },
                 "system": {
-                    "mode": config.get("system", {}).get("mode", "alert_only"),
-                    "available_modes": [
-                        {"value": "alert_only", "label": "Alert Only", "description": "Store alerts and show would-block decisions without enforcement."},
-                        {"value": "detection", "label": "Detection", "description": "Run scoring and prevention logic, but do not call firewalld."},
-                        {"value": "prevention", "label": "Prevention", "description": "Temporarily block high-confidence dangerous traffic with firewalld."},
-                    ],
+                    "mode": "analysis",
+                    "available_modes": [],
                 },
                 "firewall": {
-                    "provider": config.get("firewall", {}).get("provider", "firewalld"),
-                    "block_timeout_seconds": config.get("firewall", {}).get("block_timeout_seconds", 3600),
-                    "runtime": firewalld_runtime_status(
-                        config.get("firewall", {}).get("external_zone", "external"),
-                        config.get("firewall", {}).get("internal_zone", "internal"),
-                    ),
-                    "setup_commands": firewalld_setup_commands(),
-                    "blocks": list_firewall_blocks(conn, limit=50, status="active"),
-                    "candidates": list_firewall_candidates(conn, limit=50),
-                    "history": list_firewall_history(conn, limit=100),
+                    "provider": "retired",
+                    "block_timeout_seconds": 0,
+                    "runtime": {},
+                    "setup_commands": [],
+                    "blocks": [],
+                    "candidates": [],
+                    "history": [],
                 },
                 "notifications": {
-                    "email": sanitized_email_settings(config),
-                    "events": list_notification_events(conn, limit=50),
+                    "email": {"enabled": False, "recipients": []},
+                    "events": [],
                 },
                 "network": {
                     "internal_interface": config.get("assets", {}).get("internal_interface", "ens37"),
                     "suricata_eve_json_path": config.get("suricata", {}).get("eve_json_path", ""),
-                    "pcap_rolling_dir": config.get("pcap", {}).get("rolling_dir", ""),
                     "zeek_interface": config.get("zeek", {}).get("interface", ""),
                     "zeek_log_directory": config.get("zeek", {}).get("log_directory", ""),
                 },
@@ -655,6 +692,34 @@ def create_app(config_path):
         try:
             insert_app_event(conn, "info", "threat_intel", "Updated threat-intelligence provider settings")
             return {"status": "saved", "providers": sanitized_provider_status(config, conn)}
+        finally:
+            conn.close()
+
+    @app.put("/api/admin/ai-comparison")
+    def api_admin_ai_comparison(payload: AIComparisonSettingsRequest):
+        profile_uids = list(dict.fromkeys(uid.strip() for uid in payload.profile_uids if uid.strip()))
+        if len(profile_uids) != 3:
+            raise HTTPException(status_code=400, detail="Select exactly three different AI profiles")
+        conn = connect(db_path)
+        try:
+            for uid in profile_uids:
+                profile = get_ai_profile(conn, uid)
+                if not profile:
+                    raise HTTPException(status_code=404, detail=f"AI profile {uid} was not found")
+                if profile.get("status") != "active":
+                    raise HTTPException(status_code=400, detail=f"AI profile {uid} is inactive")
+            config.setdefault("ai_comparison", {})["profile_uids"] = profile_uids
+            config["ai_comparison"]["candidate_count"] = 3
+            config["ai_comparison"]["sequential"] = True
+            save_config(config, config_path)
+            insert_app_event(
+                conn,
+                "info",
+                "ai_comparison",
+                "Updated AI comparison profiles",
+                {"profile_count": 3, "sequential": True},
+            )
+            return {"status": "saved", "profile_uids": profile_uids, "sequential": True}
         finally:
             conn.close()
 
@@ -1072,6 +1137,70 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.delete("/api/admin/ai-profiles/{profile_uid}")
+    def api_admin_delete_ai_profile(profile_uid: str):
+        conn = connect(db_path)
+        try:
+            profile = get_ai_profile(conn, profile_uid)
+            if not profile:
+                raise HTTPException(status_code=404, detail="AI profile not found")
+            profiles = list_ai_profiles(conn, 100)
+            if len(profiles) <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Create another AI profile before deleting the last saved profile",
+                )
+
+            selected_uid = config.get("ai_model", {}).get("active_profile_uid")
+            replacement = None
+            if selected_uid == profile_uid:
+                replacement = next(
+                    (
+                        item
+                        for item in profiles
+                        if item["uid"] != profile_uid and item.get("status") == "active"
+                    ),
+                    None,
+                )
+                if not replacement:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Create or activate another AI profile before deleting the selected profile",
+                    )
+                apply_ai_profile_to_config(config, replacement)
+                mark_ai_profile_selected(conn, replacement["uid"])
+
+            comparison_uids = [
+                uid
+                for uid in config.get("ai_comparison", {}).get("profile_uids", [])
+                if uid != profile_uid
+            ]
+            config.setdefault("ai_comparison", {})["profile_uids"] = comparison_uids
+            save_config(config, config_path)
+
+            if not delete_ai_profile(conn, profile_uid):
+                raise HTTPException(status_code=404, detail="AI profile not found")
+            insert_app_event(
+                conn,
+                "info",
+                "admin",
+                f"Deleted AI profile {profile['name']} ({profile_uid})",
+                {
+                    "ai_profile_uid": profile_uid,
+                    "replacement_profile_uid": replacement["uid"] if replacement else None,
+                    "historical_reports_preserved": True,
+                },
+            )
+            return {
+                "status": "deleted",
+                "deleted_profile_uid": profile_uid,
+                "active_profile_uid": replacement["uid"] if replacement else selected_uid,
+                "comparison_profile_uids": comparison_uids,
+                "historical_reports_preserved": True,
+            }
+        finally:
+            conn.close()
+
     @app.put("/api/admin/assets/{asset_id}")
     def api_admin_update_asset(asset_id: int, payload: AdminAssetRequest):
         try:
@@ -1179,6 +1308,60 @@ def create_app(config_path):
         conn = connect(db_path)
         try:
             return ai_model_comparison(conn)
+        finally:
+            conn.close()
+
+    @app.get("/api/ai-comparisons")
+    def api_ai_comparisons(limit: int = 50, case_uid: str = None):
+        conn = connect(db_path)
+        try:
+            return list_ai_comparison_runs(conn, max(1, min(limit, 200)), case_uid=case_uid)
+        finally:
+            conn.close()
+
+    @app.get("/api/ai-comparisons/scorecard")
+    def api_ai_comparison_scorecard():
+        conn = connect(db_path)
+        try:
+            return ai_comparison_scorecard(conn)
+        finally:
+            conn.close()
+
+    @app.get("/api/ai-comparisons/{comparison_uid}")
+    def api_ai_comparison_detail(comparison_uid: str):
+        conn = connect(db_path)
+        try:
+            detail = ai_comparison_detail(conn, comparison_uid)
+            if not detail:
+                raise HTTPException(status_code=404, detail="AI comparison not found")
+            return detail
+        finally:
+            conn.close()
+
+    @app.post("/api/ai-comparisons/{comparison_uid}/vote")
+    def api_vote_ai_comparison(comparison_uid: str, payload: AIComparisonVoteRequest):
+        conn = connect(db_path)
+        try:
+            try:
+                saved = vote_ai_comparison(
+                    conn,
+                    comparison_uid,
+                    payload.analyst_name.strip() or "analyst",
+                    payload.selection,
+                    payload.notes.strip(),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            if not saved:
+                raise HTTPException(status_code=404, detail="AI comparison not found")
+            insert_app_event(
+                conn,
+                "info",
+                "ai_comparison",
+                f"AI comparison selection recorded for {comparison_uid}",
+                {"selection": payload.selection},
+            )
+            return ai_comparison_detail(conn, comparison_uid)
         finally:
             conn.close()
 
@@ -1556,9 +1739,13 @@ def create_app(config_path):
             if not detail:
                 raise HTTPException(status_code=404, detail="Investigation not found")
             zeek_context = zeek_context_for_detection(conn, detection_id, seconds=120)
-            providers = sanitized_provider_status(config, conn)
-            detail["src_threat_intel"] = threat_intel_provider_results(conn, detail.get("src_ip"), providers)
-            detail["dest_threat_intel"] = threat_intel_provider_results(conn, detail.get("dest_ip"), providers)
+            runtime_config = load_config(config_path)
+            detail["src_threat_intel"] = provider_evidence_for_indicator(
+                conn, runtime_config, detail.get("src_ip")
+            )
+            detail["dest_threat_intel"] = provider_evidence_for_indicator(
+                conn, runtime_config, detail.get("dest_ip")
+            )
         finally:
             conn.close()
         detail["zeek_context"] = zeek_context
@@ -1572,12 +1759,11 @@ def create_app(config_path):
             if not detail:
                 raise HTTPException(status_code=404, detail="Case not found")
             runtime_config = load_config(config_path)
-            providers = sanitized_provider_status(runtime_config, conn)
-            detail["src_threat_intel"] = threat_intel_provider_results(
-                conn, detail.get("src_ip"), providers
+            detail["src_threat_intel"] = provider_evidence_for_indicator(
+                conn, runtime_config, detail.get("src_ip")
             )
-            detail["dest_threat_intel"] = threat_intel_provider_results(
-                conn, detail.get("dest_ip"), providers
+            detail["dest_threat_intel"] = provider_evidence_for_indicator(
+                conn, runtime_config, detail.get("dest_ip")
             )
             return detail
         finally:
@@ -1601,6 +1787,24 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.get("/api/cases/{case_uid}/ai-comparisons")
+    def api_case_ai_comparisons(case_uid: str, limit: int = 20):
+        conn = connect(db_path)
+        try:
+            return list_ai_comparison_runs(conn, max(1, min(limit, 100)), case_uid=case_uid)
+        finally:
+            conn.close()
+
+    @app.post("/api/cases/{case_uid}/ai-comparison")
+    def api_run_case_ai_comparison(case_uid: str):
+        conn = connect(db_path)
+        try:
+            return run_model_comparison(conn, load_config(config_path), case_uid)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            conn.close()
+
     @app.post("/api/cases/{case_uid}/virustotal/refresh")
     def api_refresh_case_virustotal(case_uid: str):
         conn = connect(db_path)
@@ -1619,24 +1823,12 @@ def create_app(config_path):
         conn = connect(db_path)
         try:
             detail = ip_detail(conn, address, limit)
-            providers = sanitized_provider_status(config, conn)
-            detail["threat_intel"] = threat_intel_provider_results(conn, detail.get("ip_address"), providers)
+            detail["threat_intel"] = provider_evidence_for_indicator(
+                conn, load_config(config_path), detail.get("ip_address")
+            )
             return detail
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid IP address")
-        finally:
-            conn.close()
-
-    @app.get("/api/assets")
-    def api_assets(limit: int = 100):
-        conn = connect(db_path)
-        try:
-            return {
-                "types": default_asset_types(config),
-                "default_interface": config.get("assets", {}).get("internal_interface", "ens37"),
-                "summary": asset_summary(conn),
-                "assets": list_assets(conn, limit),
-            }
         finally:
             conn.close()
 
@@ -1752,7 +1944,7 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.post("/api/assets")
+    @app.post("/api/admin/assets")
     def api_upsert_asset(payload: AssetRequest):
         try:
             ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
@@ -1864,7 +2056,7 @@ def create_app(config_path):
     @app.post("/api/reviews/{detection_id}")
     def api_submit_review(detection_id: int, payload: AnalystReviewRequest):
         action = payload.action.strip().lower()
-        if action not in {"confirm", "log_only", "human_review", "would_block", "temporary_block"}:
+        if action not in {"confirm", "log_only", "human_review", "investigate", "escalate"}:
             raise HTTPException(status_code=400, detail="Unsupported review action")
         if action != "confirm" and payload.score is None:
             raise HTTPException(status_code=400, detail="Override score is required")
@@ -1951,12 +2143,7 @@ def create_app(config_path):
             zeek_counts = zeek_event_counts(conn)
             zeek_notice_count = zeek_counts.get("notice", 0)
             zeek_weird_count = zeek_counts.get("weird", 0)
-            incident_ready = conn.execute(
-                "SELECT COUNT(*) AS count FROM incident_evidence WHERE COALESCE(status, summary_status) IN ('ready', 'generated')"
-            ).fetchone()["count"]
-            incident_failed = conn.execute(
-                "SELECT COUNT(*) AS count FROM incident_evidence WHERE COALESCE(status, summary_status) IN ('failed', 'partial', 'summary_failed', 'summary_timeout', 'tshark_unavailable')"
-            ).fetchone()["count"]
+            investigation_cases = total_detections
             ai_reassessments = conn.execute(
                 "SELECT COUNT(*) AS count FROM ai_assessments WHERE assessment_type = 'reassessment'"
             ).fetchone()["count"]
@@ -1983,11 +2170,11 @@ def create_app(config_path):
                 classification = str(row["final_classification"] or "").lower()
                 action = str(row["final_action"] or "").lower()
                 count = row["count"]
-                if "dangerous" in classification or action in {"would_block", "temporary_block"}:
+                if classification == "dangerous":
                     outcome_counts["dangerous"] += count
                 elif "high risk" in classification:
                     outcome_counts["high_risk"] += count
-                elif "human" in classification or action == "human_review":
+                elif "human" in classification:
                     outcome_counts["human_review"] += count
                 else:
                     outcome_counts["safe"] += count
@@ -2001,8 +2188,8 @@ def create_app(config_path):
                 "multi_sensor_detections": conn.execute(
                     "SELECT COUNT(*) AS count FROM detections WHERE sensor_state = 'multi_sensor'"
                 ).fetchone()["count"],
-                "investigations_ready": incident_ready,
-                "investigations_failed": incident_failed,
+                "investigations_ready": investigation_cases,
+                "investigations_failed": 0,
                 "ai_reassessments": ai_reassessments,
                 "outcome_counts": outcome_counts,
                 "detections_by_type": [dict(row) for row in by_type],

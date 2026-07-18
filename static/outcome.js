@@ -5,6 +5,7 @@ const detectionType = params.get("detection_type") || "";
 const els = {
   title: document.querySelector("#outcome-title"),
   updated: document.querySelector("#outcome-updated"),
+  refresh: document.querySelector("#outcome-refresh"),
   total: document.querySelector("#oc-total"),
   ips: document.querySelector("#oc-ips"),
   maxScore: document.querySelector("#oc-max-score"),
@@ -173,6 +174,7 @@ function renderEvidence(rows) {
 }
 
 async function refresh() {
+  els.refresh.disabled = true;
   const outcomeLabel = label(outcomeType);
   const detectionLabel = detectionType ? ` · ${label(detectionType)}` : "";
   els.title.textContent = `${outcomeLabel}${detectionLabel}`;
@@ -200,8 +202,10 @@ async function refresh() {
   } catch (error) {
     els.updated.textContent = "Outcome API error";
     els.evidence.innerHTML = `<div class="empty">${error.message}</div>`;
+  } finally {
+    els.refresh.disabled = false;
   }
 }
 
 refresh();
-setInterval(refresh, 5000);
+els.refresh.addEventListener("click", refresh);
