@@ -305,7 +305,7 @@ function renderAssets(payload) {
         <span class="status-pill ${asset.status === "inactive" ? "inactive" : "active"}">${asset.status}</span>
       </div>
       <p>${asset.ip_address} · ${label(asset.device_type)} · ${asset.network_interface || state.network.internal_interface || "ens37"}</p>
-      <small>Score ${asset.asset_score} · ${asset.function || "No function"}${asset.notes ? ` · ${asset.notes}` : ""}</small>
+      <small>Importance ${asset.asset_score} · ${asset.function || "No role details"}${asset.notes ? ` · ${asset.notes}` : ""}</small>
       <div class="asset-admin-actions">
         <button class="text-button" type="button" data-edit-asset="${asset.id}">Edit</button>
         <button class="text-button" type="button" data-toggle-asset="${asset.id}">

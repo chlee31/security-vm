@@ -9,6 +9,7 @@ DEFAULT_CONFIG = {
     "suricata": {
         "eve_json_path": "/var/log/suricata/eve.json",
         "fast_log_path": "/var/log/suricata/fast.log",
+        "start_position": "end",
     },
     "database": {"path": "security_vm.db"},
     "zeek": {
@@ -36,10 +37,20 @@ DEFAULT_CONFIG = {
         "sequential": True,
     },
     "correlation": {
+        "policy_version": "correlation-v1",
         "sensor_time_tolerance_seconds": 10,
         "same_sensor_window_seconds": 300,
         "zeek_context_window_seconds": 120,
         "zeek_context_limit": 100,
+        "strengths": {
+            "community_id": 1.0,
+            "community_id_same_sensor": 0.95,
+            "zeek_uid": 0.95,
+            "flow_time": 0.85,
+            "shared_observable": 0.82,
+            "same_sensor_behavior": 0.78,
+            "single_sensor": 0.5,
+        },
     },
     "ai_model": {
         "host": "http://127.0.0.1:11434",

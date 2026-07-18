@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import ipaddress
+import hashlib
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -32,7 +33,7 @@ def init_db(db_path):
 def ensure_pre_schema_columns(conn):
     """Add columns required by schema indexes before CREATE IF NOT EXISTS runs."""
     required_columns = {
-        "alerts": {"event_uid": "TEXT"},
+        "alerts": {"event_uid": "TEXT", "event_fingerprint": "TEXT"},
         "detections": {"case_uid": "TEXT"},
         "zeek_events": {
             "event_uid": "TEXT",
@@ -73,6 +74,7 @@ def ensure_migrations(conn):
             conn.execute("ALTER TABLE assets ADD COLUMN updated_at TEXT")
 
     ensure_ai_report_columns(conn, "ai_reports")
+    ensure_suricata_ingest_tables(conn)
     ensure_incident_evidence_columns(conn)
     ensure_zeek_tables(conn)
     ensure_ai_assessments_table(conn)
@@ -233,6 +235,29 @@ def table_exists(conn, table_name):
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def ensure_suricata_ingest_tables(conn):
+    alert_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()
+    }
+    if "event_fingerprint" not in alert_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN event_fingerprint TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS suricata_ingest_checkpoints (
+          source TEXT PRIMARY KEY,
+          path TEXT NOT NULL,
+          inode INTEGER NOT NULL,
+          offset INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_event_fingerprint "
+        "ON alerts(event_fingerprint) WHERE event_fingerprint IS NOT NULL"
+    )
 
 
 def _uid_date(value):
@@ -1236,17 +1261,48 @@ def asset_summary(conn):
     return {"total": total, "by_type": [dict(row) for row in rows]}
 
 
+def alert_content_fingerprint(alert):
+    supplied = str(alert.get("event_fingerprint") or "").strip()
+    if supplied:
+        return supplied
+    raw = alert.get("raw_json")
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        payload = None
+    if not isinstance(payload, (dict, list)):
+        fields = (
+            "suricata_event_id",
+            "timestamp",
+            "src_ip",
+            "dest_ip",
+            "src_port",
+            "dest_port",
+            "protocol",
+            "signature",
+            "category",
+            "severity",
+            "flow_id",
+            "community_id",
+        )
+        payload = {field: alert.get(field) for field in fields}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def insert_alert(conn, alert):
+    fingerprint = alert_content_fingerprint(alert)
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO alerts (
-          suricata_event_id, timestamp, src_ip, dest_ip, src_port, dest_port,
+        INSERT OR IGNORE INTO alerts (
+          event_fingerprint, suricata_event_id, timestamp, src_ip, dest_ip, src_port, dest_port,
           protocol, signature, category, severity, priority, flow_id, community_id, pcap_point, raw_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            fingerprint,
             alert.get("suricata_event_id"),
             alert.get("timestamp"),
             alert.get("src_ip"),
@@ -1264,10 +1320,23 @@ def insert_alert(conn, alert):
             alert.get("raw_json"),
         ),
     )
+    if cur.rowcount == 0:
+        row = conn.execute(
+            "SELECT id, event_uid FROM alerts WHERE event_fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        if not row:
+            raise sqlite3.IntegrityError("Suricata alert insert was ignored without a matching fingerprint")
+        alert["event_fingerprint"] = fingerprint
+        alert["event_uid"] = row["event_uid"]
+        alert["_duplicate"] = True
+        return row["id"]
     alert_id = cur.lastrowid
     event_uid = alert.get("event_uid") or stable_record_uid("SUR", alert_id, alert.get("timestamp"))
     cur.execute("UPDATE alerts SET event_uid = ? WHERE id = ?", (event_uid, alert_id))
+    alert["event_fingerprint"] = fingerprint
     alert["event_uid"] = event_uid
+    alert["_duplicate"] = False
     conn.commit()
     return alert_id
 
@@ -1434,6 +1503,12 @@ def insert_score_breakdown(
             int(provisional_score if provisional_score is not None else python_score + llm_adjustment_applied),
         ),
     )
+    details = dict(breakdown.get("details") or {})
+    details["_policy"] = {
+        "version": breakdown.get("policy_version") or "unversioned",
+        "category_maximums": breakdown.get("category_maximums") or {},
+        "interpretation": "Investigation-priority heuristic, not probability of compromise.",
+    }
     cur = conn.execute(
         """
         INSERT INTO score_breakdowns (
@@ -1460,7 +1535,7 @@ def insert_score_breakdown(
             provisional,
             1 if breakdown.get("forced_review") else 0,
             breakdown.get("forced_review_reason"),
-            json.dumps(breakdown.get("details") or {}, sort_keys=True),
+            json.dumps(details, sort_keys=True),
         ),
     )
     conn.commit()
@@ -1837,12 +1912,32 @@ def _same_sensor_behavior_match(event, candidate):
     return bool(dst and dst == candidate.get("dest_ip") and _event_name(event) == str(candidate.get("finding_name") or "").lower())
 
 
+DEFAULT_CORRELATION_STRENGTHS = {
+    "community_id": 1.0,
+    "community_id_same_sensor": 0.95,
+    "zeek_uid": 0.95,
+    "flow_time": 0.85,
+    "shared_observable": 0.82,
+    "same_sensor_behavior": 0.78,
+}
+
+
+def correlation_strength(name, configured=None):
+    values = {**DEFAULT_CORRELATION_STRENGTHS, **(configured or {})}
+    try:
+        value = float(values.get(name, 0.0))
+    except (TypeError, ValueError):
+        value = DEFAULT_CORRELATION_STRENGTHS.get(name, 0.0)
+    return max(0.0, min(1.0, value))
+
+
 def find_correlated_detection(
     conn,
     event,
     sensor,
     tolerance_seconds=10,
     same_sensor_window_seconds=300,
+    strengths=None,
 ):
     community_id = str(event.get("community_id") or "").strip()
     if community_id:
@@ -1857,7 +1952,7 @@ def find_correlated_detection(
             (community_id, sensor),
         ).fetchone()
         if row:
-            return dict(row), "community_id", 1.0
+            return dict(row), "community_id", correlation_strength("community_id", strengths)
 
         row = conn.execute(
             """
@@ -1870,7 +1965,7 @@ def find_correlated_detection(
             (community_id, sensor),
         ).fetchone()
         if row:
-            return dict(row), "community_id_same_sensor", 0.95
+            return dict(row), "community_id_same_sensor", correlation_strength("community_id_same_sensor", strengths)
 
     zeek_uid = str(event.get("zeek_uid") or "").strip()
     if sensor == "zeek" and zeek_uid:
@@ -1887,7 +1982,7 @@ def find_correlated_detection(
             (zeek_uid,),
         ).fetchone()
         if row:
-            return dict(row), "zeek_uid", 0.95
+            return dict(row), "zeek_uid", correlation_strength("zeek_uid", strengths)
 
     candidates = conn.execute(
         """
@@ -1920,7 +2015,7 @@ def find_correlated_detection(
                 continue
             if reverse and (dst_port, src_port) != candidate_ports:
                 continue
-        return candidate, "flow_time", 0.85
+        return candidate, "flow_time", correlation_strength("flow_time", strengths)
 
     incoming_observables = _event_observables(event)
     if incoming_observables:
@@ -1950,7 +2045,7 @@ def find_correlated_detection(
             if src not in candidate_endpoints and dst not in candidate_endpoints:
                 continue
             if incoming_observables & observable_map.get(candidate["id"], set()):
-                return candidate, "shared_observable", 0.82
+                return candidate, "shared_observable", correlation_strength("shared_observable", strengths)
 
     same_sensor_candidates = conn.execute(
         """
@@ -1970,7 +2065,7 @@ def find_correlated_detection(
             if elapsed < 0 or elapsed > same_sensor_window_seconds:
                 continue
         if _same_sensor_behavior_match(event, candidate):
-            return candidate, "same_sensor_behavior", 0.78
+            return candidate, "same_sensor_behavior", correlation_strength("same_sensor_behavior", strengths)
     return None, "none", 0.0
 
 
@@ -2069,6 +2164,36 @@ def get_zeek_checkpoint(conn, log_type):
         (log_type,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def get_suricata_checkpoint(conn, source="eve"):
+    row = conn.execute(
+        """
+        SELECT source, path, inode, offset, updated_at
+        FROM suricata_ingest_checkpoints
+        WHERE source = ?
+        """,
+        (source,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_suricata_checkpoint(conn, path, inode, offset, source="eve"):
+    conn.execute(
+        """
+        INSERT INTO suricata_ingest_checkpoints (
+          source, path, inode, offset, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(source) DO UPDATE SET
+          path = excluded.path,
+          inode = excluded.inode,
+          offset = excluded.offset,
+          updated_at = excluded.updated_at
+        """,
+        (source, str(path), int(inode or 0), int(offset or 0), utc_now()),
+    )
+    conn.commit()
 
 
 def upsert_zeek_checkpoint(conn, log_type, path, inode, offset):

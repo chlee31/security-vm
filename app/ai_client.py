@@ -216,7 +216,7 @@ def build_prompt(alert, detection, evidence_context=None):
             "sensor_state": detection.get("sensor_state", "suricata_only"),
             "agreement_state": detection.get("agreement_state", "single_sensor"),
             "correlation_method": detection.get("correlation_method", "single_sensor"),
-            "correlation_confidence": detection.get("correlation_confidence", 0.5),
+            "correlation_rule_strength": detection.get("correlation_confidence", 0.5),
             "community_id": detection.get("community_id"),
             "repeated_activity": (evidence_context or {}).get("repeated_activity", {}),
         },
@@ -300,6 +300,7 @@ Evidence rules:
 - sensor_fusion in evidence_context is authoritative about which sensors produced findings. Evaluate every finding independently and then explain whether they support the same security conclusion.
 - A Suricata signature may initiate a detection without a Zeek notice. A Zeek notice may initiate a detection without a Suricata signature. Absence of a finding from one sensor is missing evidence, not evidence that the traffic is safe, and must never cancel the other sensor's finding.
 - When sensor_state is multi_sensor, use Community ID or flow/time correlation metadata to understand why findings were grouped. Corroborating independent findings should increase confidence, but should not automatically mean Dangerous.
+- correlation_rule_strength is a configured rule value, not a calibrated probability or model confidence score.
 - Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
 - Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
 - If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Human Review Required and describe the disputed evidence.

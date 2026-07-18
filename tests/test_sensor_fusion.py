@@ -284,6 +284,61 @@ class SensorFusionTests(unittest.TestCase):
         self.assertEqual(method, "same_sensor_behavior")
         self.assertEqual(confidence, 0.78)
 
+    def test_same_sensor_window_boundary_and_configured_strength(self):
+        detection_id = insert_detection(
+            self.conn,
+            self.base_detection(
+                community_id=None,
+                detection_type="port_scan",
+                src_port=40000,
+                dest_port=22,
+            ),
+        )
+        insert_sensor_finding(
+            self.conn,
+            detection_id,
+            {
+                "sensor": "suricata",
+                "sensor_event_id": 302,
+                "finding_type": "signature_alert",
+                "finding_name": "Explicit port scan",
+                "severity": 2,
+                "confidence": 0.8,
+                "raw_event": {},
+            },
+        )
+        event = {
+            "timestamp": "2026-07-11T12:05:00+00:00",
+            "src_ip": "192.168.11.50",
+            "dest_ip": "203.0.113.20",
+            "src_port": 40001,
+            "dest_port": 443,
+            "protocol": "tcp",
+            "signature": "Explicit port scan",
+            "detection_type": "port_scan",
+        }
+
+        match, method, strength = find_correlated_detection(
+            self.conn,
+            event,
+            "suricata",
+            same_sensor_window_seconds=300,
+            strengths={"same_sensor_behavior": 0.42},
+        )
+        self.assertEqual(match["id"], detection_id)
+        self.assertEqual(method, "same_sensor_behavior")
+        self.assertEqual(strength, 0.42)
+
+        outside = {**event, "timestamp": "2026-07-11T12:05:01+00:00"}
+        match, method, strength = find_correlated_detection(
+            self.conn,
+            outside,
+            "suricata",
+            same_sensor_window_seconds=300,
+        )
+        self.assertIsNone(match)
+        self.assertEqual((method, strength), ("none", 0.0))
+
     def test_shared_tls_name_correlates_related_flows(self):
         detection_id = insert_detection(
             self.conn,

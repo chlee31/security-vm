@@ -44,11 +44,15 @@ def zeek_notice_to_alert(event):
     }
 
 
-def zeek_detection(event):
+def zeek_detection(event, single_sensor_strength=0.5):
     alert = zeek_notice_to_alert(event)
     detection_type = detection_type_from_alert(alert)
     mitre = map_detection(detection_type)
     notice_weight = 15 if zeek_notice_priority(event) == 2 else 8
+    try:
+        rule_strength = float(single_sensor_strength)
+    except (TypeError, ValueError):
+        rule_strength = 0.5
     return alert, {
         "first_alert_id": None,
         "first_seen": alert.get("timestamp"),
@@ -62,7 +66,7 @@ def zeek_detection(event):
         "sensor_state": "zeek_only",
         "agreement_state": "single_sensor",
         "correlation_method": "single_sensor",
-        "correlation_confidence": 0.65,
+        "correlation_confidence": max(0.0, min(1.0, rule_strength)),
         "detection_type": detection_type,
         "alert_count": 1,
         "unique_dest_ports": 1 if alert.get("dest_port") else 0,

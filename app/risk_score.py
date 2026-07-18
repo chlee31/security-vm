@@ -4,6 +4,15 @@ from app.mitre_mapper import map_detection
 
 
 PYTHON_SCORE_MAX = 90
+SCORING_POLICY_VERSION = "deterministic-score-v1"
+CATEGORY_MAXIMUMS = {
+    "sensor_severity": 20,
+    "behavior_correlation": 20,
+    "threat_intelligence": 20,
+    "mitre_relevance": 10,
+    "asset_direction": 10,
+    "sensor_corroboration": 10,
+}
 
 
 def _integer(value, default=0):
@@ -219,6 +228,8 @@ def deterministic_score(alert, detection, findings=None, evidence_context=None):
     disputed = bool(details["sensor_corroboration"].get("materially_disputed"))
     return {
         **categories,
+        "policy_version": SCORING_POLICY_VERSION,
+        "category_maximums": CATEGORY_MAXIMUMS,
         "python_score": score,
         "forced_review": disputed,
         "forced_review_reason": "Materially disputed Suricata and Zeek findings." if disputed else "",

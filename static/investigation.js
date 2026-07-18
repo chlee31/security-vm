@@ -355,7 +355,7 @@ function renderSensorFindings(data) {
       ${row(
         "Fusion Summary",
         `${label(data.sensor_state || "unknown")} · ${label(data.agreement_state || "unknown")}`,
-        `${label(data.correlation_method || "none")} · confidence ${data.correlation_confidence ?? "unknown"}${data.community_id ? ` · Community ID ${escapeHtml(data.community_id)}` : ""}`
+        `${label(data.correlation_method || "none")} · rule strength ${data.correlation_confidence ?? "unknown"}${data.community_id ? ` · Community ID ${escapeHtml(data.community_id)}` : ""}`
       )}
       ${row("Traffic", `${escapeHtml(data.src_ip || "unknown")}:${data.src_port || ""} -&gt; ${escapeHtml(data.dest_ip || "unknown")}:${data.dest_port || ""}`, escapeHtml(data.protocol || ""))}
     </div>
@@ -456,7 +456,7 @@ function render(data) {
     behavior_correlation: "Behavior and time correlation",
     threat_intelligence: "Cached and bulk threat intelligence",
     mitre_relevance: "MITRE ATT&CK relevance",
-    asset_direction: "Asset criticality and direction",
+    asset_direction: "Registered IP importance and direction",
     sensor_corroboration: "Suricata-Zeek corroboration"
   };
   const categoryMax = {

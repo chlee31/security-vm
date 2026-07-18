@@ -538,7 +538,7 @@ function renderDecisionEvidence(rows) {
           <strong>Python ${row.python_initial_score ?? 0} + AI ${row.ai_risk_adjustment ?? 0}</strong>
           <small>
             Final score ${row.final_score ?? 0}
-            ${row.src_asset || row.dest_asset ? ` · asset ${row.src_asset?.name || row.dest_asset?.name} score ${row.src_asset?.asset_score ?? row.dest_asset?.asset_score}` : " · no asset score yet"}
+            ${row.src_asset || row.dest_asset ? ` · registered IP ${row.src_asset?.name || row.dest_asset?.name} importance ${row.src_asset?.asset_score ?? row.dest_asset?.asset_score}` : " · no registered IP importance available"}
           </small>
         </div>
         <div>

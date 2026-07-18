@@ -163,9 +163,11 @@ sudo tail -f /opt/zeek/logs/current/conn.log
 
 The dashboard's Zeek page shows runtime state, log counts, TLS, DNS, HTTP, file observations, checkpoints, and recent records.
 
+Suricata ingestion stores a path/inode/offset checkpoint and resumes from the last event acknowledged after case assessment completes. It detects EVE rotation or truncation and uses a canonical event fingerprint to prevent duplicate alert rows during replay. On a new database, `suricata.start_position: end` ignores historical EVE content; set it to `beginning` only when an intentional replay is required.
+
 ## Community ID
 
-Community ID is the highest-confidence way to correlate the same bidirectional flow across Suricata and Zeek. Both sensors must use seed `0`:
+Community ID is the strongest direct way to correlate the same bidirectional flow across Suricata and Zeek. Both sensors must use seed `0`:
 
 ```bash
 sudo ./scripts/enable_community_id.sh
@@ -173,13 +175,17 @@ sudo ./scripts/enable_community_id.sh
 
 When Community ID is unavailable, the platform falls back to Zeek UID relationships and bidirectional flow/time matching. Related multi-connection behavior can still be grouped into a developing case using conservative same-sensor rules.
 
+The default `correlation-v1` windows are 10 seconds for cross-sensor flow matching, 300 seconds for repeated same-sensor behavior, and 120 seconds for bounded Zeek context. Correlation values shown in the case view are rule strengths, not calibrated probabilities. Both the windows and strengths are configurable in `config.yaml` and require experimental sensitivity testing.
+
+Detection-type labels are conservative keyword rules. Explicit scan, DNS-tunnelling, beaconing/C2, and brute-force language receives a specialized label; generic DNS, SYN, login, and SSH references remain `unknown`. This taxonomy is an implementation heuristic, not a trained or validated classifier.
+
 ## Investigation Cases
 
 Every case receives a UID such as `CASE-20260717-000123`. Its investigation page contains:
 
 - all linked Suricata and Zeek findings;
 - exact timestamps and network endpoints;
-- correlation method, confidence, and Community ID when available;
+- correlation method, configured rule strength, and Community ID when available;
 - bounded Zeek connection/protocol context;
 - repeated-activity and periodicity summary;
 - registered IP role and traffic-direction context;

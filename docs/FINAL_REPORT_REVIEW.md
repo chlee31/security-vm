@@ -60,13 +60,13 @@ Suggested boundary wording:
 
 > The analysis pipeline does not enforce firewall actions or alter production traffic. An optional router-configuration helper exists for isolated laboratory testing, but it is excluded from the evaluated passive deployment and should not be enabled on the monitored business network.
 
-### 4. Correct Ingestion Checkpoint Wording
+### 4. Describe Ingestion Recovery Precisely
 
-Zeek ingestion stores per-log file, inode, and byte-offset checkpoints. Suricata currently follows new EVE JSON records from the end of the file and relies on database uniqueness to prevent duplicate stored alerts; it does not persist an equivalent EVE byte-offset checkpoint. Do not state that every ingestion process resumes from a stored offset.
+Zeek ingestion stores per-log file, inode, and byte-offset checkpoints. Suricata now stores the EVE path, inode, and last acknowledged offset, detects rotation or truncation, and uses a canonical SHA-256 event fingerprint to prevent duplicate alert rows during replay.
 
 Suggested wording:
 
-> Zeek ingestion stores per-log checkpoints for restart recovery. Suricata follows newly appended EVE JSON records and uses database uniqueness controls to avoid duplicate storage.
+> Zeek and Suricata ingestion retain SQLite checkpoints for restart recovery. Suricata advances its checkpoint after case assessment completes, detects EVE replacement or truncation, and rejects replayed event content using a canonical fingerprint.
 
 ### 5. Describe VirusTotal Precisely
 

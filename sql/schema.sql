@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_uid TEXT UNIQUE,
+  event_fingerprint TEXT,
   suricata_event_id TEXT,
   timestamp TEXT,
   src_ip TEXT,
@@ -17,6 +18,14 @@ CREATE TABLE IF NOT EXISTS alerts (
   pcap_point TEXT,
   raw_json TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS suricata_ingest_checkpoints (
+  source TEXT PRIMARY KEY,
+  path TEXT NOT NULL,
+  inode INTEGER NOT NULL,
+  offset INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS detections (
@@ -488,6 +497,9 @@ CREATE INDEX IF NOT EXISTS idx_zeek_events_src_dst
   ON zeek_events(source_ip, destination_ip);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_event_uid
   ON alerts(event_uid);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_event_fingerprint
+  ON alerts(event_fingerprint)
+  WHERE event_fingerprint IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_case_uid
   ON detections(case_uid);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_zeek_events_event_uid

@@ -120,7 +120,7 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
             "sensor_state": detection.get("sensor_state"),
             "agreement_state": detection.get("agreement_state"),
             "correlation_method": detection.get("correlation_method"),
-            "correlation_confidence": detection.get("correlation_confidence"),
+            "correlation_rule_strength": detection.get("correlation_confidence"),
             "community_id": detection.get("community_id"),
             "findings": workspace.get("sensor_findings") or [],
         },

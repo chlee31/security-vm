@@ -17,6 +17,11 @@ class Correlator:
             + mitre.get("score", 0)
             + asset_direction_score(alert, self.config)
         )
+        strengths = self.config.get("correlation", {}).get("strengths", {})
+        try:
+            single_sensor_strength = float(strengths.get("single_sensor", 0.5))
+        except (TypeError, ValueError):
+            single_sensor_strength = 0.5
         return {
             "first_alert_id": alert_id,
             "first_seen": alert.get("timestamp"),
@@ -30,7 +35,7 @@ class Correlator:
             "sensor_state": alert.get("sensor_state", "suricata_only"),
             "agreement_state": "single_sensor",
             "correlation_method": "single_sensor",
-            "correlation_confidence": 0.5,
+            "correlation_confidence": max(0.0, min(1.0, single_sensor_strength)),
             "detection_type": detection_type,
             "alert_count": 1,
             "unique_dest_ports": 1 if alert.get("dest_port") is not None else 0,

@@ -258,7 +258,8 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
             "sensor_state": (detection or {}).get("sensor_state", "suricata_only"),
             "agreement_state": (detection or {}).get("agreement_state", "single_sensor"),
             "correlation_method": (detection or {}).get("correlation_method", "single_sensor"),
-            "correlation_confidence": (detection or {}).get("correlation_confidence", 0.5),
+            "correlation_rule_strength": (detection or {}).get("correlation_confidence", 0.5),
+            "correlation_policy_version": correlation_config.get("policy_version", "correlation-v1"),
             "community_id": (detection or {}).get("community_id"),
             "findings": findings,
         },
@@ -476,12 +477,21 @@ def run_ingest(config_path):
     except requests.RequestException as exc:
         insert_app_event(conn, "error", "ai_model", f"AI model unreachable: {exc}")
 
-    for event in follow_file(eve_path):
-        alert = normalize_suricata_event(event)
+    start_position = config.get("suricata", {}).get("start_position", "end")
+    for record in follow_file(
+        eve_path,
+        conn=conn,
+        start_position=start_position,
+    ):
+        alert = normalize_suricata_event(record.event)
         if not alert:
+            record.acknowledge()
             continue
 
         alert_id = insert_alert(conn, alert)
+        if alert.get("_duplicate") and sensor_finding_detection_id(conn, "suricata", alert_id):
+            record.acknowledge()
+            continue
         alert["alert_id"] = alert_id
         alert["detection_type"] = detection_type_from_alert(alert)
         match, method, confidence = find_correlated_detection(
@@ -490,6 +500,7 @@ def run_ingest(config_path):
             "suricata",
             tolerance_seconds=int(config.get("correlation", {}).get("sensor_time_tolerance_seconds", 10)),
             same_sensor_window_seconds=int(config.get("correlation", {}).get("same_sensor_window_seconds", 300)),
+            strengths=config.get("correlation", {}).get("strengths", {}),
         )
         if match:
             detection_id = match["id"]
@@ -502,6 +513,7 @@ def run_ingest(config_path):
             detection_id = insert_detection(conn, detection)
             insert_sensor_finding(conn, detection_id, suricata_finding(alert_id, alert))
         assess_detection(conn, config_path, alert, detection, alert_id, detection_id)
+        record.acknowledge()
 
 
 def run_dashboard(config_path, host, port):
@@ -568,7 +580,12 @@ def run_zeek_ingest(config_path):
             if not event.get(key) and flow.get(key) is not None:
                 event[key] = flow[key]
         runtime_config = load_config(config_path)
-        alert, detection = zeek_detection(event)
+        alert, detection = zeek_detection(
+            event,
+            single_sensor_strength=runtime_config.get("correlation", {})
+            .get("strengths", {})
+            .get("single_sensor", 0.5),
+        )
         event["detection_type"] = detection.get("detection_type")
         match, method, confidence = find_correlated_detection(
             conn,
@@ -576,6 +593,7 @@ def run_zeek_ingest(config_path):
             "zeek",
             tolerance_seconds=int(runtime_config.get("correlation", {}).get("sensor_time_tolerance_seconds", 10)),
             same_sensor_window_seconds=int(runtime_config.get("correlation", {}).get("same_sensor_window_seconds", 300)),
+            strengths=runtime_config.get("correlation", {}).get("strengths", {}),
         )
         if match:
             detection_id = match["id"]

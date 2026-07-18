@@ -16,7 +16,7 @@ flowchart TB
     end
 
     subgraph STORE[Normalize and Preserve]
-        SN[Normalize Suricata<br/>assign SUR event UID]
+        SN[Normalize Suricata<br/>fingerprint + SUR event UID<br/>acknowledged file checkpoint]
         ZN[Normalize Zeek<br/>assign ZEK event UID]
         DB[(SQLite<br/>original records retained)]
         EVE --> SN --> DB
@@ -34,7 +34,7 @@ flowchart TB
     subgraph ENRICH[Python Evidence and Score]
         ASSET[(Admin-managed IP roles)]
         TI[(Cached threat intelligence)]
-        SCORE[Explainable deterministic score 0-90<br/>severity 20 + behavior 20 + TI 20<br/>MITRE 10 + asset/direction 10<br/>sensor corroboration 10]
+        SCORE[Explainable deterministic score 0-90<br/>severity 20 + behavior 20 + TI 20<br/>MITRE 10 + registered IP/direction 10<br/>sensor corroboration 10]
         PACKAGE[Structured case evidence package]
         CASE --> SCORE
         ASSET --> SCORE
@@ -117,6 +117,30 @@ Community ID represents one bidirectional flow. A larger incident can span many 
 - DNS tunneling, beaconing, and brute-force activity must share the source plus a relevant destination within the configured window;
 - unknown findings require the same source, destination, protocol, and finding name;
 - unrelated surrounding Zeek traffic is excluded from case context.
+
+The default correlation policy is versioned as `correlation-v1`. Its current windows are design parameters rather than learned values:
+
+| Parameter | Default | Purpose |
+| --- | ---: | --- |
+| Cross-sensor flow tolerance | 10 seconds | Allows nearby Suricata and Zeek records to describe one flow when stronger identifiers are absent |
+| Same-sensor behavior window | 300 seconds | Groups repeated behavior without creating an unlimited incident window |
+| Zeek context window | 120 seconds | Bounds supporting protocol metadata around a case |
+
+Stored correlation values are **rule strengths**, not calibrated probabilities. Community ID receives the strongest value, followed by Zeek UID, flow/time, shared observables, and repeated same-sensor behavior. The windows and strengths must be evaluated through boundary, sensitivity, missed-correlation, and incorrect-merge tests before they can be presented as empirically validated.
+
+## Suricata Recovery and Deduplication
+
+Suricata ingestion stores the EVE file path, inode, and last acknowledged byte offset in SQLite. A record is acknowledged only after case assessment completes. On restart, the reader resumes at that offset. It detects inode changes and same-inode truncation so a replacement EVE file is read from its beginning.
+
+Each normalized Suricata event also receives a SHA-256 fingerprint of canonical event JSON. A partial unique index prevents replayed content from creating a second alert row. On a first installation with no checkpoint, `suricata.start_position` controls whether historical content is read; the safe default is `end`.
+
+## Detection Labels
+
+Detection type is a conservative, rule-based label used for grouping and display. Explicit patterns identify port scanning, DNS tunnelling, beaconing/C2, and brute force. Generic words such as `DNS`, `SYN`, `login`, or `SSH` do not establish those behaviors and remain `unknown`. These labels are not a trained classifier and should be evaluated against labelled Suricata and Zeek scenarios.
+
+## Scoring Interpretation
+
+The six-category policy is versioned as `deterministic-score-v1`. Its output is an investigation-priority and evidence-strength heuristic, not a probability of compromise. Category maxima and the policy version are stored with each score breakdown. The current weights require sensitivity, ablation, and analyst-review evaluation before they can be described as validated.
 
 ## Sensor Responsibilities
 

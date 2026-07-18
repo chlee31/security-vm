@@ -67,6 +67,8 @@ class ScoringPolicyTests(unittest.TestCase):
         self.assertEqual(result["mitre_relevance"], 10)
         self.assertEqual(result["asset_direction"], 10)
         self.assertEqual(result["sensor_corroboration"], 10)
+        self.assertEqual(result["policy_version"], "deterministic-score-v1")
+        self.assertEqual(sum(result["category_maximums"].values()), 90)
 
     def test_outcome_boundaries(self):
         expected = {

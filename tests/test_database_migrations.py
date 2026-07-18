@@ -45,6 +45,15 @@ class DatabaseMigrationTests(unittest.TestCase):
                         for row in migrated.execute(f"PRAGMA table_info({table})").fetchall()
                     }
                     self.assertIn("community_id", columns)
+                alert_columns = {
+                    row["name"]
+                    for row in migrated.execute("PRAGMA table_info(alerts)").fetchall()
+                }
+                self.assertIn("event_fingerprint", alert_columns)
+                checkpoint_table = migrated.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'suricata_ingest_checkpoints'"
+                ).fetchone()
+                self.assertIsNotNone(checkpoint_table)
                 migrated.execute("SELECT community_id FROM detections LIMIT 1").fetchall()
                 migrated.execute("SELECT community_id FROM alerts LIMIT 1").fetchall()
                 self.assertEqual(

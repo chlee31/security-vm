@@ -1,4 +1,54 @@
 import json
+import re
+
+
+DETECTION_TYPE_PATTERNS = (
+    (
+        "port_scan",
+        (
+            r"\bport[ -]?scan(?:ning)?\b",
+            r"\bnetwork[ -]?scan(?:ning)?\b",
+            r"\bsyn[ -]?scan\b",
+            r"\bnmap\b",
+            r"\bmasscan\b",
+            r"\bscan in progress\b",
+            r"\bscanner detected\b",
+        ),
+    ),
+    (
+        "dns_tunneling",
+        (
+            r"\bdns[ -]?tunnel(?:ing)?\b",
+            r"\bdns[ -]?exfil(?:tration)?\b",
+            r"\bdns covert channel\b",
+            r"\banomalous dns\b",
+            r"\bexcessive dns quer(?:y|ies)\b",
+            r"\bdynamic_dns query to nip\.io\b",
+        ),
+    ),
+    (
+        "beaconing",
+        (
+            r"\bbeacon(?:ing)?\b",
+            r"\bcommand and control\b",
+            r"\bc2\b",
+            r"\bcnc\b",
+            r"\bc2 (?:traffic|communication|callback|channel)\b",
+            r"\bcallback\b",
+            r"\bperiodic (?:connection|communication)\b",
+        ),
+    ),
+    (
+        "brute_force",
+        (
+            r"\bbrute[ -]?force\b",
+            r"\bpassword guess(?:ing)?\b",
+            r"\bcredential guess(?:ing)?\b",
+            r"\brepeated authentication fail(?:ure|ures)\b",
+            r"\bmultiple failed logins?\b",
+        ),
+    ),
+)
 
 
 def normalize_suricata_event(event):
@@ -8,6 +58,7 @@ def normalize_suricata_event(event):
     alert = event.get("alert", {})
     return {
         "suricata_event_id": str(event.get("event_id") or event.get("flow_id") or ""),
+        "signature_id": alert.get("signature_id"),
         "timestamp": event.get("timestamp"),
         "src_ip": event.get("src_ip"),
         "dest_ip": event.get("dest_ip"),
@@ -27,12 +78,7 @@ def normalize_suricata_event(event):
 
 def detection_type_from_alert(alert):
     text = f"{alert.get('signature', '')} {alert.get('category', '')}".lower()
-    if "scan" in text or "syn" in text:
-        return "port_scan"
-    if "dns" in text or "tunnel" in text:
-        return "dns_tunneling"
-    if "beacon" in text or "c2" in text or "callback" in text:
-        return "beaconing"
-    if "brute" in text or "login" in text or "ssh" in text:
-        return "brute_force"
+    for detection_type, patterns in DETECTION_TYPE_PATTERNS:
+        if any(re.search(pattern, text) for pattern in patterns):
+            return detection_type
     return "unknown"
