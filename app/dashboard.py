@@ -1,6 +1,5 @@
 from pathlib import Path
 import importlib.util
-import getpass
 import ipaddress
 import json
 import os
@@ -37,7 +36,6 @@ from app.database import (
     init_db,
     insert_app_event,
     detection_type_detail,
-    detection_time_window,
     enrichment_status,
     get_firewall_candidate,
     get_firewall_block,
@@ -84,13 +82,11 @@ from app.threat_intel import (
     sanitized_provider_status,
 )
 from app.firewall import firewalld_runtime_status, firewalld_setup_commands, remove_firewalld_block, temporary_block_firewalld
-from app.incident_evidence import create_incident_evidence
 from app.ai_client import check_ai_model, model_metadata
 from app.ai_comparison import run_model_comparison
 from app.case_assessment import reassess_case, refresh_case_virustotal
 from app.notifications import normalize_recipients, sanitized_email_settings, send_email
 from app.security import redact_secrets
-from app.pcap_inventory import list_pcap_files
 from app.zeek_inventory import zeek_status
 
 
@@ -205,12 +201,6 @@ class EmailNotificationRequest(BaseModel):
     dashboard_base_url: str = ""
 
 
-class InvestigationRequest(BaseModel):
-    seconds_before: int = 120
-    seconds_after: int = 120
-    ip_filter_enabled: bool = True
-
-
 ADMIN_SYSTEM_TOOLS = {
     "Python": {"binary": "python3", "package": "python3 python3-venv python3-pip"},
     "Suricata": {"binary": "suricata", "package": "suricata"},
@@ -255,7 +245,6 @@ ENCRYPTED_TRAFFIC_KEYWORDS = ("tls", "ssl", "https", "quic", "vpn", "wireguard",
 
 def tool_status():
     tools = []
-    current_user = getpass.getuser()
     for name, meta in ADMIN_SYSTEM_TOOLS.items():
         binary = meta["binary"]
         package = meta["package"]
@@ -280,8 +269,6 @@ def tool_status():
         elif installed:
             status = "permission_limited"
             notes = "Installed, but the dashboard user cannot execute it."
-            if binary == "dumpcap":
-                notes = "Installed, but packet capture needs wireshark group access or sudo. After adding the user, log out and back in or run newgrp wireshark, then restart the dashboard."
         else:
             status = "missing"
             notes = "Not found on PATH."
@@ -297,10 +284,8 @@ def tool_status():
                 "notes": notes,
                 "install_command": f"sudo apt install -y {package}",
                 "update_command": f"sudo apt update && sudo apt install --only-upgrade -y {package}",
-                "fix_command": f"sudo usermod -aG wireshark {current_user}"
-                if binary == "dumpcap" and installed and not executable
-                else "",
-                "after_fix": "Log out and back in, or run: newgrp wireshark. Then restart the dashboard.",
+                "fix_command": "",
+                "after_fix": "",
             }
         )
     return tools
@@ -537,20 +522,15 @@ def create_app(config_path):
         retired_paths = {
             "/api/admin/system-mode",
             "/api/asset-inventory",
-            "/api/pcap-files",
         }
         retired_prefixes = (
             "/api/admin/notifications/",
             "/api/admin/firewall-",
             "/api/assets",
             "/api/allowlist",
-            "/api/incident-evidence/",
         )
         path = request.url.path
-        retired_detection_path = path.startswith("/api/detections/") and (
-            path.endswith("/investigation") or path.endswith("/incident-evidence")
-        )
-        if path in retired_paths or path.startswith(retired_prefixes) or retired_detection_path:
+        if path in retired_paths or path.startswith(retired_prefixes):
             return JSONResponse(
                 status_code=410,
                 content={
@@ -1518,82 +1498,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.post("/api/detections/{detection_id}/investigation")
-    def api_create_investigation(detection_id: int, payload: InvestigationRequest):
-        conn = connect(db_path)
-        try:
-            try:
-                evidence = create_incident_evidence(
-                    conn,
-                    config,
-                    detection_id,
-                    seconds_before=payload.seconds_before,
-                    seconds_after=payload.seconds_after,
-                    ip_filter_enabled=payload.ip_filter_enabled,
-                )
-                insert_app_event(
-                    conn,
-                    "info",
-                    "incident_evidence",
-                    f"Created incident evidence for detection {detection_id}",
-                    {"incident_evidence_id": evidence.get("id"), "status": evidence.get("status")},
-                )
-                return {"status": "created", "incident_evidence": evidence}
-            except ValueError as exc:
-                insert_app_event(conn, "error", "incident_evidence", str(exc), {"detection_id": detection_id})
-                raise HTTPException(status_code=400, detail=str(exc))
-        finally:
-            conn.close()
-
-    @app.get("/api/detections/{detection_id}/incident-evidence")
-    def api_detection_incident_evidence(detection_id: int):
-        conn = connect(db_path)
-        try:
-            rows = conn.execute(
-                "SELECT * FROM incident_evidence WHERE detection_id = ? ORDER BY id DESC",
-                (detection_id,),
-            ).fetchall()
-            return [dict(row) for row in rows]
-        finally:
-            conn.close()
-
-    @app.get("/api/incident-evidence/{evidence_id}")
-    def api_incident_evidence(evidence_id: int):
-        conn = connect(db_path)
-        try:
-            row = conn.execute("SELECT * FROM incident_evidence WHERE id = ?", (evidence_id,)).fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Incident evidence not found")
-            return dict(row)
-        finally:
-            conn.close()
-
-    def stored_json_file(evidence_id, column):
-        conn = connect(db_path)
-        try:
-            row = conn.execute("SELECT * FROM incident_evidence WHERE id = ?", (evidence_id,)).fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Incident evidence not found")
-            path = row[column]
-            if not path:
-                raise HTTPException(status_code=404, detail=f"{column} is not available for this evidence")
-            try:
-                return json.loads(Path(path).read_text(encoding="utf-8"))
-            except OSError as exc:
-                raise HTTPException(status_code=404, detail=f"Evidence file unavailable: {exc}")
-            except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=500, detail=f"Evidence file is not valid JSON: {exc}")
-        finally:
-            conn.close()
-
-    @app.get("/api/incident-evidence/{evidence_id}/manifest")
-    def api_incident_manifest(evidence_id: int):
-        return stored_json_file(evidence_id, "evidence_manifest_path")
-
-    @app.get("/api/incident-evidence/{evidence_id}/zeek/events")
-    def api_incident_zeek_events(evidence_id: int):
-        return stored_json_file(evidence_id, "zeek_logs_path")
-
     @app.post("/api/threat-intel-config")
     def api_threat_intel_config(payload: ThreatIntelConfigRequest):
         if payload.cache_ttl_hours < 1 or payload.cache_ttl_hours > 168:
@@ -1708,18 +1612,6 @@ def create_app(config_path):
                 return {"ok": False, "status": "missing_key", "error": str(exc)}
         finally:
             conn.close()
-
-    @app.get("/api/pcap-files")
-    def api_pcap_files(detection_type: str = None):
-        conn = connect(db_path)
-        try:
-            window = detection_time_window(conn, detection_type)
-        finally:
-            conn.close()
-        inventory = list_pcap_files(config, window.get("start_time"), window.get("end_time"))
-        inventory["detection_type"] = detection_type
-        inventory["time_window"] = window
-        return inventory
 
     @app.get("/api/decision-evidence")
     def api_decision_evidence(limit: int = 25, detection_type: str = None, outcome: str = None):

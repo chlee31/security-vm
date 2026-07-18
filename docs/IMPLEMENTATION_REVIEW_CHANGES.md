@@ -32,11 +32,20 @@ These values remain design choices. Experimental work should measure missed corr
 
 ## Scoring Auditability
 
-- Versioned the score as `deterministic-score-v1`.
+- Versioned the original six-category score as `deterministic-score-v1`.
 - Store category maxima and an explicit statement that the score is an investigation-priority heuristic, not a probability of compromise.
-- The six existing category weights remain unchanged so prior cases and tests retain comparable behavior.
+- At that review point, the six existing category weights were retained so prior cases and tests remained comparable.
 
 The report should state that the weights require sensitivity, ablation, and analyst-review validation.
+
+### Current scoring revision
+
+- `deterministic-score-v2` removes MITRE ATT&CK from every numerical scoring path.
+- The five remaining categories have a maximum of 80 points; removed points were not redistributed.
+- MITRE technique IDs and names remain visible as suggested descriptive context and remain in the AI evidence package.
+- The AI prompt explicitly prohibits using the derived MITRE mapping as independent risk evidence.
+- The historical `score_breakdowns.mitre_relevance` column remains for database compatibility and receives zero for new assessments.
+- Existing outcome thresholds are provisional and require sensitivity testing against the new reachable score range.
 
 ## Registered IP Terminology
 
@@ -45,8 +54,9 @@ The report should state that the weights require sensitivity, ablation, and anal
 
 ## Legacy and Security Boundaries
 
-- PCAP, active firewall response, and notification paths remain retired from the evaluated analysis runtime.
-- Some schema structures remain so existing SQLite databases can migrate without destructive changes.
+- Packet-capture and tshark processing code has been removed from the application, APIs, schema for new databases, and documentation.
+- Historical packet-capture columns in existing SQLite databases are left untouched rather than destructively dropped.
+- Active firewall response and notification paths remain retired from the evaluated analysis runtime.
 - The dashboard continues to bind to `127.0.0.1` by default and warns when `0.0.0.0` is selected.
 - The prototype still has no built-in authentication and must use localhost or a restricted management network.
 

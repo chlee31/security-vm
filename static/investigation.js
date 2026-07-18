@@ -455,7 +455,6 @@ function render(data) {
     sensor_severity: "Sensor finding severity",
     behavior_correlation: "Behavior and time correlation",
     threat_intelligence: "Cached and bulk threat intelligence",
-    mitre_relevance: "MITRE ATT&CK relevance",
     asset_direction: "Registered IP importance and direction",
     sensor_corroboration: "Suricata-Zeek corroboration"
   };
@@ -463,12 +462,11 @@ function render(data) {
     sensor_severity: 20,
     behavior_correlation: 20,
     threat_intelligence: 20,
-    mitre_relevance: 10,
     asset_direction: 10,
     sensor_corroboration: 10
   };
   els.scoring.innerHTML = [
-    row("Python Deterministic Score", latestBreakdown?.python_score ?? data.python_initial_score ?? 0, "Maximum 90 points"),
+    row("Python Deterministic Score", latestBreakdown?.python_score ?? data.python_initial_score ?? 0, "Maximum 80 points"),
     ...Object.entries(categoryLabels).map(([key, title]) => row(
       title,
       `${latestBreakdown?.[key] ?? 0} / ${categoryMax[key]}`,
@@ -477,7 +475,7 @@ function render(data) {
     row("AI Adjustment", latestBreakdown?.llm_adjustment_applied ?? data.ai_risk_adjustment ?? 0, "Independently clamped from -10 to +10"),
     latestBreakdown?.forced_review ? row("Mandatory Review Override", "Human Review Required", latestBreakdown.forced_review_reason || "Materially disputed sensor findings") : "",
     row("Correlation", `${data.alert_count || 0} sensor events · ${data.unique_dest_ports || 0} destination ports · ${data.unique_dest_hosts || 0} hosts`, `${data.time_window_seconds || 0}s window · ${label(data.correlation_method || "single_sensor")}`),
-    row("MITRE", data.mitre_id ? `${data.mitre_id} · ${data.mitre_name || ""}` : "No MITRE mapping"),
+    row("Suggested MITRE context", data.mitre_id ? `${data.mitre_id} · ${data.mitre_name || ""}` : "No suggested mapping"),
   ].filter(Boolean).join("");
 
   const vtRows = data.virustotal_verifications || [];

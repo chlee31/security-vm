@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS alerts (
   priority INTEGER,
   flow_id TEXT,
   community_id TEXT,
-  pcap_point TEXT,
   raw_json TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -167,36 +166,6 @@ CREATE TABLE IF NOT EXISTS assets (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS incident_evidence (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  detection_id INTEGER,
-  alert_id INTEGER,
-  incident_directory TEXT,
-  incident_start_time TEXT,
-  incident_end_time TEXT,
-  window_start TEXT,
-  window_end TEXT,
-  incident_pcap_path TEXT,
-  pcap_path TEXT,
-  pcap_summary_path TEXT,
-  zeek_logs_path TEXT,
-  pcap_summary TEXT,
-  evidence_manifest_path TEXT,
-  status TEXT DEFAULT 'pending',
-  error_message TEXT,
-  capture_label TEXT,
-  file_size_bytes INTEGER,
-  pcap_modified_at TEXT,
-  summary_status TEXT,
-  summary_packet_count INTEGER,
-  summary_error TEXT,
-  display_filter TEXT,
-  ai_sent INTEGER DEFAULT 0,
-  ai_model_run_id TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS zeek_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_uid TEXT UNIQUE,
@@ -254,17 +223,12 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   elapsed_ms INTEGER,
   prompt_sha256 TEXT,
   prompt_chars INTEGER,
-  -- Deprecated audit fields retained for existing database compatibility.
-  pcap_summary_sha256 TEXT,
-  pcap_summary_chars INTEGER,
-  pcap_summary_included INTEGER DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS ai_assessments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER NOT NULL,
-  incident_evidence_id INTEGER,
   assessment_type TEXT NOT NULL,
   provider TEXT,
   model_name TEXT NOT NULL,
@@ -277,8 +241,7 @@ CREATE TABLE IF NOT EXISTS ai_assessments (
   response_time_ms INTEGER,
   raw_response TEXT,
   created_at TEXT NOT NULL,
-  FOREIGN KEY (detection_id) REFERENCES detections(id),
-  FOREIGN KEY (incident_evidence_id) REFERENCES incident_evidence(id)
+  FOREIGN KEY (detection_id) REFERENCES detections(id)
 );
 
 CREATE TABLE IF NOT EXISTS score_breakdowns (
@@ -509,8 +472,6 @@ CREATE INDEX IF NOT EXISTS idx_score_breakdowns_detection
 CREATE INDEX IF NOT EXISTS idx_vt_verifications_detection
   ON virustotal_verifications(detection_id, assessment_stage);
 
-CREATE INDEX IF NOT EXISTS idx_incident_evidence_detection
-ON incident_evidence(detection_id);
 
 CREATE INDEX IF NOT EXISTS idx_ai_assessments_detection
 ON ai_assessments(detection_id, assessment_type);

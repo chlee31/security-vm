@@ -9,9 +9,15 @@ from app.ai_client import (
     normalize_risk_adjustment,
     parse_model_response,
 )
-from app.database import init_db, insert_alert, insert_detection
+from app.database import (
+    init_db,
+    insert_alert,
+    insert_detection,
+    insert_score_breakdown,
+    update_detection_python_score,
+)
 from app.decision_engine import classify_score, decide
-from app.risk_score import deterministic_score
+from app.risk_score import cap_python_score, deterministic_score
 
 
 class ScoringPolicyTests(unittest.TestCase):
@@ -42,7 +48,7 @@ class ScoringPolicyTests(unittest.TestCase):
             "asset_context": {"asset_score": 10, "asset_match": "src_ip"},
         }
 
-    def test_six_categories_cap_python_at_90(self):
+    def test_five_categories_cap_python_at_80_without_mitre_points(self):
         findings = [
             {"sensor": "suricata", "severity": 1},
             {"sensor": "zeek", "severity": 2},
@@ -60,15 +66,27 @@ class ScoringPolicyTests(unittest.TestCase):
         }
         result = deterministic_score(self.alert, self.detection, findings, evidence)
 
-        self.assertEqual(result["python_score"], 90)
+        self.assertEqual(result["python_score"], 80)
         self.assertEqual(result["sensor_severity"], 20)
         self.assertEqual(result["behavior_correlation"], 20)
         self.assertEqual(result["threat_intelligence"], 20)
-        self.assertEqual(result["mitre_relevance"], 10)
+        self.assertNotIn("mitre_relevance", result)
         self.assertEqual(result["asset_direction"], 10)
         self.assertEqual(result["sensor_corroboration"], 10)
-        self.assertEqual(result["policy_version"], "deterministic-score-v1")
-        self.assertEqual(sum(result["category_maximums"].values()), 90)
+        self.assertEqual(result["policy_version"], "deterministic-score-v2")
+        self.assertEqual(sum(result["category_maximums"].values()), 80)
+        self.assertEqual(cap_python_score(999), 80)
+
+    def test_mitre_mapping_does_not_change_deterministic_score(self):
+        mapped = deterministic_score(self.alert, self.detection, [], {})
+        unmapped = deterministic_score(
+            self.alert,
+            {**self.detection, "mitre_id": None, "mitre_name": None},
+            [],
+            {},
+        )
+        self.assertEqual(mapped["python_score"], unmapped["python_score"])
+        self.assertEqual(mapped["details"], unmapped["details"])
 
     def test_outcome_boundaries(self):
         expected = {
@@ -225,7 +243,8 @@ class ScoringPolicyTests(unittest.TestCase):
         self.assertIn("integer from -10 to 10", prompt)
         for field in ("who", "what", "when", "where", "why", "how", "next_steps", "threat_intel_analysis"):
             self.assertIn(field, prompt)
-        self.assertIn("packet captures", prompt)
+        self.assertIn("descriptive context only", prompt)
+        self.assertIn("must not independently increase risk", prompt)
         self.assertNotIn("duplicated raw sensor payload", prompt)
         self.assertIn("validates against this exact schema", prompt)
 
@@ -246,6 +265,31 @@ class ScoringPolicyTests(unittest.TestCase):
         self.assertEqual(detection["case_uid"], "CASE-20260714-000001")
         self.assertEqual(alert_id, 1)
         self.assertEqual(detection_id, 1)
+
+        update_detection_python_score(self.conn, detection_id, 999)
+        stored_detection = self.conn.execute(
+            "SELECT python_initial_score FROM detections WHERE id = ?",
+            (detection_id,),
+        ).fetchone()
+        self.assertEqual(stored_detection["python_initial_score"], 80)
+
+        breakdown = deterministic_score(self.alert, self.detection, [], {})
+        insert_score_breakdown(
+            self.conn,
+            detection_id,
+            breakdown,
+            llm_adjustment_raw=999,
+            llm_adjustment_applied=10,
+            provisional_score=999,
+        )
+        stored_breakdown = self.conn.execute(
+            "SELECT python_score, mitre_relevance, provisional_score FROM score_breakdowns"
+        ).fetchone()
+        self.assertEqual(dict(stored_breakdown), {
+            "python_score": breakdown["python_score"],
+            "mitre_relevance": 0,
+            "provisional_score": 90,
+        })
 
 
 if __name__ == "__main__":

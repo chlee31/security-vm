@@ -147,12 +147,8 @@ def normalize_legacy_config_keys(config):
                     "api_key": threat_intel.get(api_key, "") or "",
                     "refresh_hours": 24,
                 }
-    # These keys remain in older local files for migration history, but the
-    # investigation-focused runtime no longer activates response or PCAP paths.
-    for retired_key in ("pcap", "incident_evidence", "firewall", "notifications"):
+    # Response-era settings remain ignored by the passive analysis runtime.
+    for retired_key in ("firewall", "notifications"):
         config.pop(retired_key, None)
     config.setdefault("system", {})["mode"] = "analysis"
-    reassessment = config.get("ai_reassessment")
-    if isinstance(reassessment, dict):
-        reassessment.pop("include_pcap_summary", None)
     return config

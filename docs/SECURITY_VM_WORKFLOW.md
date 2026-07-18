@@ -34,7 +34,8 @@ flowchart TB
     subgraph ENRICH[Python Evidence and Score]
         ASSET[(Admin-managed IP roles)]
         TI[(Cached threat intelligence)]
-        SCORE[Explainable deterministic score 0-90<br/>severity 20 + behavior 20 + TI 20<br/>MITRE 10 + registered IP/direction 10<br/>sensor corroboration 10]
+        MITRE[(Suggested MITRE context<br/>descriptive only)]
+        SCORE[Explainable deterministic score 0-80<br/>severity 20 + behavior 20 + TI 20<br/>registered IP/direction 10<br/>sensor corroboration 10]
         PACKAGE[Structured case evidence package]
         CASE --> SCORE
         ASSET --> SCORE
@@ -44,6 +45,7 @@ flowchart TB
         SCORE --> PACKAGE
         ASSET --> PACKAGE
         TI --> PACKAGE
+        CASE --> MITRE --> PACKAGE
     end
 
     subgraph AI[Bounded Local AI Explanation]
@@ -54,11 +56,11 @@ flowchart TB
     end
 
     subgraph OUTCOME[Python Final Control]
-        FINAL[Final score 0-100]
+        FINAL[Effective final score 0-90]
         SAFE[Safe 0-29]
         REVIEW[Human Review Required 30-69]
         HIGH[High Risk 70-84]
-        DANGER[Dangerous 85-100]
+        DANGER[Dangerous 85-90]
         SCORE --> FINAL
         REPORT --> FINAL
         FINAL --> SAFE
@@ -140,7 +142,7 @@ Detection type is a conservative, rule-based label used for grouping and display
 
 ## Scoring Interpretation
 
-The six-category policy is versioned as `deterministic-score-v1`. Its output is an investigation-priority and evidence-strength heuristic, not a probability of compromise. Category maxima and the policy version are stored with each score breakdown. The current weights require sensitivity, ablation, and analyst-review evaluation before they can be described as validated.
+The five-category policy is versioned as `deterministic-score-v2` and has a maximum of 80 points. MITRE ATT&CK mappings remain descriptive context because they are derived from the existing behavior label rather than independent evidence. The score is an investigation-priority and evidence-strength heuristic, not a probability of compromise. Category maxima and the policy version are stored with each score breakdown. The current weights and outcome thresholds require sensitivity, ablation, and analyst-review evaluation before they can be described as validated.
 
 ## Sensor Responsibilities
 
@@ -160,7 +162,6 @@ The six-category policy is versioned as `deterministic-score-v1`. Its output is 
 - The AI model supplies a bounded adjustment and explanation; it does not execute a response.
 - Model comparison runs three requests sequentially against the same evidence. Candidate outputs remain advisory and cannot change the official case decision.
 - All three model identities and responses appear directly on the investigation page. Analyst selections update the aggregate scorecard.
-- Raw packet capture is outside the active workflow and is never sent to the model.
 - Network evidence cannot establish endpoint process, user identity, or decrypted payload content unless another source explicitly supplies it.
 - API keys are not included in prompts, logs, evidence responses, or dashboard payloads.
 - The dashboard binds to localhost by default. A remote management address must be selected deliberately.

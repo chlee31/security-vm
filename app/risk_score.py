@@ -1,15 +1,12 @@
 import ipaddress
 
-from app.mitre_mapper import map_detection
 
-
-PYTHON_SCORE_MAX = 90
-SCORING_POLICY_VERSION = "deterministic-score-v1"
+PYTHON_SCORE_MAX = 80
+SCORING_POLICY_VERSION = "deterministic-score-v2"
 CATEGORY_MAXIMUMS = {
     "sensor_severity": 20,
     "behavior_correlation": 20,
     "threat_intelligence": 20,
-    "mitre_relevance": 10,
     "asset_direction": 10,
     "sensor_corroboration": 10,
 }
@@ -140,16 +137,6 @@ def threat_intelligence_score(evidence_context):
     }
 
 
-def mitre_relevance_score(detection):
-    mapped = map_detection(detection.get("detection_type"))
-    points = min(10, _integer(mapped.get("score"))) if detection.get("mitre_id") else 0
-    return points, {
-        "mitre_id": detection.get("mitre_id"),
-        "mitre_name": detection.get("mitre_name"),
-        "explanation": f"MITRE ATT&CK relevance contributes {points}/10.",
-    }
-
-
 def _is_private(value):
     try:
         return ipaddress.ip_address(value).is_private
@@ -217,7 +204,6 @@ def deterministic_score(alert, detection, findings=None, evidence_context=None):
         "sensor_severity": sensor_severity_score(alert, findings),
         "behavior_correlation": behavior_correlation_score(detection),
         "threat_intelligence": threat_intelligence_score(evidence_context),
-        "mitre_relevance": mitre_relevance_score(detection),
         "asset_direction": asset_and_direction_score(alert, detection),
         "sensor_corroboration": sensor_corroboration_score(detection, findings),
     }

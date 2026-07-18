@@ -19,7 +19,7 @@ The draft should be revised in the areas below before submission. These are prim
 - VirusTotal is separate post-AI verification for a Dangerous AI classification and contributes no numerical points.
 - Python calculates the deterministic score and retains final control over the stored outcome.
 - AI adjustment is bounded to `-10` through `+10`.
-- Raw PCAP data and API credentials are not sent to the AI model.
+- API credentials are not sent to the AI model.
 - The evaluated analysis workflow does not automatically block, contain, or close cases.
 - The system does not claim endpoint visibility or TLS payload decryption.
 - Three active AI profiles can receive the same frozen case evidence sequentially. Their candidate answers do not replace the official case assessment.
@@ -82,7 +82,7 @@ A no-detection result does not lower a classification. Private, loopback, link-l
 
 ### 6. Frame the Score as a Heuristic
 
-The score is an investigation-priority and evidence-strength heuristic, not a probability of compromise. Keep the six-category table, but explicitly state that the weights are design choices requiring evaluation. Avoid claiming that a higher score proves an attack.
+The score is an investigation-priority and evidence-strength heuristic, not a probability of compromise. Keep the five-category table, but explicitly state that the weights are design choices requiring evaluation. Avoid claiming that a higher score proves an attack.
 
 The current policy is:
 
@@ -91,12 +91,11 @@ The current policy is:
 | Sensor finding severity | 20 |
 | Behavior and time correlation | 20 |
 | Cached and bulk threat intelligence | 20 |
-| MITRE ATT&CK relevance | 10 |
 | Registered IP importance and traffic direction | 10 |
 | Suricata-Zeek corroboration | 10 |
-| **Python maximum** | **90** |
+| **Python maximum** | **80** |
 
-AI may adjust the Python total by `-10` to `+10`. Materially disputed sensor findings force human review. The stored outcome boundaries are Safe `0-29`, Human Review Required `30-69`, High Risk `70-84`, and Dangerous `85-100`.
+MITRE ATT&CK is retained as descriptive reviewer context, not independent scoring evidence. AI may adjust the Python total by `-10` to `+10`. Materially disputed sensor findings force human review. The current boundaries remain provisional and require sensitivity testing; under the new policy, Dangerous occupies the reachable `85-90` range.
 
 ### 7. Add the Three-Model Comparison Experiment
 
@@ -160,7 +159,7 @@ Use wording such as **the experiment evaluates whether** until results demonstra
 - SQLite is appropriate for the single-node prototype, not high-volume distributed monitoring.
 - Threat-intelligence matches may be incomplete, stale, or wrong; no match is not proof of safety.
 - AI output may be fluent but unsupported. Original evidence and human review remain authoritative.
-- Legacy PCAP and response-era database structures may remain for migration compatibility, but those paths are disabled in the current analysis runtime and are outside the evaluated scope.
+- Historical columns in an existing SQLite database are left untouched during migration, but the application no longer creates, reads, writes, or exposes packet-capture evidence.
 
 ## Review Decision
 

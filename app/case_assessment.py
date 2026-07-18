@@ -154,7 +154,6 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
             "action": workspace.get("analyst_action"),
             "notes": workspace.get("analyst_notes"),
         },
-        "forensic_pcap_policy": "PCAP remains local and is not sent during reassessment.",
     }
 
 
@@ -231,7 +230,6 @@ def reassess_case(conn, config, case_uid):
             "virustotal_verification_ids": [
                 item.get("id") for item in workspace.get("virustotal_verifications") or []
             ],
-            "raw_pcap_sent": False,
         },
     )
     response = decide(conn, config, alert, detection, report)
@@ -268,7 +266,6 @@ def reassess_case(conn, config, case_uid):
             "case_uid": case_uid,
             "assessment_id": assessment_id,
             "response_id": response_id,
-            "raw_pcap_sent": False,
         },
     )
     return {

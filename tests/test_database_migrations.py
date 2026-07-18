@@ -7,6 +7,49 @@ from app.database import init_db
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_new_database_omits_retired_packet_capture_schema(self):
+        conn = init_db(":memory:")
+        try:
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            self.assertNotIn("incident_evidence", tables)
+            alert_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()
+            }
+            report_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(ai_reports)").fetchall()
+            }
+            self.assertNotIn("pcap_point", alert_columns)
+            self.assertFalse(any(column.startswith("pcap_") for column in report_columns))
+        finally:
+            conn.close()
+
+    def test_existing_packet_capture_history_is_not_destructively_dropped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "legacy-capture.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "CREATE TABLE incident_evidence (id INTEGER PRIMARY KEY, pcap_path TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO incident_evidence (id, pcap_path) VALUES (1, '/legacy/file.pcap')"
+            )
+            conn.commit()
+            conn.close()
+
+            migrated = init_db(db_path)
+            try:
+                row = migrated.execute(
+                    "SELECT pcap_path FROM incident_evidence WHERE id = 1"
+                ).fetchone()
+                self.assertEqual(row["pcap_path"], "/legacy/file.pcap")
+            finally:
+                migrated.close()
+
     def test_legacy_sensor_tables_gain_community_id_before_runtime_queries(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "legacy.db"

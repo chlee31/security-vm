@@ -2,7 +2,7 @@ import json
 
 from app.mitre_mapper import map_detection
 from app.normalizer import detection_type_from_alert
-from app.risk_score import cap_score, severity_score
+from app.risk_score import cap_python_score, severity_score
 
 
 HIGH_CONFIDENCE_TERMS = (
@@ -38,7 +38,6 @@ def zeek_notice_to_alert(event):
         "priority": priority,
         "flow_id": event.get("zeek_uid") or "",
         "community_id": event.get("community_id"),
-        "pcap_point": None,
         "raw_json": json.dumps(event.get("raw_json") or {}, separators=(",", ":")),
         "sensor_state": "zeek_only",
     }
@@ -74,7 +73,7 @@ def zeek_detection(event, single_sensor_strength=0.5):
         "time_window_seconds": 0,
         "mitre_id": mitre.get("id"),
         "mitre_name": mitre.get("name"),
-        "python_initial_score": cap_score(severity_score(alert.get("priority")) + notice_weight + mitre.get("score", 0)),
+        "python_initial_score": cap_python_score(severity_score(alert.get("priority")) + notice_weight),
         "status": "correlated",
     }
 

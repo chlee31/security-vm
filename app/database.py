@@ -7,6 +7,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.risk_score import PYTHON_SCORE_MAX
+
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
 
@@ -75,7 +77,6 @@ def ensure_migrations(conn):
 
     ensure_ai_report_columns(conn, "ai_reports")
     ensure_suricata_ingest_tables(conn)
-    ensure_incident_evidence_columns(conn)
     ensure_zeek_tables(conn)
     ensure_ai_assessments_table(conn)
     ensure_threat_intel_tables(conn)
@@ -378,10 +379,6 @@ def ensure_ai_report_columns(conn, table_name):
         "elapsed_ms": f"ALTER TABLE {table_name} ADD COLUMN elapsed_ms INTEGER",
         "prompt_sha256": f"ALTER TABLE {table_name} ADD COLUMN prompt_sha256 TEXT",
         "prompt_chars": f"ALTER TABLE {table_name} ADD COLUMN prompt_chars INTEGER",
-        # Retained only so pre-scope-change databases can be migrated safely.
-        "pcap_summary_sha256": f"ALTER TABLE {table_name} ADD COLUMN pcap_summary_sha256 TEXT",
-        "pcap_summary_chars": f"ALTER TABLE {table_name} ADD COLUMN pcap_summary_chars INTEGER",
-        "pcap_summary_included": f"ALTER TABLE {table_name} ADD COLUMN pcap_summary_included INTEGER DEFAULT 0",
         "summary": f"ALTER TABLE {table_name} ADD COLUMN summary TEXT",
         "who_summary": f"ALTER TABLE {table_name} ADD COLUMN who_summary TEXT",
         "what_summary": f"ALTER TABLE {table_name} ADD COLUMN what_summary TEXT",
@@ -394,36 +391,6 @@ def ensure_ai_report_columns(conn, table_name):
     }
     for column, statement in report_migrations.items():
         if column not in report_columns:
-            conn.execute(statement)
-
-
-def ensure_incident_evidence_columns(conn):
-    if not table_exists(conn, "incident_evidence"):
-        return
-    evidence_columns = {row["name"] for row in conn.execute("PRAGMA table_info(incident_evidence)").fetchall()}
-    evidence_migrations = {
-        "incident_directory": "ALTER TABLE incident_evidence ADD COLUMN incident_directory TEXT",
-        "window_start": "ALTER TABLE incident_evidence ADD COLUMN window_start TEXT",
-        "window_end": "ALTER TABLE incident_evidence ADD COLUMN window_end TEXT",
-        "pcap_path": "ALTER TABLE incident_evidence ADD COLUMN pcap_path TEXT",
-        "zeek_logs_path": "ALTER TABLE incident_evidence ADD COLUMN zeek_logs_path TEXT",
-        "pcap_summary": "ALTER TABLE incident_evidence ADD COLUMN pcap_summary TEXT",
-        "evidence_manifest_path": "ALTER TABLE incident_evidence ADD COLUMN evidence_manifest_path TEXT",
-        "status": "ALTER TABLE incident_evidence ADD COLUMN status TEXT DEFAULT 'pending'",
-        "error_message": "ALTER TABLE incident_evidence ADD COLUMN error_message TEXT",
-        "capture_label": "ALTER TABLE incident_evidence ADD COLUMN capture_label TEXT",
-        "file_size_bytes": "ALTER TABLE incident_evidence ADD COLUMN file_size_bytes INTEGER",
-        "pcap_modified_at": "ALTER TABLE incident_evidence ADD COLUMN pcap_modified_at TEXT",
-        "summary_status": "ALTER TABLE incident_evidence ADD COLUMN summary_status TEXT",
-        "summary_packet_count": "ALTER TABLE incident_evidence ADD COLUMN summary_packet_count INTEGER",
-        "summary_error": "ALTER TABLE incident_evidence ADD COLUMN summary_error TEXT",
-        "display_filter": "ALTER TABLE incident_evidence ADD COLUMN display_filter TEXT",
-        "ai_sent": "ALTER TABLE incident_evidence ADD COLUMN ai_sent INTEGER DEFAULT 0",
-        "ai_model_run_id": "ALTER TABLE incident_evidence ADD COLUMN ai_model_run_id TEXT",
-        "updated_at": "ALTER TABLE incident_evidence ADD COLUMN updated_at TEXT",
-    }
-    for column, statement in evidence_migrations.items():
-        if column not in evidence_columns:
             conn.execute(statement)
 
 
@@ -465,7 +432,6 @@ def ensure_zeek_tables(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_zeek_events_time ON zeek_events(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_zeek_events_uid ON zeek_events(zeek_uid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_zeek_events_src_dst ON zeek_events(source_ip, destination_ip)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_incident_evidence_detection ON incident_evidence(detection_id)")
 
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(zeek_events)").fetchall()}
     migrations = {
@@ -535,7 +501,6 @@ def ensure_ai_assessments_table(conn):
         CREATE TABLE IF NOT EXISTS ai_assessments (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           detection_id INTEGER NOT NULL,
-          incident_evidence_id INTEGER,
           assessment_type TEXT NOT NULL,
           provider TEXT,
           model_name TEXT NOT NULL,
@@ -548,8 +513,7 @@ def ensure_ai_assessments_table(conn):
           response_time_ms INTEGER,
           raw_response TEXT,
           created_at TEXT NOT NULL,
-          FOREIGN KEY (detection_id) REFERENCES detections(id),
-          FOREIGN KEY (incident_evidence_id) REFERENCES incident_evidence(id)
+          FOREIGN KEY (detection_id) REFERENCES detections(id)
         )
         """
     )
@@ -626,16 +590,14 @@ def migrate_legacy_ai_reports(conn):
           model_identity, model_endpoint, model_run_id, prompt_version,
           classification, confidence, risk_adjustment, reason,
           recommended_action, raw_response, elapsed_ms, prompt_sha256,
-          prompt_chars, pcap_summary_sha256, pcap_summary_chars,
-          pcap_summary_included, created_at
+          prompt_chars, created_at
         )
         SELECT
           id, detection_id, ai_profile_uid, model_provider, model_name,
           model_identity, model_endpoint, model_run_id, prompt_version,
           classification, confidence, risk_adjustment, reason,
           recommended_action, raw_response, elapsed_ms, prompt_sha256,
-          prompt_chars, pcap_summary_sha256, pcap_summary_chars,
-          pcap_summary_included, created_at
+          prompt_chars, created_at
         FROM {legacy_table}
         """
     )
@@ -1297,9 +1259,9 @@ def insert_alert(conn, alert):
         """
         INSERT OR IGNORE INTO alerts (
           event_fingerprint, suricata_event_id, timestamp, src_ip, dest_ip, src_port, dest_port,
-          protocol, signature, category, severity, priority, flow_id, community_id, pcap_point, raw_json
+          protocol, signature, category, severity, priority, flow_id, community_id, raw_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             fingerprint,
@@ -1316,7 +1278,6 @@ def insert_alert(conn, alert):
             alert.get("priority"),
             alert.get("flow_id"),
             alert.get("community_id"),
-            alert.get("pcap_point"),
             alert.get("raw_json"),
         ),
     )
@@ -1450,15 +1411,14 @@ def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", 
     cur = conn.execute(
         """
         INSERT INTO ai_assessments (
-          detection_id, incident_evidence_id, assessment_type, provider,
+          detection_id, assessment_type, provider,
           model_name, classification, confidence, risk_adjustment, reason,
           recommended_action, evidence_sources_json, response_time_ms,
           raw_response, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection_id,
-            report.get("incident_evidence_id"),
             assessment_type,
             report.get("model_provider"),
             report.get("model_name") or "unknown",
@@ -1480,7 +1440,7 @@ def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", 
 def update_detection_python_score(conn, detection_id, score):
     conn.execute(
         "UPDATE detections SET python_initial_score = ? WHERE id = ?",
-        (max(0, min(int(score), 90)), detection_id),
+        (max(0, min(int(score), PYTHON_SCORE_MAX)), detection_id),
     )
     conn.commit()
 
@@ -1495,11 +1455,11 @@ def insert_score_breakdown(
     llm_adjustment_applied=0,
     provisional_score=None,
 ):
-    python_score = max(0, min(int(breakdown.get("python_score") or 0), 90))
+    python_score = max(0, min(int(breakdown.get("python_score") or 0), PYTHON_SCORE_MAX))
     provisional = max(
         0,
         min(
-            100,
+            PYTHON_SCORE_MAX + 10,
             int(provisional_score if provisional_score is not None else python_score + llm_adjustment_applied),
         ),
     )
@@ -1601,52 +1561,6 @@ def virustotal_verifications_for_detection(conn, detection_id):
             item["details"] = {}
         result.append(item)
     return result
-
-
-def insert_incident_evidence(conn, evidence):
-    now = utc_now()
-    conn.execute(
-        """
-        INSERT INTO incident_evidence (
-          detection_id, alert_id, incident_directory,
-          incident_start_time, incident_end_time, window_start, window_end,
-          incident_pcap_path, pcap_path, pcap_summary_path, zeek_logs_path,
-          pcap_summary, evidence_manifest_path, status, error_message, capture_label,
-          file_size_bytes, pcap_modified_at, summary_status,
-          summary_packet_count, summary_error, display_filter, ai_sent,
-          ai_model_run_id, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            evidence.get("detection_id"),
-            evidence.get("alert_id"),
-            evidence.get("incident_directory"),
-            evidence.get("incident_start_time"),
-            evidence.get("incident_end_time"),
-            evidence.get("window_start") or evidence.get("incident_start_time"),
-            evidence.get("window_end") or evidence.get("incident_end_time"),
-            evidence.get("incident_pcap_path"),
-            evidence.get("pcap_path") or evidence.get("incident_pcap_path"),
-            evidence.get("pcap_summary_path"),
-            evidence.get("zeek_logs_path"),
-            evidence.get("pcap_summary"),
-            evidence.get("evidence_manifest_path"),
-            evidence.get("status") or evidence.get("summary_status") or "pending",
-            evidence.get("error_message") or evidence.get("summary_error"),
-            evidence.get("capture_label"),
-            evidence.get("file_size_bytes"),
-            evidence.get("pcap_modified_at"),
-            evidence.get("summary_status"),
-            evidence.get("summary_packet_count"),
-            evidence.get("summary_error"),
-            evidence.get("display_filter"),
-            1 if evidence.get("ai_sent") else 0,
-            evidence.get("ai_model_run_id"),
-            evidence.get("updated_at") or now,
-        ),
-    )
-    conn.commit()
 
 
 def insert_zeek_event(conn, event):
@@ -2073,7 +1987,7 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
     detection = detection_by_id(conn, detection_id)
     if not detection:
         return None
-    score = min(90, int(detection.get("python_initial_score") or 0))
+    score = min(PYTHON_SCORE_MAX, int(detection.get("python_initial_score") or 0))
     finding_rows = conn.execute(
         """
         SELECT sensor_findings.sensor, sensor_findings.finding_name,
@@ -2574,42 +2488,6 @@ def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
     }
 
 
-def list_incident_evidence(conn, detection_id, preview_chars=6000):
-    rows = conn.execute(
-        """
-        SELECT
-          id, detection_id, alert_id, incident_start_time, incident_end_time,
-          incident_pcap_path, pcap_summary_path, capture_label,
-          file_size_bytes, pcap_modified_at, summary_status,
-          summary_packet_count, summary_error, display_filter, ai_sent,
-          ai_model_run_id, created_at
-        FROM incident_evidence
-        WHERE detection_id = ?
-        ORDER BY id ASC
-        """,
-        (detection_id,),
-    ).fetchall()
-
-    evidence = []
-    for row in rows:
-        item = dict(row)
-        summary_path = item.get("pcap_summary_path")
-        if summary_path:
-            try:
-                text = Path(summary_path).read_text(encoding="utf-8", errors="replace")
-                item["pcap_summary_preview"] = text[:preview_chars]
-                item["pcap_summary_truncated"] = len(text) > preview_chars
-            except OSError as exc:
-                item["pcap_summary_preview"] = ""
-                item["pcap_summary_error"] = str(exc)
-                item["pcap_summary_truncated"] = False
-        else:
-            item["pcap_summary_preview"] = ""
-            item["pcap_summary_truncated"] = False
-        evidence.append(item)
-    return evidence
-
-
 def insert_response(conn, response):
     cur = conn.execute(
         """
@@ -3008,7 +2886,6 @@ def reset_dashboard_logs(conn):
         "detections",
         "ai_reports",
         "responses",
-        "incident_evidence",
         "analyst_reviews",
         "tuning_labels",
         "app_events",
@@ -3166,9 +3043,6 @@ def latest_ai_opinions(conn, limit=50):
           ai_reports.elapsed_ms,
           ai_reports.prompt_sha256,
           ai_reports.prompt_chars,
-          ai_reports.pcap_summary_sha256,
-          ai_reports.pcap_summary_chars,
-          ai_reports.pcap_summary_included,
           ai_reports.created_at,
           detections.case_uid,
           detections.detection_type,
@@ -4596,7 +4470,6 @@ def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profil
           COALESCE(alerts.priority, 3) AS priority,
           COALESCE(alerts.flow_id, '') AS flow_id,
           COALESCE(alerts.community_id, detections.community_id) AS community_id,
-          alerts.pcap_point,
           alerts.raw_json,
           detections.id AS detection_id,
           detections.case_uid,

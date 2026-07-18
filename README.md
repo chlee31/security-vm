@@ -2,7 +2,7 @@
 
 Security VM is an open-source, AI-assisted network investigation prototype for small businesses and resource-limited IT teams. It combines live Suricata alerts and Zeek network metadata into centralized cases, enriches those cases with registered IP role context and threat intelligence, calculates an explainable risk score, and asks a bounded local AI model to explain the evidence.
 
-The project is an **analysis platform**, not a firewall, intrusion-prevention system, endpoint agent, or packet-forensics product. Python retains control of correlation, scoring, classifications, and safety rules. The AI model receives structured metadata, never API keys or raw packet captures.
+The project is an **analysis platform**, not a firewall, intrusion-prevention system, endpoint agent, or packet-forensics product. Python retains control of correlation, scoring, classifications, and safety rules. The AI model receives bounded structured evidence and never receives API keys.
 
 ## Workflow
 
@@ -22,7 +22,7 @@ Mirrored or lab-routed network traffic
  Registered IP + cached threat-intelligence enrichment
              |
              v
- Explainable Python score (0-90)
+ Explainable Python score (0-80)
              |
              v
  Bounded local AI adjustment (-10 to +10)
@@ -43,30 +43,29 @@ See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed dat
 - Bounded Zeek context from `conn`, `dns`, `http`, `ssl`, `notice`, `weird`, `files`, `ssh`, and `x509` logs
 - Admin-managed IP addresses, assigned roles, and business-impact scores
 - Cached threat-intelligence providers plus post-AI VirusTotal verification
-- Six-category deterministic score with a complete SQLite audit trail
+- Five-category deterministic score with a complete SQLite audit trail
 - Evidence-grounded AI explanation of who, what, when, where, why, how, and next steps
 - Analyst confirmation, override, notes, and tuning labels
 - Manual dashboard refresh so the page does not jump while an analyst is reading
 
 ## Scoring Policy
 
-Python calculates at most 90 points:
+Python calculates at most 80 points:
 
 | Category | Maximum |
 | --- | ---: |
 | Sensor finding severity | 20 |
 | Behavior and time correlation | 20 |
 | Cached threat intelligence | 20 |
-| MITRE ATT&CK relevance | 10 |
 | Registered IP importance and traffic direction | 10 |
 | Suricata-Zeek corroboration | 10 |
 
-The AI adjustment is independently clamped to `-10..+10`. The final score is clamped to `0..100`:
+MITRE ATT&CK remains descriptive context and does not contribute points. The AI adjustment is independently clamped to `-10..+10`, giving new cases an effective final range of `0..90`. Existing thresholds remain provisional pending sensitivity testing:
 
 - `0-29`: Safe
 - `30-69`: Human Review Required
 - `70-84`: High Risk
-- `85-100`: Dangerous
+- `85-90`: Dangerous
 
 Materially disputed sensor evidence forces Human Review Required. VirusTotal is post-AI verification evidence and never changes the score or lowers a classification.
 
@@ -272,6 +271,5 @@ Suggested evaluation scenarios:
 - `config.yaml`, databases, logs, and API keys must not be committed.
 - The dashboard has no built-in authentication; bind it conservatively.
 - The AI never executes system-response commands.
-- Raw packet captures are outside the active product workflow and are not sent to AI.
 - Network metadata cannot prove endpoint process, user identity, or decrypted payload content.
 - Analyst judgment remains required for consequential response decisions.

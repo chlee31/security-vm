@@ -14,7 +14,6 @@ class Correlator:
         mitre = map_detection(detection_type)
         score = (
             severity_score(alert.get("priority"))
-            + mitre.get("score", 0)
             + asset_direction_score(alert, self.config)
         )
         strengths = self.config.get("correlation", {}).get("strengths", {})

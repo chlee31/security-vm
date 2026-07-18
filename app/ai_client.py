@@ -223,6 +223,7 @@ def build_prompt(alert, detection, evidence_context=None):
         "mitre_mapping": {
             "technique_id": detection.get("mitre_id"),
             "technique_name": detection.get("mitre_name"),
+            "role": "descriptive_context_only",
         },
         "risk_score": {
             "python_initial_score": detection.get("python_initial_score"),
@@ -263,7 +264,7 @@ def build_prompt(alert, detection, evidence_context=None):
 
     instructions = """
 You are assisting a cybersecurity lab system that triages unified network detections from Suricata and Zeek.
-Python already calculated a deterministic score from six auditable categories with a maximum of 90 points. Your job is not to replace that score; your job is to provide a bounded second opinion.
+Python already calculated a deterministic score from five auditable categories with a maximum of 80 points. Your job is not to replace that score; your job is to provide a bounded second opinion.
 
 Return only valid JSON with exactly these keys:
 classification, confidence, risk_adjustment, reason, summary, who, what, when, where, why, how, next_steps, threat_intel_analysis, recommended_action.
@@ -304,7 +305,7 @@ Evidence rules:
 - Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
 - Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
 - If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Human Review Required and describe the disputed evidence.
-- Treat DNS tunneling, port scans, repeated connections, many destination ports, or MITRE-mapped behavior as more suspicious.
+- Treat observed DNS tunneling, port scans, repeated connections, or many destination ports according to the supplied sensor evidence. MITRE mapping is derived descriptive context only: it must not independently increase risk, confidence, or the adjustment.
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
 - Use threat_intel in evidence_context when present. provider_status describes whether each source was active and refreshed; each observable's providers list describes matched, no_match, not_active, or unavailable results. Treat matches from independent sources as corroborating evidence and consider confidence, category, and freshness.
 - In threat_intel_analysis.providers, discuss every provider separately. State "Not active", "No match", or "Unavailable" when that is the supplied state. For matches, name the observable, category, confidence when supplied, and what the match means. Do not turn a no-match result into proof that traffic is benign.
@@ -313,7 +314,7 @@ Evidence rules:
 - Make next_steps specific to this case and order them by investigative value. Each step must name the evidence or observable to inspect and what question the analyst should answer. Do not return generic advice such as only "monitor traffic" or "investigate further."
 - Good next steps include checking a named Zeek log field, validating a named Suricata signature, reviewing a specific IP/domain/certificate/hash in the supplied threat-intelligence evidence, comparing recurrence within the supplied time window, or validating whether the named registered IP role normally produces this behavior.
 - Use repeated_activity and zeek_context.summary to explain recurrence, duration, byte counts, DNS repetition, TLS server names, and periodicity only when those fields contain evidence.
-- Do not claim access to packet captures, decrypted payloads, endpoint processes, users, files, or host activity unless the supplied evidence explicitly contains that information.
+- Do not claim access to decrypted payloads, endpoint processes, users, files, or host activity unless the supplied evidence explicitly contains that information.
 - If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, asset context, correlation, and sensor metadata.
 - For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent, prefer Human Review Required or Safe with clear low-confidence wording.
 - If context is missing, prefer Human Review Required with Low or Medium confidence instead of guessing.
