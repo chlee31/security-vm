@@ -88,6 +88,32 @@ class ScoringPolicyTests(unittest.TestCase):
         self.assertEqual(mapped["python_score"], unmapped["python_score"])
         self.assertEqual(mapped["details"], unmapped["details"])
 
+    def test_zeek_observable_matches_contribute_to_threat_intelligence(self):
+        evidence = {
+            "threat_intel": {
+                "zeek_observables": {
+                    "items": [{
+                        "indicator": "c2.example.test",
+                        "indicator_type": "domain",
+                        "log_types": ["dns", "ssl"],
+                        "matches": [{
+                            "source": "threatfox",
+                            "confidence": 95,
+                            "category": "botnet_c2",
+                        }],
+                    }]
+                }
+            }
+        }
+
+        result = deterministic_score(self.alert, self.detection, [], evidence)
+
+        self.assertGreater(result["threat_intelligence"], 0)
+        self.assertIn(
+            "threatfox",
+            result["details"]["threat_intelligence"]["provider_points"],
+        )
+
     def test_outcome_boundaries(self):
         expected = {
             0: "Safe",

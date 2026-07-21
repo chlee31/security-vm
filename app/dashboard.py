@@ -80,6 +80,7 @@ from app.threat_intel import (
     provider_evidence_for_indicator,
     refresh_provider,
     sanitized_provider_status,
+    zeek_context_threat_intel,
 )
 from app.firewall import firewalld_runtime_status, firewalld_setup_commands, remove_firewalld_block, temporary_block_firewalld
 from app.ai_client import check_ai_model, model_metadata
@@ -1656,6 +1657,13 @@ def create_app(config_path):
             )
             detail["dest_threat_intel"] = provider_evidence_for_indicator(
                 conn, runtime_config, detail.get("dest_ip")
+            )
+            detail["zeek_threat_intel"] = zeek_context_threat_intel(
+                conn,
+                runtime_config,
+                (detail.get("zeek_context") or {}).get("items") or [],
+                limit=50,
+                provenance_limit=4,
             )
             return detail
         finally:

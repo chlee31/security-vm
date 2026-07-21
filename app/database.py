@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.risk_score import PYTHON_SCORE_MAX
+from app.zeek_normalizer import zeek_evidence_details
 
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
@@ -1713,8 +1714,11 @@ def detection_by_case_uid(conn, case_uid):
 def _event_time(value):
     if not value:
         return None
+    text = str(value).replace("Z", "+00:00")
+    if len(text) >= 5 and text[-5] in "+-" and text[-4:].isdigit():
+        text = f"{text[:-2]}:{text[-2:]}"
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.tzinfo is None:
@@ -2354,12 +2358,14 @@ def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
     end_text = detection["last_seen"] or detection["first_seen"]
     if not start_text:
         return {"detection_id": detection_id, "items": []}
-    try:
-        start = datetime.fromisoformat(str(start_text).replace("Z", "+00:00")) - timedelta(seconds=seconds)
-        end = datetime.fromisoformat(str(end_text).replace("Z", "+00:00")) + timedelta(seconds=seconds)
-        start_value = start.isoformat()
-        end_value = end.isoformat()
-    except ValueError:
+    parsed_start = _event_time(start_text)
+    parsed_end = _event_time(end_text)
+    if parsed_start and parsed_end:
+        window_start = min(parsed_start, parsed_end) - timedelta(seconds=seconds)
+        window_end = max(parsed_start, parsed_end) + timedelta(seconds=seconds)
+        start_value = window_start.isoformat()
+        end_value = window_end.isoformat()
+    else:
         start_value = start_text
         end_value = end_text or start_text
     related_uids = [
@@ -2436,6 +2442,7 @@ def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
             raw = json.loads(item.get("raw_json") or "{}")
         except (TypeError, json.JSONDecodeError):
             raw = {}
+        item["details"] = zeek_evidence_details(raw, log_type)
         query = raw.get("query")
         server_name = raw.get("server_name")
         host = raw.get("host")

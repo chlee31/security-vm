@@ -22,8 +22,10 @@ from app.threat_intel import (
     ai_provider_status,
     provider_config,
     provider_evidence_for_indicator,
+    zeek_context_threat_intel,
 )
 from app.virustotal import verify_dangerous
+from app.zeek_normalizer import compact_zeek_context_events
 
 
 def _active_sources(config):
@@ -127,7 +129,9 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
         "zeek_context": {
             "window_start": zeek_context.get("window_start"),
             "window_end": zeek_context.get("window_end"),
-            "items": (zeek_context.get("items") or [])[:50],
+            "items": compact_zeek_context_events(
+                zeek_context.get("items") or [], limit=8
+            ),
         },
         "threat_intel": {
             "policy": "Cached and bulk providers inform the deterministic score. VirusTotal remains separate verification evidence.",
@@ -135,6 +139,13 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
             "src_ip": _ip_intel(conn, config, alert.get("src_ip")),
             "dest_ip": _ip_intel(conn, config, alert.get("dest_ip")),
             "alert_observables": _stored_observable_intel(conn, config, workspace, active_sources),
+            "zeek_observables": zeek_context_threat_intel(
+                conn,
+                config,
+                zeek_context.get("items") or [],
+                limit=8,
+                provenance_limit=1,
+            ),
         },
         "existing_virustotal_verification": workspace.get("virustotal_verifications") or [],
         "previous_assessments": [] if assessment_type in {"blind_comparison", "model_comparison"} else [

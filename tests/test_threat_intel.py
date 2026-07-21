@@ -9,7 +9,13 @@ from app.database import (
     threat_intel_matches,
     threat_intel_provider_results,
 )
-from app.threat_intel import ai_provider_status, provider_evidence_for_indicator, sanitized_provider_status
+from app.threat_intel import (
+    ai_provider_status,
+    provider_evidence_for_indicator,
+    sanitized_provider_status,
+    zeek_context_threat_intel,
+    zeek_event_observables,
+)
 from app.main import alert_observables, verify_dangerous_with_virustotal
 from app.decision_engine import decide
 from app.virustotal import eligible_ip
@@ -121,6 +127,68 @@ class ThreatIntelTests(unittest.TestCase):
         self.assertIn(("https://download.example.org/payload", "url"), values)
         self.assertIn(("aabb", "sha1_certificate"), values)
         self.assertIn(("abc123", "sha256"), values)
+
+    def test_zeek_observables_preserve_log_and_endpoint_provenance(self):
+        event = {
+            "id": 42,
+            "log_type": "dns",
+            "timestamp": "2026-07-21T12:00:00+00:00",
+            "zeek_uid": "C-test",
+            "source_ip": "192.168.11.50",
+            "source_port": 53000,
+            "destination_ip": "8.8.8.8",
+            "destination_port": 53,
+            "protocol": "udp",
+            "raw_json": json.dumps(
+                {"query": "C2.Example.test", "answers": ["203.0.113.9", "alias.example.test"]}
+            ),
+        }
+
+        observables = zeek_event_observables(event)
+        values = {(item["indicator"], item["indicator_type"]) for item in observables}
+
+        self.assertIn(("192.168.11.50", "ip"), values)
+        self.assertIn(("8.8.8.8", "ip"), values)
+        self.assertIn(("c2.example.test", "domain"), values)
+        self.assertIn(("203.0.113.9", "ip"), values)
+        query = next(item for item in observables if item["indicator"] == "c2.example.test")
+        self.assertEqual(query["provenance"]["log_type"], "dns")
+        self.assertEqual(query["provenance"]["zeek_uid"], "C-test")
+
+    def test_zeek_context_matches_cached_intel_and_reports_associated_ips(self):
+        replace_threat_intel_indicators(
+            self.conn,
+            "threatfox",
+            [{
+                "indicator": "c2.example.test",
+                "indicator_type": "domain",
+                "category": "botnet_c2",
+                "confidence": 90,
+            }],
+        )
+        config = {
+            "threat_intel": {
+                "providers": {"threatfox": {"enabled": True, "api_key": "configured"}}
+            }
+        }
+        evidence = zeek_context_threat_intel(
+            self.conn,
+            config,
+            [{
+                "id": 7,
+                "log_type": "ssl",
+                "timestamp": "2026-07-21T12:00:00+00:00",
+                "source_ip": "192.168.11.50",
+                "destination_ip": "203.0.113.9",
+                "raw_json": {"server_name": "c2.example.test", "version": "TLSv13"},
+            }],
+        )
+
+        matched = next(item for item in evidence["items"] if item["indicator"] == "c2.example.test")
+        self.assertEqual(evidence["matched_count"], 1)
+        self.assertEqual(matched["log_types"], ["ssl"])
+        self.assertEqual(matched["associated_ips"], ["192.168.11.50", "203.0.113.9"])
+        self.assertEqual(matched["matches"][0]["source"], "threatfox")
 
     @patch("app.virustotal.lookup_virustotal_ip")
     def test_virustotal_runs_only_after_dangerous_ai_result(self, lookup):

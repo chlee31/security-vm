@@ -99,6 +99,8 @@ def _threat_intel_matches(evidence_context):
             matches.append({**legacy, "source": "otx"})
     for observable in threat_intel.get("alert_observables") or []:
         matches.extend(observable.get("matches") or [])
+    for observable in (threat_intel.get("zeek_observables") or {}).get("items", []):
+        matches.extend(observable.get("matches") or [])
     return [item for item in matches if str(item.get("source") or "").lower() != "virustotal"]
 
 

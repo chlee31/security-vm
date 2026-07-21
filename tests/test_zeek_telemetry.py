@@ -8,6 +8,7 @@ from app.database import (
     upsert_zeek_checkpoint,
     zeek_telemetry_summary,
 )
+from app.zeek_normalizer import compact_zeek_context_events
 
 
 class ZeekTelemetryTests(unittest.TestCase):
@@ -90,6 +91,62 @@ class ZeekTelemetryTests(unittest.TestCase):
         self.assertEqual(summary["files"]["mime_types"][0]["mime_type"], "application/pdf")
         self.assertEqual(summary["dns"]["top_queries"][0]["query"], "example.test")
         self.assertEqual(summary["http"]["top_hosts"][0]["host"], "example.test")
+
+    def test_case_context_exposes_allowlisted_log_details(self):
+        self.conn.execute(
+            """
+            INSERT INTO detections (
+              case_uid, first_seen, last_seen, src_ip, dest_ip, detection_type
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "CASE-20260721-000001",
+                "2026-07-14T18:00:00+00:00",
+                "2026-07-14T18:00:00+00:00",
+                "192.168.11.50",
+                "8.8.8.8",
+                "encrypted_traffic",
+            ),
+        )
+        detection_id = self.conn.execute("SELECT id FROM detections").fetchone()["id"]
+        self.insert_event(
+            "ssl",
+            "C-DETAIL",
+            {
+                "server_name": "example.test",
+                "version": "TLSv13",
+                "cipher": "TLS_AES_256_GCM_SHA384",
+                "validation_status": "ok",
+                "password": "must-not-be-exposed",
+            },
+        )
+
+        from app.database import zeek_context_for_detection
+
+        item = zeek_context_for_detection(self.conn, detection_id)["items"][0]
+        self.assertEqual(item["details"]["version"], "TLSv13")
+        self.assertEqual(item["details"]["validation_status"], "ok")
+        self.assertNotIn("password", item["details"])
+
+    def test_ai_context_sample_preserves_log_type_diversity(self):
+        events = []
+        for index in range(20):
+            events.append({"id": index + 1, "log_type": "conn", "raw_json": {}})
+        events.extend(
+            [
+                {"id": 101, "log_type": "dns", "raw_json": {"query": "example.test"}},
+                {"id": 102, "log_type": "ssl", "raw_json": {"version": "TLSv13"}},
+                {"id": 103, "log_type": "files", "raw_json": {"sha256": "abc"}},
+            ]
+        )
+
+        sample = compact_zeek_context_events(events, limit=6)
+
+        self.assertEqual(len(sample), 6)
+        self.assertEqual(
+            {item["log_type"] for item in sample},
+            {"conn", "dns", "ssl", "files"},
+        )
 
     def test_recent_event_includes_correlated_case_uid(self):
         self.conn.execute(

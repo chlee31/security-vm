@@ -59,6 +59,7 @@ See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed dat
 - Community ID, Zeek UID, bidirectional flow, timestamp, and repeated-behavior correlation
 - Conservative same-sensor grouping for scans, DNS tunneling, beaconing, brute force, and repeated identical findings
 - Bounded Zeek context from `conn`, `dns`, `http`, `ssl`, `notice`, `weird`, `files`, `ssh`, and `x509` logs
+- Zeek-derived IPs, DNS answers, domains, URLs, TLS/certificate fingerprints, JA3 values, file hashes, and SSH host keys matched against active cached threat-intelligence feeds with source-log and endpoint provenance
 - Admin-managed IP addresses, assigned roles, and business-impact scores
 - Cached threat-intelligence providers plus post-AI VirusTotal verification
 - Five-category deterministic score with a complete SQLite audit trail
@@ -271,6 +272,8 @@ Model comparison is an evaluation feature. Candidate adjustments do not stack, d
 ## Threat Intelligence
 
 Configure providers under `/admin` in the Threat Intelligence tab. Supported cached/bulk sources include ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, Feodo Tracker, and cached OTX results.
+
+For each bounded case, Python extracts IOC-like values from related Zeek records and records which Zeek log, timestamp, UID, and source/destination IPs produced them. These observables are matched locally against active cached providers before scoring and AI review. Routine case processing does not make one remote API request per observable.
 
 VirusTotal is queried only after the AI classifies a case as Dangerous, or after a reassessment becomes Dangerous. Private, loopback, link-local, multicast, reserved, and `100.64.0.0/10` addresses are never queried. API keys are masked from API responses and must never be committed.
 

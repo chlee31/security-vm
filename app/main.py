@@ -54,10 +54,12 @@ from app.threat_intel import (
     ai_provider_status,
     provider_config,
     provider_evidence_for_indicator,
+    zeek_context_threat_intel,
 )
 from app.threat_intel_worker import run_threat_intel_worker
 from app.zeek_ingest import run_zeek_ingest_loop
 from app.zeek_inventory import zeek_status
+from app.zeek_normalizer import compact_zeek_context_events
 from app.virustotal import verify_dangerous as verify_dangerous_with_virustotal
 
 
@@ -203,6 +205,23 @@ def record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_cont
                 "pre_ai_prompt",
                 match,
             )
+    for observable in (threat_intel.get("zeek_observables") or {}).get("items", []):
+        for match in observable.get("matches") or []:
+            record_threat_intel_usage(
+                conn,
+                detection_id,
+                alert_id,
+                observable.get("indicator"),
+                observable.get("indicator_type") or match.get("indicator_type") or "unknown",
+                match.get("source") or "unknown",
+                "pre_ai_prompt",
+                {
+                    **match,
+                    "zeek_log_types": observable.get("log_types") or [],
+                    "associated_ips": observable.get("associated_ips") or [],
+                    "provenance": observable.get("provenance") or [],
+                },
+            )
 
 
 def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=None):
@@ -232,25 +251,18 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
         seconds=int(correlation_config.get("zeek_context_window_seconds", 120)),
         limit=int(correlation_config.get("zeek_context_limit", 100)),
     ) if detection_id else {"items": [], "summary": {}}
+    zeek_observables = zeek_context_threat_intel(
+        conn,
+        config,
+        zeek_context.get("items") or [],
+        limit=8,
+        provenance_limit=1,
+    )
     zeek_context = {
         "window_start": zeek_context.get("window_start"),
         "window_end": zeek_context.get("window_end"),
         "summary": zeek_context.get("summary") or {},
-        "items": [
-            {
-                "log_type": item.get("log_type"),
-                "timestamp": item.get("timestamp"),
-                "source_ip": item.get("source_ip"),
-                "source_port": item.get("source_port"),
-                "destination_ip": item.get("destination_ip"),
-                "destination_port": item.get("destination_port"),
-                "protocol": item.get("protocol"),
-                "event_name": item.get("event_name"),
-                "message": item.get("message"),
-                "sub_message": item.get("sub_message"),
-            }
-            for item in zeek_context.get("items", [])[:25]
-        ],
+        "items": compact_zeek_context_events(zeek_context.get("items") or [], limit=8),
     }
     return {
         "sensor_fusion": {
@@ -278,6 +290,7 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
             "src_ip": compact_threat_intel(conn, config, alert.get("src_ip")),
             "dest_ip": compact_threat_intel(conn, config, alert.get("dest_ip")),
             "alert_observables": compact_observable_threat_intel(conn, config, alert),
+            "zeek_observables": zeek_observables,
         },
     }
 

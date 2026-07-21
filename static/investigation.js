@@ -279,6 +279,37 @@ function renderCaseThreatIntel(data) {
   `;
 }
 
+function renderZeekThreatIntel(data) {
+  const evidence = data.zeek_threat_intel || {};
+  const items = evidence.items || [];
+  const providers = evidence.active_providers || [];
+  return `
+    <div class="workbook-row">
+      <strong>Zeek-Derived Observables</strong>
+      <p>${evidence.unique_count || 0} unique indicators checked · ${evidence.included_count || 0} shown · ${evidence.matched_count || 0} matched</p>
+      <small>${providers.length ? `Cached providers: ${providers.map(label).join(" · ")}` : "No pre-AI threat-intelligence providers are active."}${evidence.omitted_count ? ` · ${evidence.omitted_count} lower-priority indicators omitted by the evidence limit` : ""}</small>
+    </div>
+    <div class="mini-list dense expanded-list">
+      ${items.map((item) => {
+        const matches = item.matches || [];
+        const first = (item.provenance || [])[0] || {};
+        const matchText = matches.length
+          ? matches.map((match) => `${label(match.source)}: ${match.category || match.reputation || "indicator match"}${match.confidence != null ? ` (${match.confidence}% confidence)` : ""}`).join(" · ")
+          : "No active cached provider match";
+        return `
+          <div>
+            <strong>${escapeHtml(item.indicator || "unknown")} <span class="muted">${escapeHtml(label(item.indicator_type))}</span></strong>
+            <small>Zeek logs: ${escapeHtml((item.log_types || []).map(label).join(" · ") || "Unknown")} · ${item.occurrences || 0} occurrence${item.occurrences === 1 ? "" : "s"}</small>
+            <small>Associated IPs: ${escapeHtml((item.associated_ips || []).join(" · ") || "none stored")}</small>
+            <small>${escapeHtml(matchText)}</small>
+            ${first.timestamp ? `<small>First included record: ${escapeHtml(displayTimestamp(first.timestamp))} · field ${escapeHtml(first.field || "unknown")}${first.zeek_uid ? ` · UID ${escapeHtml(first.zeek_uid)}` : ""}</small>` : ""}
+          </div>
+        `;
+      }).join("") || `<div class="empty">No IOC-like values were extracted from the bounded Zeek context for this case.</div>`}
+    </div>
+  `;
+}
+
 function findingTimestamp(finding) {
   const parsed = new Date(finding.finding_timestamp || 0).getTime();
   return Number.isFinite(parsed) ? parsed : 0;
@@ -389,9 +420,10 @@ function renderZeekContext(data) {
     <div class="mini-list dense expanded-list">
       ${items.slice(0, 25).map((item) => `
         <div>
-          <strong>${escapeHtml(item.event_uid || item.event_name || item.log_type || "Zeek event")}</strong>
+          <strong>${escapeHtml(label(item.log_type || "unknown"))} log · ${escapeHtml(item.zeek_uid || item.event_name || `event ${item.id || "unknown"}`)}</strong>
           <small>${escapeHtml(item.message || "No message")} · ${escapeHtml(item.timestamp || "")}</small>
           <small>${escapeHtml(item.source_ip || "unknown")}:${item.source_port || ""} -> ${escapeHtml(item.destination_ip || "unknown")}:${item.destination_port || ""} ${escapeHtml(item.protocol || "")}</small>
+          ${Object.keys(item.details || {}).length ? `<small>${escapeHtml(Object.entries(item.details).map(([key, value]) => `${label(key)}: ${Array.isArray(value) ? value.join(", ") : value}`).join(" · "))}</small>` : ""}
         </div>
       `).join("") || `<div class="empty">No Zeek context was found for this detection yet.</div>`}
     </div>
@@ -483,6 +515,7 @@ function render(data) {
     intelEndpointRow("Source IP", data.src_ip_profile, data.src_asset),
     intelEndpointRow("Destination IP", data.dest_ip_profile, data.dest_asset),
     renderCaseThreatIntel(data),
+    renderZeekThreatIntel(data),
     row(
       "VirusTotal Verification",
       vtRows.length ? `${vtRows.length} stored verification record${vtRows.length === 1 ? "" : "s"}` : "Not requested",

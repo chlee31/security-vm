@@ -236,7 +236,7 @@ class SensorFusionTests(unittest.TestCase):
 
         self.assertIn("unified network detections from Suricata and Zeek", prompt)
         self.assertIn("Absence of a finding from one sensor", prompt)
-        self.assertIn('"sensor_state": "multi_sensor"', prompt)
+        self.assertIn('"sensor_state":"multi_sensor"', prompt)
         self.assertIn("SSL::Invalid_Server_Cert", prompt)
 
     def test_repeated_suricata_scan_joins_developing_case(self):
@@ -427,6 +427,36 @@ class SensorFusionTests(unittest.TestCase):
         self.assertEqual(context["summary"]["originator_bytes"], 300)
         self.assertEqual(context["summary"]["responder_bytes"], 600)
         self.assertNotIn("unrelated.example", context["summary"]["dns_queries"])
+
+    def test_zeek_context_normalizes_mixed_timezone_offsets(self):
+        detection_id = insert_detection(
+            self.conn,
+            self.base_detection(
+                community_id=None,
+                first_seen="2026-07-11T12:00:00+00:00",
+                last_seen="2026-07-11T08:00:05-0400",
+            ),
+        )
+        insert_zeek_event(
+            self.conn,
+            {
+                "zeek_uid": "C-MIXED-OFFSET",
+                "log_type": "ssl",
+                "timestamp": "2026-07-11T12:00:02+00:00",
+                "source_ip": "192.168.11.50",
+                "destination_ip": "203.0.113.10",
+                "destination_port": 443,
+                "protocol": "tcp",
+                "event_name": "ssl",
+                "message": "TLS connection",
+                "raw_json": {"server_name": "example.test", "version": "TLSv13"},
+            },
+        )
+
+        context = zeek_context_for_detection(self.conn, detection_id, seconds=10)
+
+        self.assertEqual(context["summary"]["event_count"], 1)
+        self.assertEqual(context["summary"]["tls_server_names"], ["example.test"])
 
 
 if __name__ == "__main__":

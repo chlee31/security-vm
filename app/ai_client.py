@@ -6,7 +6,7 @@ import time
 import requests
 
 
-PROMPT_VERSION = "security-vm-case-explanation-v8-threat-intel"
+PROMPT_VERSION = "security-vm-case-explanation-v9-zeek-context"
 
 THREAT_INTEL_PROVIDER_NAMES = (
     "otx",
@@ -328,7 +328,13 @@ Analyze this event package:
         "Do not copy an input sensor record and do not invent another schema:\n"
         + json.dumps(AI_RESPONSE_SCHEMA, separators=(",", ":"))
     )
-    return instructions.strip() + "\n\n" + json.dumps(package, indent=2) + "\n\n" + output_reminder
+    return (
+        instructions.strip()
+        + "\n\n"
+        + json.dumps(package, separators=(",", ":"))
+        + "\n\n"
+        + output_reminder
+    )
 
 
 def build_prompt_audit(config, alert, detection, evidence_context=None):

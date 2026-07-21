@@ -10,6 +10,7 @@ from app.security import redact_secrets
 
 from app.database import (
     replace_threat_intel_indicators,
+    threat_intel_matches,
     threat_intel_provider_results,
     threat_intel_source_rows,
     threat_intel_usage_summary,
@@ -160,6 +161,227 @@ def provider_evidence_for_indicator(conn, config, indicator, indicator_type="ip"
             item["match_count"] = 0
             item["result"] = "not_requested" if item.get("enabled") else "not_active"
     return results
+
+
+def _zeek_raw_event(event):
+    raw = (event or {}).get("raw_json") or {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _zeek_values(value):
+    if value in (None, "", "-"):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [item for item in value if item not in (None, "", "-")]
+    return [value]
+
+
+def zeek_event_observables(event):
+    """Extract bounded, attributable IOC candidates from one stored Zeek row."""
+    raw = _zeek_raw_event(event)
+    log_type = str((event or {}).get("log_type") or "unknown")
+    if log_type.endswith(".log"):
+        log_type = log_type[:-4]
+    provenance = {
+        "zeek_event_id": (event or {}).get("id"),
+        "zeek_uid": (event or {}).get("zeek_uid") or raw.get("uid") or raw.get("fuid"),
+        "log_type": log_type,
+        "timestamp": (event or {}).get("timestamp"),
+        "source_ip": (event or {}).get("source_ip"),
+        "source_port": (event or {}).get("source_port"),
+        "destination_ip": (event or {}).get("destination_ip"),
+        "destination_port": (event or {}).get("destination_port"),
+        "protocol": (event or {}).get("protocol"),
+    }
+    observables = []
+    seen = set()
+
+    def add(value, indicator_type, field):
+        value = str(value or "").strip()
+        if not value or value == "-":
+            return
+        if indicator_type == "ip":
+            try:
+                value = str(ipaddress.ip_address(value))
+            except ValueError:
+                return
+        elif indicator_type == "domain":
+            value = value.rstrip(".").lower()
+            if not value or " " in value:
+                return
+        elif indicator_type == "url":
+            value = value.lower()
+        elif indicator_type in {
+            "md5", "sha1", "sha1_certificate", "sha256", "ja3", "ja3s", "ssh_host_key"
+        }:
+            value = value.lower().replace(":", "")
+        key = (value, indicator_type)
+        if key in seen:
+            return
+        seen.add(key)
+        observables.append(
+            {
+                "indicator": value,
+                "indicator_type": indicator_type,
+                "provenance": {**provenance, "field": field},
+            }
+        )
+
+    add((event or {}).get("source_ip"), "ip", "source_ip")
+    add((event or {}).get("destination_ip"), "ip", "destination_ip")
+    for key in ("tx_hosts", "rx_hosts", "id.orig_h", "id.resp_h", "src", "dst"):
+        for value in _zeek_values(raw.get(key)):
+            add(value, "ip", key)
+
+    for key in ("query", "server_name", "host", "requested_host"):
+        for value in _zeek_values(raw.get(key)):
+            add(value, "domain", key)
+    for key in ("san.dns", "certificate.san.dns"):
+        for value in _zeek_values(raw.get(key)):
+            add(value, "domain", key)
+    for key in ("san.ip", "certificate.san.ip"):
+        for value in _zeek_values(raw.get(key)):
+            add(value, "ip", key)
+
+    if log_type == "dns":
+        for answer in _zeek_values(raw.get("answers")):
+            try:
+                ipaddress.ip_address(str(answer))
+                add(answer, "ip", "answers")
+            except ValueError:
+                add(answer, "domain", "answers")
+
+    host = raw.get("host")
+    uri = raw.get("uri")
+    if host and uri:
+        port = (event or {}).get("destination_port") or raw.get("id.resp_p")
+        scheme = "https" if str(port) == "443" else "http"
+        path = str(uri) if str(uri).startswith("/") else f"/{uri}"
+        add(f"{scheme}://{host}{path}", "url", "host+uri")
+
+    hash_fields = {
+        "md5": "md5",
+        "sha1": "sha1",
+        "sha256": "sha256",
+        "fingerprint": "sha1_certificate",
+        "certificate_fingerprint": "sha1_certificate",
+        "ja3": "ja3",
+        "ja3_hash": "ja3",
+        "ja3s": "ja3s",
+        "ja3s_hash": "ja3s",
+        "host_key": "ssh_host_key",
+    }
+    for key, indicator_type in hash_fields.items():
+        for value in _zeek_values(raw.get(key)):
+            add(value, indicator_type, key)
+    for value in _zeek_values(raw.get("cert_chain_fps")):
+        add(value, "sha1_certificate", "cert_chain_fps")
+    return observables
+
+
+def zeek_context_threat_intel(conn, config, events, limit=50, provenance_limit=8):
+    """Match unique Zeek observables against active cached pre-AI providers."""
+    active_sources = sorted(
+        source
+        for source in PRE_AI_PROVIDERS
+        if provider_config(config, source).get("enabled")
+    )
+    grouped = {}
+    extracted_count = 0
+    for event in events or []:
+        for observable in zeek_event_observables(event):
+            extracted_count += 1
+            key = (observable["indicator"], observable["indicator_type"])
+            item = grouped.setdefault(
+                key,
+                {
+                    "indicator": observable["indicator"],
+                    "indicator_type": observable["indicator_type"],
+                    "occurrences": 0,
+                    "log_types": [],
+                    "associated_ips": [],
+                    "provenance": [],
+                },
+            )
+            item["occurrences"] += 1
+            source = observable["provenance"]
+            if source["log_type"] not in item["log_types"]:
+                item["log_types"].append(source["log_type"])
+            for ip_value in (source.get("source_ip"), source.get("destination_ip")):
+                try:
+                    ip_value = str(ipaddress.ip_address(str(ip_value)))
+                except ValueError:
+                    continue
+                if ip_value not in item["associated_ips"]:
+                    item["associated_ips"].append(ip_value)
+            source_key = (
+                source.get("zeek_event_id"), source.get("log_type"), source.get("field")
+            )
+            existing_keys = {
+                (entry.get("zeek_event_id"), entry.get("log_type"), entry.get("field"))
+                for entry in item["provenance"]
+            }
+            if source_key not in existing_keys and len(item["provenance"]) < provenance_limit:
+                item["provenance"].append(source)
+
+    type_order = {
+        "sha256": 0,
+        "md5": 1,
+        "sha1_certificate": 2,
+        "ja3": 3,
+        "ja3s": 4,
+        "url": 5,
+        "domain": 6,
+        "ip": 7,
+        "sha1": 8,
+        "ssh_host_key": 9,
+    }
+    candidates = sorted(
+        grouped.values(),
+        key=lambda item: (
+            type_order.get(item["indicator_type"], 99),
+            -item["occurrences"],
+            item["indicator"],
+        ),
+    )
+    for item in candidates:
+        item["matches"] = (
+            [
+                match
+                for match in threat_intel_matches(
+                    conn, item["indicator"], item["indicator_type"]
+                )
+                if match.get("source") in active_sources
+            ]
+            if active_sources
+            else []
+        )
+    candidates.sort(
+        key=lambda item: (
+            0 if item["matches"] else 1,
+            type_order.get(item["indicator_type"], 99),
+            -item["occurrences"],
+            item["indicator"],
+        )
+    )
+    matched_count = sum(1 for item in candidates if item["matches"])
+    candidates = candidates[: max(0, int(limit))]
+    return {
+        "active_providers": active_sources,
+        "event_count": len(events or []),
+        "extracted_count": extracted_count,
+        "unique_count": len(grouped),
+        "included_count": len(candidates),
+        "omitted_count": max(0, len(grouped) - len(candidates)),
+        "matched_count": matched_count,
+        "items": candidates,
+    }
 
 
 def _get(url, timeout=60):
