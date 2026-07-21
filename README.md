@@ -48,6 +48,20 @@ See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed dat
 - Analyst confirmation, override, notes, and tuning labels
 - Manual dashboard refresh so the page does not jump while an analyst is reading
 
+## Interface
+
+| Dashboard overview | Case investigation |
+| --- | --- |
+| ![Security VM dashboard overview](docs/images/dashboard-overview.png) | ![Centralized case investigation](docs/images/case-investigation.png) |
+
+| Zeek telemetry | AI model comparison |
+| --- | --- |
+| ![Zeek telemetry and ingestion health](docs/images/zeek-telemetry.png) | ![Three-model case summary comparison](docs/images/ai-comparison.png) |
+
+| Threat-intelligence providers | Admin controls |
+| --- | --- |
+| ![Threat-intelligence provider status and controls](docs/images/threat-intelligence.png) | ![AI model and registered IP administration](docs/images/admin-controls.png) |
+
 ## Scoring Policy
 
 Python calculates at most 80 points:

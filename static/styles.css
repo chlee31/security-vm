@@ -204,6 +204,12 @@ h2 {
   align-items: center;
 }
 
+.case-actions > button {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 14px;
+}
+
 @media (max-width: 850px) {
   .case-actions {
     grid-template-columns: 1fr;
