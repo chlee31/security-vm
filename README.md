@@ -1,8 +1,20 @@
 # Security VM
 
-Security VM is an open-source, AI-assisted network investigation prototype for small businesses and resource-limited IT teams. It combines live Suricata alerts and Zeek network metadata into centralized cases, enriches those cases with registered IP role context and threat intelligence, calculates an explainable risk score, and asks a bounded local AI model to explain the evidence.
+Security VM is an AI-assisted network security monitoring and investigation research prototype. It combines Suricata findings and Zeek network metadata into centralized cases, adds registered-IP and threat-intelligence context, and asks locally configured AI models to explain the evidence and recommend investigation steps.
 
-The project is an **analysis platform**, not a firewall, intrusion-prevention system, endpoint agent, or packet-forensics product. Python retains control of correlation, scoring, classifications, and safety rules. The AI model receives bounded structured evidence and never receives API keys.
+Python retains control of correlation, scoring, classifications, data handling, and safety boundaries. AI output is advisory and receives bounded structured evidence without API keys or raw packet captures.
+
+## Current Scope
+
+Security VM currently provides:
+
+- passive network evidence collection from required Suricata and Zeek sensors;
+- deterministic case construction and evidence-preserving SQLite storage;
+- cached threat-intelligence enrichment and post-AI VirusTotal verification;
+- explainable prioritization, AI-assisted summaries, and human review controls;
+- sequential three-model comparison using one frozen evidence package.
+
+The project is an **analysis platform**. It is not an endpoint agent, decrypted-payload inspection system, production firewall, autonomous response engine, or replacement for analyst judgment. The intended deployment uses copied traffic from a SPAN or mirror port. An optional routing wizard remains available only for isolated development labs.
 
 ## Workflow
 
@@ -25,10 +37,16 @@ Mirrored or lab-routed network traffic
  Explainable Python score (0-80)
              |
              v
- Bounded local AI adjustment (-10 to +10)
+ Bounded AI explanation and adjustment (-10 to +10)
              |
              v
- Centralized case + human review
+ Python-controlled outcome + optional VirusTotal verification
+             |
+             v
+ Centralized investigation + analyst review
+             |
+             v
+ Optional sequential three-model comparison
 ```
 
 See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed data flow.
@@ -50,17 +68,38 @@ See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed dat
 
 ## Interface
 
-| Dashboard overview | Case investigation |
-| --- | --- |
-| ![Security VM dashboard overview](docs/images/dashboard-overview.png) | ![Centralized case investigation](docs/images/case-investigation.png) |
+### Dashboard Overview
 
-| Zeek telemetry | AI model comparison |
-| --- | --- |
-| ![Zeek telemetry and ingestion health](docs/images/zeek-telemetry.png) | ![Three-model case summary comparison](docs/images/ai-comparison.png) |
+![Security VM dashboard overview](docs/images/dashboard-overview.png?raw=1)
 
-| Threat-intelligence providers | Admin controls |
-| --- | --- |
-| ![Threat-intelligence provider status and controls](docs/images/threat-intelligence.png) | ![AI model and registered IP administration](docs/images/admin-controls.png) |
+The dashboard summarizes sensor findings, centralized cases, outcome queues, encrypted-traffic metadata, model activity, and Zeek health. Data changes only when the analyst selects **Refresh**.
+
+### Case Investigation
+
+![Centralized case investigation](docs/images/case-investigation.png?raw=1)
+
+Each case has a stable UID and brings together timestamps, sensor findings, network endpoints, registered-IP context, threat intelligence, AI explanations, reassessment, and analyst feedback.
+
+### Zeek Telemetry
+
+![Zeek telemetry and ingestion health](docs/images/zeek-telemetry.png?raw=1)
+
+The Zeek workspace shows sensor state, ingestion checkpoints, log volumes, and protocol metadata from connection, DNS, HTTP, TLS, file, notice, weird, SSH, and X.509 records.
+
+### AI Model Comparison
+
+![Three-model case summary comparison](docs/images/ai-comparison.png?raw=1)
+
+Three configured models receive the same frozen evidence sequentially. Their complete responses and threat-intelligence inputs remain visible for direct analyst evaluation.
+
+<details>
+<summary><strong>Administration and threat-intelligence screenshots</strong></summary>
+
+![Threat-intelligence provider status and controls](docs/images/threat-intelligence.png?raw=1)
+
+![AI model and registered IP administration](docs/images/admin-controls.png?raw=1)
+
+</details>
 
 ## Scoring Policy
 
@@ -102,7 +141,6 @@ suricata-update
 zeek
 zeekctl
 zkg
-sqlite3
 iproute2
 curl
 git
@@ -110,7 +148,16 @@ git
 
 Zeek is required, not an optional worker. Bootstrap warns before continuing on Ubuntu releases older than 22.04 because the supported Zeek package path may not work reliably there.
 
-Python's standard library includes the `sqlite3` module. The application creates and migrates `security_vm.db`; the SQLite CLI is useful for manual inspection but is not what makes database access possible.
+Python's standard library includes the `sqlite3` module. The application creates and migrates `security_vm.db`; the optional SQLite CLI is useful for manual inspection but is not required for application database access.
+
+The following packages are installed into the virtual environment by `pip install -r requirements.txt`:
+
+| Python package | Purpose |
+| --- | --- |
+| FastAPI | Dashboard and administrative API |
+| Uvicorn | Local ASGI server |
+| PyYAML | Configuration loading and updates |
+| Requests | AI-service and threat-intelligence HTTP clients |
 
 ## Installation
 
@@ -126,7 +173,7 @@ cp config.yaml.example config.yaml
 python -m app.bootstrap
 ```
 
-Bootstrap checks the OS and required tools, initializes SQLite, configures the AI endpoint, guides Zeek interface/JSON-log setup, and can enable matching Community IDs. Reviewed Zeek packages can be installed through `zkg` when approved.
+Bootstrap checks the OS and required tools, initializes SQLite, configures the AI endpoint, guides Zeek interface and JSON-log setup, and can enable matching Community IDs. Reviewed Zeek packages can be installed through `zkg` when approved. Interface names are detected from the host instead of assuming `ens33`, `ens37`, or `eth0`.
 
 ## Start Everything
 
@@ -158,6 +205,8 @@ python -m app.main run-all --config config.yaml --host 192.168.57.134 --port 800
 ```
 
 Binding to `0.0.0.0` exposes the unauthenticated prototype on every interface and prints a warning. Use it only on a controlled lab/management network with host firewall restrictions.
+
+Stop the launcher and its child workers with `Ctrl+C` before shutting down the lab or AI host.
 
 ## Sensor Checks
 
