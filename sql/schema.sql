@@ -241,6 +241,7 @@ CREATE TABLE IF NOT EXISTS evaluation_scenarios (
   expected_min_classification TEXT,
   expected_max_classification TEXT,
   expected_sensors TEXT NOT NULL DEFAULT '[]',
+  candidate_scope_json TEXT NOT NULL DEFAULT '{}',
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -262,6 +263,7 @@ CREATE TABLE IF NOT EXISTS evaluation_event_labels (
   scenario_uid TEXT NOT NULL,
   event_uid TEXT NOT NULL,
   event_sensor TEXT NOT NULL,
+  expected_case_uid TEXT,
   actual_case_uid TEXT,
   expected_membership INTEGER NOT NULL,
   actual_membership INTEGER NOT NULL,

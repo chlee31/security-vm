@@ -156,6 +156,10 @@
                 </select>
               </label>
               <label class="field wide-field">
+                <span>Manual distractor event UIDs</span>
+                <textarea id="scenario-distractors" maxlength="4000" placeholder="One Suricata or Zeek event UID per line"></textarea>
+              </label>
+              <label class="field wide-field">
                 <span>Notes</span>
                 <textarea id="scenario-notes" maxlength="4000" placeholder="What was run and what actually occurred"></textarea>
               </label>
@@ -223,12 +227,13 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Manual Event Membership</p>
-              <h2>Correlation Labels</h2>
+              <p class="eyebrow">Correlation Ground Truth</p>
+              <h2>Expected vs Actual Cases</h2>
             </div>
             <label class="compact-filter">Scenario <select id="correlation-scenario"></select></label>
           </div>
           <section id="correlation-metrics" class="metrics evaluation-correlation-metrics"></section>
+          <div id="candidate-scope-summary" class="telemetry-callout evaluation-scope-summary"></div>
           <form id="event-label-form" class="evaluation-link-form">
             <label class="field">
               <span>Sensor</span>
@@ -243,24 +248,19 @@
               <datalist id="scenario-event-options"></datalist>
             </label>
             <label class="field">
-              <span>Actual case UID</span>
-              <input id="event-case-uid" list="case-uid-options" placeholder="CASE-20260725-000001">
+              <span>Expected case UID</span>
+              <input id="event-expected-case-uid" list="case-uid-options" placeholder="CASE-EXPECTED-A">
               <datalist id="case-uid-options"></datalist>
             </label>
             <label class="field">
-              <span>Membership label</span>
-              <select id="event-label">
-                <option value="expected_correctly_attached">Expected and correctly attached</option>
-                <option value="expected_missing">Expected but missing</option>
-                <option value="unexpected_incorrectly_attached">Unexpected and incorrectly attached</option>
-                <option value="correctly_excluded">Correctly excluded</option>
-              </select>
+              <span>Actual case UID</span>
+              <input id="event-actual-case-uid" readonly placeholder="Derived from stored sensor membership">
             </label>
             <label class="field wide-field">
               <span>Notes</span>
               <input id="event-notes" maxlength="2000" placeholder="Ground-truth evidence">
             </label>
-            <button type="submit">Save Event Label</button>
+            <button type="submit">Save Assignment</button>
           </form>
           <div id="event-label-list" class="evaluation-table-wrap"></div>
         </section>

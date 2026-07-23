@@ -250,6 +250,7 @@ def ensure_evaluation_tables(conn):
           expected_min_classification TEXT,
           expected_max_classification TEXT,
           expected_sensors TEXT NOT NULL DEFAULT '[]',
+          candidate_scope_json TEXT NOT NULL DEFAULT '{}',
           notes TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -275,6 +276,7 @@ def ensure_evaluation_tables(conn):
           scenario_uid TEXT NOT NULL,
           event_uid TEXT NOT NULL,
           event_sensor TEXT NOT NULL,
+          expected_case_uid TEXT,
           actual_case_uid TEXT,
           expected_membership INTEGER NOT NULL,
           actual_membership INTEGER NOT NULL,
@@ -326,6 +328,51 @@ def ensure_evaluation_tables(conn):
         );
         CREATE INDEX IF NOT EXISTS idx_evaluation_model_reviews_run
           ON evaluation_model_reviews(comparison_run_uid, reviewed_at DESC);
+        """
+    )
+    scenario_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(evaluation_scenarios)").fetchall()
+    }
+    if "candidate_scope_json" not in scenario_columns:
+        conn.execute(
+            "ALTER TABLE evaluation_scenarios "
+            "ADD COLUMN candidate_scope_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    event_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(evaluation_event_labels)").fetchall()
+    }
+    if "expected_case_uid" not in event_columns:
+        conn.execute(
+            "ALTER TABLE evaluation_event_labels ADD COLUMN expected_case_uid TEXT"
+        )
+    conn.execute(
+        """
+        UPDATE evaluation_event_labels
+        SET expected_case_uid = actual_case_uid
+        WHERE expected_case_uid IS NULL
+          AND expected_membership = 1
+          AND actual_membership = 1
+          AND actual_case_uid IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE evaluation_event_labels
+        SET expected_case_uid = (
+          SELECT MIN(links.case_uid)
+          FROM evaluation_case_links AS links
+          WHERE links.scenario_uid = evaluation_event_labels.scenario_uid
+        )
+        WHERE expected_case_uid IS NULL
+          AND expected_membership = 1
+          AND actual_membership = 0
+          AND (
+            SELECT COUNT(*)
+            FROM evaluation_case_links AS links
+            WHERE links.scenario_uid = evaluation_event_labels.scenario_uid
+          ) = 1
         """
     )
 
@@ -4629,6 +4676,25 @@ def _evaluation_scenario_row(row):
         item["expected_sensors"] = json.loads(item.get("expected_sensors") or "[]")
     except (TypeError, json.JSONDecodeError):
         item["expected_sensors"] = []
+    try:
+        item["candidate_scope"] = json.loads(
+            item.pop("candidate_scope_json", None) or "{}"
+        )
+    except (TypeError, json.JSONDecodeError):
+        item["candidate_scope"] = {}
+    item["candidate_scope"].setdefault(
+        "time_window",
+        {"start": item.get("start_time"), "end": item.get("end_time")},
+    )
+    item["candidate_scope"].setdefault(
+        "source_ips", [item["source_ip"]] if item.get("source_ip") else []
+    )
+    item["candidate_scope"].setdefault(
+        "destination_ips",
+        [item["destination_ip"]] if item.get("destination_ip") else [],
+    )
+    item["candidate_scope"].setdefault("include_linked_case_events", True)
+    item["candidate_scope"].setdefault("manual_distractor_event_uids", [])
     return item
 
 
@@ -4641,8 +4707,8 @@ def create_evaluation_scenario(conn, scenario):
           authorized_activity, attack_succeeded, source_ip, destination_ip,
           start_time, end_time, expected_case_count,
           expected_min_classification, expected_max_classification,
-          expected_sensors, notes, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          expected_sensors, candidate_scope_json, notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             scenario["scenario_uid"],
@@ -4659,6 +4725,7 @@ def create_evaluation_scenario(conn, scenario):
             scenario.get("expected_min_classification"),
             scenario.get("expected_max_classification"),
             json.dumps(scenario.get("expected_sensors") or []),
+            json.dumps(scenario.get("candidate_scope") or {}, sort_keys=True),
             scenario.get("notes"),
             now,
             now,
@@ -4677,8 +4744,8 @@ def update_evaluation_scenario(conn, scenario_uid, scenario):
             authorized_activity = ?, attack_succeeded = ?,
             source_ip = ?, destination_ip = ?, start_time = ?, end_time = ?,
             expected_case_count = ?, expected_min_classification = ?,
-            expected_max_classification = ?, expected_sensors = ?, notes = ?,
-            updated_at = ?
+            expected_max_classification = ?, expected_sensors = ?,
+            candidate_scope_json = ?, notes = ?, updated_at = ?
         WHERE scenario_uid = ?
         """,
         (
@@ -4695,6 +4762,7 @@ def update_evaluation_scenario(conn, scenario_uid, scenario):
             scenario.get("expected_min_classification"),
             scenario.get("expected_max_classification"),
             json.dumps(scenario.get("expected_sensors") or []),
+            json.dumps(scenario.get("candidate_scope") or {}, sort_keys=True),
             scenario.get("notes"),
             now,
             scenario_uid,
@@ -4841,11 +4909,12 @@ def upsert_evaluation_event_label(conn, scenario_uid, label):
     conn.execute(
         """
         INSERT INTO evaluation_event_labels (
-          scenario_uid, event_uid, event_sensor, actual_case_uid,
+          scenario_uid, event_uid, event_sensor, expected_case_uid, actual_case_uid,
           expected_membership, actual_membership, label, notes,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(scenario_uid, event_sensor, event_uid) DO UPDATE SET
+          expected_case_uid = excluded.expected_case_uid,
           actual_case_uid = excluded.actual_case_uid,
           expected_membership = excluded.expected_membership,
           actual_membership = excluded.actual_membership,
@@ -4857,6 +4926,7 @@ def upsert_evaluation_event_label(conn, scenario_uid, label):
             scenario_uid,
             label["event_uid"],
             label["event_sensor"],
+            label.get("expected_case_uid"),
             label.get("actual_case_uid"),
             int(bool(label.get("expected_membership"))),
             int(bool(label.get("actual_membership"))),
@@ -4894,6 +4964,219 @@ def list_evaluation_event_labels(conn, scenario_uid):
         item["actual_membership"] = bool(item.get("actual_membership"))
         items.append(item)
     return items
+
+
+def evaluation_candidate_events(conn, scenario_uid, limit=5000):
+    scenario = get_evaluation_scenario(conn, scenario_uid)
+    if not scenario:
+        return []
+    scope = scenario.get("candidate_scope") or {}
+    start = _event_time((scope.get("time_window") or {}).get("start"))
+    end = _event_time((scope.get("time_window") or {}).get("end"))
+    if not start or not end:
+        return []
+    scope_ips = {
+        str(value)
+        for value in (
+            list(scope.get("source_ips") or [])
+            + list(scope.get("destination_ips") or [])
+        )
+        if value
+    }
+    distractors = {
+        str(value)
+        for value in (scope.get("manual_distractor_event_uids") or [])
+        if value
+    }
+    linked_cases = {
+        link["case_uid"] for link in (scenario.get("case_links") or [])
+    }
+    linked_event_keys = set()
+    if scope.get("include_linked_case_events", True) and linked_cases:
+        placeholders = ",".join("?" for _ in linked_cases)
+        rows = conn.execute(
+            f"""
+            SELECT findings.sensor, findings.sensor_event_id
+            FROM sensor_findings AS findings
+            JOIN detections ON detections.id = findings.detection_id
+            WHERE detections.case_uid IN ({placeholders})
+            """,
+            tuple(linked_cases),
+        ).fetchall()
+        linked_event_keys = {
+            (row["sensor"], int(row["sensor_event_id"])) for row in rows
+        }
+
+    rows = conn.execute(
+        """
+        SELECT 'suricata' AS sensor, alerts.id AS sensor_event_id,
+               alerts.event_uid, alerts.timestamp,
+               alerts.src_ip AS source_ip, alerts.src_port AS source_port,
+               alerts.dest_ip AS destination_ip, alerts.dest_port AS destination_port,
+               alerts.protocol, alerts.community_id, alerts.flow_id AS sensor_uid,
+               alerts.signature AS event_name,
+               detections.case_uid AS actual_case_uid
+        FROM alerts
+        LEFT JOIN sensor_findings
+          ON sensor_findings.sensor = 'suricata'
+         AND sensor_findings.sensor_event_id = alerts.id
+        LEFT JOIN detections ON detections.id = sensor_findings.detection_id
+        WHERE alerts.event_uid IS NOT NULL
+        UNION ALL
+        SELECT 'zeek' AS sensor, zeek_events.id AS sensor_event_id,
+               zeek_events.event_uid, zeek_events.timestamp,
+               zeek_events.source_ip, zeek_events.source_port,
+               zeek_events.destination_ip, zeek_events.destination_port,
+               zeek_events.protocol, zeek_events.community_id,
+               zeek_events.zeek_uid AS sensor_uid,
+               COALESCE(zeek_events.event_name, zeek_events.message) AS event_name,
+               detections.case_uid AS actual_case_uid
+        FROM zeek_events
+        LEFT JOIN sensor_findings
+          ON sensor_findings.sensor = 'zeek'
+         AND sensor_findings.sensor_event_id = zeek_events.id
+        LEFT JOIN detections ON detections.id = sensor_findings.detection_id
+        WHERE zeek_events.event_uid IS NOT NULL
+        """
+    ).fetchall()
+    within_window = []
+    for row in rows:
+        item = dict(row)
+        timestamp = _event_time(item.get("timestamp"))
+        if not timestamp or timestamp < start or timestamp > end:
+            continue
+        item["_direct_scope_match"] = bool(
+            {item.get("source_ip"), item.get("destination_ip")} & scope_ips
+        )
+        item["_linked_case_match"] = (
+            item["sensor"], int(item["sensor_event_id"])
+        ) in linked_event_keys
+        item["_manual_distractor"] = item.get("event_uid") in distractors
+        within_window.append(item)
+
+    anchor_community_ids = {
+        item["community_id"]
+        for item in within_window
+        if item.get("community_id")
+        and (item["_direct_scope_match"] or item["_linked_case_match"])
+    }
+    anchor_zeek_uids = {
+        item["sensor_uid"]
+        for item in within_window
+        if item["sensor"] == "zeek"
+        and item.get("sensor_uid")
+        and (item["_direct_scope_match"] or item["_linked_case_match"])
+    }
+    candidates = []
+    seen = set()
+    for item in within_window:
+        reasons = []
+        if item["_direct_scope_match"]:
+            reasons.append("scenario_endpoint")
+        if item["_linked_case_match"]:
+            reasons.append("linked_case")
+        if item["_manual_distractor"]:
+            reasons.append("manual_distractor")
+        if item.get("community_id") in anchor_community_ids:
+            reasons.append("shared_community_id")
+        if (
+            item["sensor"] == "zeek"
+            and item.get("sensor_uid") in anchor_zeek_uids
+        ):
+            reasons.append("shared_zeek_uid")
+        if not reasons:
+            continue
+        key = (item["sensor"], item["event_uid"])
+        if key in seen:
+            continue
+        seen.add(key)
+        item.pop("_direct_scope_match", None)
+        item.pop("_linked_case_match", None)
+        item.pop("_manual_distractor", None)
+        item["candidate_reasons"] = list(dict.fromkeys(reasons))
+        candidates.append(item)
+    candidates.sort(
+        key=lambda item: (
+            _event_time(item.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+            item["sensor"],
+            item["event_uid"],
+        )
+    )
+    return candidates[: max(1, min(int(limit), 10000))]
+
+
+def evaluation_correlation_metrics(conn, scenario_uid):
+    if not get_evaluation_scenario(conn, scenario_uid):
+        return None
+    candidates = evaluation_candidate_events(conn, scenario_uid)
+    candidate_keys = {
+        (item["sensor"], item["event_uid"]) for item in candidates
+    }
+    all_labels = list_evaluation_event_labels(conn, scenario_uid)
+    labels = [
+        item
+        for item in all_labels
+        if (item["event_sensor"], item["event_uid"]) in candidate_keys
+    ]
+    out_of_scope_labels = len(all_labels) - len(labels)
+    true_positives = 0
+    false_positives = 0
+    false_negatives = 0
+    true_negatives = 0
+    wrong_case_assignments = 0
+    incomplete_labels = 0
+    for item in labels:
+        expected = item.get("expected_case_uid")
+        actual = item.get("actual_case_uid")
+        if expected and actual:
+            if expected == actual:
+                true_positives += 1
+            else:
+                false_negatives += 1
+                false_positives += 1
+                wrong_case_assignments += 1
+        elif expected:
+            false_negatives += 1
+        elif actual:
+            false_positives += 1
+        elif item.get("expected_membership") or item.get("actual_membership"):
+            incomplete_labels += 1
+        else:
+            true_negatives += 1
+
+    def divided(numerator, denominator):
+        return round(numerator / denominator, 4) if denominator else None
+
+    precision = divided(true_positives, true_positives + false_positives)
+    recall = divided(true_positives, true_positives + false_negatives)
+    f1 = (
+        round((2 * precision * recall) / (precision + recall), 4)
+        if precision is not None
+        and recall is not None
+        and precision + recall
+        else None
+    )
+    candidate_count = len(candidates)
+    labelled_keys = {
+        (item["event_sensor"], item["event_uid"]) for item in labels
+    }
+    return {
+        "scenario_uid": scenario_uid,
+        "true_positives": true_positives,
+        "false_positives": false_positives,
+        "false_negatives": false_negatives,
+        "true_negatives": true_negatives,
+        "wrong_case_assignments": wrong_case_assignments,
+        "incomplete_labels": incomplete_labels,
+        "out_of_scope_label_count": out_of_scope_labels,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "candidate_event_count": candidate_count,
+        "labelled_candidate_count": len(labelled_keys),
+        "unlabelled_candidate_count": max(0, candidate_count - len(labelled_keys)),
+        "calculation_version": "correlation-metrics-v1",
+    }
 
 
 def delete_evaluation_event_label(conn, scenario_uid, event_sensor, event_uid):
@@ -5193,10 +5476,18 @@ def evaluation_export_bundle(conn, scenario_uid=None):
             for review in model_reviews
             if review.get("comparison_run_uid") in comparison_uids
         ]
+    correlation_metrics = {
+        scenario["scenario_uid"]: evaluation_correlation_metrics(
+            conn, scenario["scenario_uid"]
+        )
+        for scenario in scenarios
+        if scenario
+    }
     return {
         "schema_version": "evaluation-lab-v1",
         "exported_at": utc_now(),
         "scenarios": [item for item in scenarios if item],
+        "correlation_metrics": correlation_metrics,
         "scoring_runs": scoring_runs,
         "model_reviews": model_reviews,
     }

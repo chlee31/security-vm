@@ -36,7 +36,9 @@ from app.database import (
     default_asset_score,
     default_asset_types,
     ensure_ai_profile_from_config,
+    evaluation_candidate_events,
     evaluation_case_options,
+    evaluation_correlation_metrics,
     evaluation_export_bundle,
     evaluation_overview,
     get_ai_profile,
@@ -89,6 +91,7 @@ from app.evaluation import (
     normalize_case_link,
     normalize_event_label,
     normalize_scenario,
+    validate_event_assignment,
 )
 from app.bootstrap import detect_os_release, zeek_os_recommendation
 from app.enrichment import lookup_otx_ip, test_otx_connection
@@ -235,6 +238,7 @@ class EvaluationScenarioRequest(BaseModel):
     expected_min_classification: str = ""
     expected_max_classification: str = ""
     expected_sensors: List[str] = []
+    manual_distractor_event_uids: List[str] = []
     notes: str = ""
 
 
@@ -248,8 +252,9 @@ class EvaluationCaseLinkRequest(BaseModel):
 class EvaluationEventLabelRequest(BaseModel):
     event_uid: str
     event_sensor: str
+    expected_case_uid: str = ""
     actual_case_uid: str = ""
-    label: str
+    label: str = ""
     notes: str = ""
 
 
@@ -696,6 +701,30 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.get("/api/evaluation/scenarios/{scenario_uid}/candidates")
+    def api_evaluation_candidates(scenario_uid: str, limit: int = 5000):
+        conn = connect(db_path)
+        try:
+            uid = scenario_uid.upper()
+            if not get_evaluation_scenario(conn, uid):
+                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+            return evaluation_candidate_events(
+                conn, uid, max(1, min(limit, 10000))
+            )
+        finally:
+            conn.close()
+
+    @app.get("/api/evaluation/scenarios/{scenario_uid}/correlation-metrics")
+    def api_evaluation_correlation_metrics(scenario_uid: str):
+        conn = connect(db_path)
+        try:
+            metrics = evaluation_correlation_metrics(conn, scenario_uid.upper())
+            if not metrics:
+                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+            return metrics
+        finally:
+            conn.close()
+
     @app.put("/api/evaluation/scenarios/{scenario_uid}")
     def api_update_evaluation_scenario(
         scenario_uid: str, payload: EvaluationScenarioRequest
@@ -767,14 +796,50 @@ def create_app(config_path):
         conn = connect(db_path)
         try:
             uid = scenario_uid.upper()
-            if not get_evaluation_scenario(conn, uid):
+            scenario = get_evaluation_scenario(conn, uid)
+            if not scenario:
                 raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            event_table = "alerts" if label["event_sensor"] == "suricata" else "zeek_events"
-            if not conn.execute(
-                f"SELECT 1 FROM {event_table} WHERE event_uid = ?",
-                (label["event_uid"],),
-            ).fetchone():
-                raise HTTPException(status_code=404, detail="Sensor event not found")
+            candidate = next(
+                (
+                    item
+                    for item in evaluation_candidate_events(conn, uid)
+                    if item["sensor"] == label["event_sensor"]
+                    and item["event_uid"] == label["event_uid"]
+                ),
+                None,
+            )
+            linked_case_uids = {
+                item["case_uid"] for item in (scenario.get("case_links") or [])
+            }
+            referenced_case_uids = {
+                value
+                for value in (
+                    label.get("expected_case_uid"),
+                    label.get("actual_case_uid"),
+                    candidate.get("actual_case_uid") if candidate else None,
+                )
+                if value
+            }
+            operational_case_uids = set()
+            if referenced_case_uids:
+                placeholders = ",".join("?" for _ in referenced_case_uids)
+                operational_case_uids = {
+                    row["case_uid"]
+                    for row in conn.execute(
+                        f"SELECT case_uid FROM detections "
+                        f"WHERE case_uid IN ({placeholders})",
+                        tuple(referenced_case_uids),
+                    ).fetchall()
+                }
+            try:
+                label = validate_event_assignment(
+                    label,
+                    candidate,
+                    linked_case_uids,
+                    operational_case_uids,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
             return upsert_evaluation_event_label(conn, uid, label)
         finally:
             conn.close()

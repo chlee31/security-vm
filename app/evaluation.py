@@ -20,6 +20,7 @@ EVENT_LABELS = (
     "expected_missing",
     "unexpected_incorrectly_attached",
     "correctly_excluded",
+    "expected_attached_wrong_case",
 )
 REFERENCE_CLASSIFICATIONS = (
     "Safe",
@@ -27,6 +28,9 @@ REFERENCE_CLASSIFICATIONS = (
     "High Risk",
     "Dangerous",
 )
+CLASSIFICATION_ORDER = {
+    name: index for index, name in enumerate(REFERENCE_CLASSIFICATIONS)
+}
 SCENARIO_UID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{2,39}$")
 
 
@@ -108,6 +112,40 @@ def normalize_scenario(payload, scenario_uid=None):
             )
         return value or None
 
+    expected_min = classification("expected_min_classification")
+    expected_max = classification("expected_max_classification")
+    if (
+        expected_min
+        and expected_max
+        and CLASSIFICATION_ORDER[expected_min] > CLASSIFICATION_ORDER[expected_max]
+    ):
+        raise ValueError(
+            "Minimum reference classification must not be above the maximum"
+        )
+    candidate_input = payload.get("candidate_scope") or {}
+    manual_distractors = list(
+        dict.fromkeys(
+            _clean_text(value, "Distractor event UID", required=True, maximum=100)
+            for value in (
+                candidate_input.get("manual_distractor_event_uids")
+                or payload.get("manual_distractor_event_uids")
+                or []
+            )
+        )
+    )
+    source_ip = _normalize_ip(payload.get("source_ip"), "Source IP")
+    destination_ip = _normalize_ip(
+        payload.get("destination_ip"), "Destination IP"
+    )
+    candidate_scope = {
+        "time_window": {"start": start_time, "end": end_time},
+        "source_ips": [source_ip] if source_ip else [],
+        "destination_ips": [destination_ip] if destination_ip else [],
+        "include_linked_case_events": bool(
+            candidate_input.get("include_linked_case_events", True)
+        ),
+        "manual_distractor_event_uids": manual_distractors,
+    }
     return {
         "scenario_uid": uid,
         "name": _clean_text(payload.get("name"), "Name", required=True, maximum=160),
@@ -120,20 +158,15 @@ def normalize_scenario(payload, scenario_uid=None):
         ),
         "authorized_activity": payload.get("authorized_activity"),
         "attack_succeeded": payload.get("attack_succeeded"),
-        "source_ip": _normalize_ip(payload.get("source_ip"), "Source IP"),
-        "destination_ip": _normalize_ip(
-            payload.get("destination_ip"), "Destination IP"
-        ),
+        "source_ip": source_ip,
+        "destination_ip": destination_ip,
         "start_time": start_time,
         "end_time": end_time,
         "expected_case_count": expected_case_count,
-        "expected_min_classification": classification(
-            "expected_min_classification"
-        ),
-        "expected_max_classification": classification(
-            "expected_max_classification"
-        ),
+        "expected_min_classification": expected_min,
+        "expected_max_classification": expected_max,
         "expected_sensors": sensors,
+        "candidate_scope": candidate_scope,
         "notes": _clean_text(payload.get("notes"), "Notes", maximum=4000),
     }
 
@@ -160,39 +193,113 @@ def normalize_case_link(payload):
     }
 
 
+def assignment_label(expected_case_uid, actual_case_uid):
+    if expected_case_uid and actual_case_uid:
+        if expected_case_uid == actual_case_uid:
+            return "expected_correctly_attached"
+        return "expected_attached_wrong_case"
+    if expected_case_uid:
+        return "expected_missing"
+    if actual_case_uid:
+        return "unexpected_incorrectly_attached"
+    return "correctly_excluded"
+
+
 def normalize_event_label(payload):
     sensor = _clean_text(
         payload.get("event_sensor"), "Event sensor", required=True, maximum=20
     ).lower()
     if sensor not in EXPECTED_SENSORS:
         raise ValueError(f"Event sensor must be one of: {', '.join(EXPECTED_SENSORS)}")
-    label = _clean_text(
-        payload.get("label"), "Event label", required=True, maximum=48
+    expected_case_uid = (
+        _clean_text(
+            payload.get("expected_case_uid"),
+            "Expected case UID",
+            maximum=80,
+        )
+        or None
+    )
+    actual_case_uid = (
+        _clean_text(
+            payload.get("actual_case_uid"),
+            "Actual case UID",
+            maximum=80,
+        )
+        or None
+    )
+    legacy_label = _clean_text(
+        payload.get("label"), "Event label", maximum=48
     ).lower()
-    if label not in EVENT_LABELS:
-        raise ValueError(f"Event label must be one of: {', '.join(EVENT_LABELS)}")
-    expected_membership = label in {
-        "expected_correctly_attached",
-        "expected_missing",
-    }
-    actual_membership = label in {
-        "expected_correctly_attached",
-        "unexpected_incorrectly_attached",
-    }
+    if legacy_label:
+        if legacy_label not in EVENT_LABELS:
+            raise ValueError(
+                f"Event label must be one of: {', '.join(EVENT_LABELS)}"
+            )
+        if legacy_label == "expected_correctly_attached" and actual_case_uid:
+            expected_case_uid = expected_case_uid or actual_case_uid
+        elif legacy_label == "expected_missing" and not expected_case_uid:
+            raise ValueError("Expected case UID is required for a missing event")
+    label = assignment_label(expected_case_uid, actual_case_uid)
     return {
         "event_uid": _clean_text(
             payload.get("event_uid"), "Event UID", required=True, maximum=100
         ),
         "event_sensor": sensor,
-        "actual_case_uid": _clean_text(
-            payload.get("actual_case_uid"), "Actual case UID", maximum=80
-        )
-        or None,
-        "expected_membership": expected_membership,
-        "actual_membership": actual_membership,
+        "expected_case_uid": expected_case_uid,
+        "actual_case_uid": actual_case_uid,
+        "expected_membership": bool(expected_case_uid),
+        "actual_membership": bool(actual_case_uid),
         "label": label,
         "notes": _clean_text(payload.get("notes"), "Event notes", maximum=2000),
     }
+
+
+def validate_event_assignment(
+    label, candidate, linked_case_uids, operational_case_uids
+):
+    if not candidate:
+        raise ValueError(
+            "Sensor event is outside the scenario candidate scope. "
+            "Adjust the time/endpoints or add it as a manual distractor."
+        )
+    actual_case_uid = candidate.get("actual_case_uid") or None
+    supplied_actual = label.get("actual_case_uid") or None
+    if supplied_actual and supplied_actual != actual_case_uid:
+        raise ValueError(
+            "Actual case UID must match the case stored for the sensor event"
+        )
+    if actual_case_uid and actual_case_uid not in operational_case_uids:
+        raise ValueError(f"Actual case {actual_case_uid} does not exist")
+    if actual_case_uid and actual_case_uid not in linked_case_uids:
+        raise ValueError(
+            f"Actual case {actual_case_uid} must be linked to the scenario "
+            "before this event can be labelled"
+        )
+    expected_case_uid = label.get("expected_case_uid") or None
+    if (
+        expected_case_uid
+        and expected_case_uid in operational_case_uids
+        and expected_case_uid not in linked_case_uids
+    ):
+        raise ValueError(
+            f"Expected operational case {expected_case_uid} must be linked "
+            "to the scenario"
+        )
+    result = dict(label)
+    result["actual_case_uid"] = actual_case_uid
+    result["expected_membership"] = bool(expected_case_uid)
+    result["actual_membership"] = bool(actual_case_uid)
+    result["label"] = assignment_label(expected_case_uid, actual_case_uid)
+    return result
+
+
+def _csv_safe(value):
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if stripped.startswith(("=", "+", "-", "@")):
+        return f"'{value}"
+    return value
 
 
 def evaluation_bundle_csv(bundle):
@@ -213,8 +320,12 @@ def evaluation_bundle_csv(bundle):
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
+
+    def write(row):
+        writer.writerow({key: _csv_safe(value) for key, value in row.items()})
+
     for scenario in bundle.get("scenarios") or []:
-        writer.writerow(
+        write(
             {
                 "record_type": "scenario",
                 "scenario_uid": scenario.get("scenario_uid"),
@@ -235,7 +346,7 @@ def evaluation_bundle_csv(bundle):
             }
         )
         for link in scenario.get("case_links") or []:
-            writer.writerow(
+            write(
                 {
                     "record_type": "case_link",
                     "scenario_uid": scenario.get("scenario_uid"),
@@ -246,7 +357,7 @@ def evaluation_bundle_csv(bundle):
                 }
             )
         for label in scenario.get("event_labels") or []:
-            writer.writerow(
+            write(
                 {
                     "record_type": "event_label",
                     "scenario_uid": scenario.get("scenario_uid"),
@@ -258,8 +369,21 @@ def evaluation_bundle_csv(bundle):
                     "details_json": json.dumps(label, sort_keys=True),
                 }
             )
+        metrics = (bundle.get("correlation_metrics") or {}).get(
+            scenario.get("scenario_uid")
+        )
+        if metrics:
+            write(
+                {
+                    "record_type": "correlation_metrics",
+                    "scenario_uid": scenario.get("scenario_uid"),
+                    "record_uid": metrics.get("calculation_version"),
+                    "status": "calculated",
+                    "details_json": json.dumps(metrics, sort_keys=True),
+                }
+            )
     for run in bundle.get("scoring_runs") or []:
-        writer.writerow(
+        write(
             {
                 "record_type": "scoring_run",
                 "scenario_uid": run.get("scenario_uid"),
@@ -270,7 +394,7 @@ def evaluation_bundle_csv(bundle):
             }
         )
     for review in bundle.get("model_reviews") or []:
-        writer.writerow(
+        write(
             {
                 "record_type": "model_review",
                 "record_uid": review.get("review_uid"),

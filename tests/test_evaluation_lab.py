@@ -1,3 +1,5 @@
+import csv
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,10 +12,13 @@ from app.database import (
     delete_evaluation_model_review,
     delete_evaluation_scenario,
     delete_evaluation_scoring_run,
+    evaluation_candidate_events,
+    evaluation_correlation_metrics,
     evaluation_export_bundle,
     evaluation_overview,
     get_evaluation_scenario,
     init_db,
+    insert_sensor_finding,
     list_evaluation_model_reviews,
     list_evaluation_scoring_runs,
     list_evaluation_scenarios,
@@ -27,6 +32,7 @@ from app.evaluation import (
     normalize_case_link,
     normalize_event_label,
     normalize_scenario,
+    validate_event_assignment,
 )
 
 
@@ -57,6 +63,18 @@ class EvaluationLabTests(unittest.TestCase):
         )
         self.conn.execute(
             """
+            INSERT INTO detections (
+              case_uid, first_seen, last_seen, src_ip, dest_ip,
+              detection_type, sensor_state
+            ) VALUES (
+              'CASE-20260725-000002', '2026-07-25T14:30:00+00:00',
+              '2026-07-25T14:32:00+00:00', '192.168.57.40',
+              '192.168.57.25', 'port_scan', 'both'
+            )
+            """
+        )
+        self.conn.execute(
+            """
             INSERT INTO zeek_events (
               event_uid, zeek_uid, log_type, timestamp, source_ip,
               destination_ip, raw_json, ingested_at
@@ -67,7 +85,51 @@ class EvaluationLabTests(unittest.TestCase):
             )
             """
         )
+        for event_uid, timestamp in (
+            ("SUR-20260725-000002", "2026-07-25T14:30:20+00:00"),
+            ("SUR-20260725-000003", "2026-07-25T14:30:40+00:00"),
+            ("SUR-20260725-000004", "2026-07-25T14:31:00+00:00"),
+        ):
+            self.conn.execute(
+                """
+                INSERT INTO alerts (
+                  event_uid, timestamp, src_ip, dest_ip, signature, severity
+                ) VALUES (?, ?, '192.168.57.40', '192.168.57.25',
+                          'Controlled candidate event', 2)
+                """,
+                (event_uid, timestamp),
+            )
         self.conn.commit()
+        insert_sensor_finding(
+            self.conn,
+            1,
+            {
+                "sensor": "suricata",
+                "sensor_event_id": 1,
+                "finding_type": "alert",
+                "finding_name": "Controlled test",
+            },
+        )
+        insert_sensor_finding(
+            self.conn,
+            2,
+            {
+                "sensor": "zeek",
+                "sensor_event_id": 1,
+                "finding_type": "notice",
+                "finding_name": "Wrong-case candidate",
+            },
+        )
+        insert_sensor_finding(
+            self.conn,
+            2,
+            {
+                "sensor": "suricata",
+                "sensor_event_id": 3,
+                "finding_type": "alert",
+                "finding_name": "Unexpected attachment candidate",
+            },
+        )
         self.scenario = normalize_scenario(
             {
                 "scenario_uid": "cor-001",
@@ -100,6 +162,35 @@ class EvaluationLabTests(unittest.TestCase):
                         '2026-07-25T00:00:00+00:00', 'unknown')
                 """
             )
+            legacy.execute(
+                """
+                INSERT INTO evaluation_scenarios (
+                  scenario_uid, name, experiment_type, ground_truth_class,
+                  start_time, end_time
+                ) VALUES (
+                  'COR-KEEP', 'Preserved scenario', 'correlation',
+                  'Controlled test', '2026-07-25T00:00:00+00:00',
+                  '2026-07-25T00:05:00+00:00'
+                )
+                """
+            )
+            legacy.execute(
+                """
+                INSERT INTO evaluation_event_labels (
+                  scenario_uid, event_uid, event_sensor, actual_case_uid,
+                  expected_membership, actual_membership, label
+                ) VALUES (
+                  'COR-KEEP', 'SUR-LEGACY', 'suricata', 'CASE-KEEP',
+                  1, 1, 'expected_correctly_attached'
+                )
+                """
+            )
+            legacy.execute(
+                "ALTER TABLE evaluation_scenarios DROP COLUMN candidate_scope_json"
+            )
+            legacy.execute(
+                "ALTER TABLE evaluation_event_labels DROP COLUMN expected_case_uid"
+            )
             legacy.commit()
             legacy.close()
 
@@ -124,6 +215,26 @@ class EvaluationLabTests(unittest.TestCase):
                     migrated.execute(
                         "SELECT id FROM detections WHERE case_uid = 'CASE-KEEP'"
                     ).fetchone()
+                )
+                scenario_columns = {
+                    row["name"]
+                    for row in migrated.execute(
+                        "PRAGMA table_info(evaluation_scenarios)"
+                    ).fetchall()
+                }
+                event_columns = {
+                    row["name"]
+                    for row in migrated.execute(
+                        "PRAGMA table_info(evaluation_event_labels)"
+                    ).fetchall()
+                }
+                self.assertIn("candidate_scope_json", scenario_columns)
+                self.assertIn("expected_case_uid", event_columns)
+                preserved = get_evaluation_scenario(migrated, "COR-KEEP")
+                self.assertEqual(preserved["name"], "Preserved scenario")
+                self.assertEqual(
+                    preserved["event_labels"][0]["expected_case_uid"],
+                    "CASE-KEEP",
                 )
             finally:
                 migrated.close()
@@ -276,6 +387,172 @@ class EvaluationLabTests(unittest.TestCase):
                     "label": "python_says_related",
                 }
             )
+        with self.assertRaisesRegex(ValueError, "Minimum reference"):
+            normalize_scenario(
+                {
+                    **self.scenario,
+                    "expected_min_classification": "Dangerous",
+                    "expected_max_classification": "Safe",
+                }
+            )
+
+    def test_candidate_scope_and_backend_metrics_cover_wrong_case_assignment(self):
+        create_evaluation_scenario(self.conn, self.scenario)
+        operational_cases = {
+            "CASE-20260725-000001",
+            "CASE-20260725-000002",
+        }
+        for case_uid in operational_cases:
+            upsert_evaluation_case_link(
+                self.conn,
+                "COR-001",
+                normalize_case_link(
+                    {
+                        "case_uid": case_uid,
+                        "relationship_status": "observed_related",
+                    }
+                ),
+            )
+        candidates = {
+            (item["sensor"], item["event_uid"]): item
+            for item in evaluation_candidate_events(self.conn, "COR-001")
+        }
+        self.assertEqual(len(candidates), 5)
+        self.assertEqual(
+            candidates[("suricata", "SUR-20260725-000001")][
+                "actual_case_uid"
+            ],
+            "CASE-20260725-000001",
+        )
+        labels = (
+            ("suricata", "SUR-20260725-000001", "CASE-20260725-000001"),
+            ("zeek", "ZEK-20260725-000001", "CASE-20260725-000001"),
+            ("suricata", "SUR-20260725-000002", "CASE-20260725-000001"),
+            ("suricata", "SUR-20260725-000003", None),
+            ("suricata", "SUR-20260725-000004", None),
+        )
+        for sensor, event_uid, expected_case_uid in labels:
+            normalized = normalize_event_label(
+                {
+                    "event_uid": event_uid,
+                    "event_sensor": sensor,
+                    "expected_case_uid": expected_case_uid,
+                }
+            )
+            validated = validate_event_assignment(
+                normalized,
+                candidates[(sensor, event_uid)],
+                operational_cases,
+                operational_cases,
+            )
+            upsert_evaluation_event_label(self.conn, "COR-001", validated)
+
+        metrics = evaluation_correlation_metrics(self.conn, "COR-001")
+        self.assertEqual(metrics["true_positives"], 1)
+        self.assertEqual(metrics["false_positives"], 2)
+        self.assertEqual(metrics["false_negatives"], 2)
+        self.assertEqual(metrics["true_negatives"], 1)
+        self.assertEqual(metrics["wrong_case_assignments"], 1)
+        self.assertEqual(metrics["precision"], 0.3333)
+        self.assertEqual(metrics["recall"], 0.3333)
+        self.assertEqual(metrics["f1"], 0.3333)
+        self.assertEqual(metrics["candidate_event_count"], 5)
+        self.assertEqual(metrics["out_of_scope_label_count"], 0)
+
+        bundle = evaluation_export_bundle(self.conn, "COR-001")
+        self.assertEqual(
+            bundle["correlation_metrics"]["COR-001"][
+                "wrong_case_assignments"
+            ],
+            1,
+        )
+        self.assertIn(
+            "correlation_metrics,COR-001", evaluation_bundle_csv(bundle)
+        )
+
+        upsert_evaluation_event_label(
+            self.conn,
+            "COR-001",
+            normalize_event_label(
+                {
+                    "event_uid": "SUR-OUTSIDE-CANDIDATE-SCOPE",
+                    "event_sensor": "suricata",
+                    "expected_case_uid": "CASE-20260725-000001",
+                }
+            ),
+        )
+        bounded_metrics = evaluation_correlation_metrics(
+            self.conn, "COR-001"
+        )
+        self.assertEqual(bounded_metrics["false_negatives"], 2)
+        self.assertEqual(bounded_metrics["out_of_scope_label_count"], 1)
+
+    def test_event_assignment_rejects_invalid_actual_cases(self):
+        label = normalize_event_label(
+            {
+                "event_uid": "SUR-20260725-000001",
+                "event_sensor": "suricata",
+                "expected_case_uid": "CASE-20260725-000001",
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            validate_event_assignment(
+                label,
+                {"actual_case_uid": "CASE-DOES-NOT-EXIST"},
+                {"CASE-20260725-000001"},
+                {"CASE-20260725-000001"},
+            )
+        with self.assertRaisesRegex(ValueError, "must be linked"):
+            validate_event_assignment(
+                label,
+                {"actual_case_uid": "CASE-20260725-000002"},
+                {"CASE-20260725-000001"},
+                {
+                    "CASE-20260725-000001",
+                    "CASE-20260725-000002",
+                },
+            )
+        mismatched = dict(label)
+        mismatched["actual_case_uid"] = "CASE-20260725-000002"
+        with self.assertRaisesRegex(ValueError, "must match"):
+            validate_event_assignment(
+                mismatched,
+                {"actual_case_uid": "CASE-20260725-000001"},
+                {"CASE-20260725-000001"},
+                {"CASE-20260725-000001"},
+            )
+        with self.assertRaisesRegex(ValueError, "outside the scenario candidate"):
+            validate_event_assignment(
+                label,
+                None,
+                {"CASE-20260725-000001"},
+                {"CASE-20260725-000001"},
+            )
+
+    def test_zero_denominator_metrics_are_null(self):
+        create_evaluation_scenario(self.conn, self.scenario)
+        metrics = evaluation_correlation_metrics(self.conn, "COR-001")
+        self.assertIsNone(metrics["precision"])
+        self.assertIsNone(metrics["recall"])
+        self.assertIsNone(metrics["f1"])
+
+    def test_csv_export_neutralizes_spreadsheet_formulas(self):
+        scenario = dict(self.scenario)
+        scenario["name"] = '=HYPERLINK("https://example.invalid","open")'
+        create_evaluation_scenario(self.conn, scenario)
+        rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    evaluation_bundle_csv(
+                        evaluation_export_bundle(self.conn, "COR-001")
+                    )
+                )
+            )
+        )
+        scenario_row = next(
+            row for row in rows if row["record_type"] == "scenario"
+        )
+        self.assertTrue(scenario_row["name"].startswith("'="))
 
     def test_overview_counts_evaluation_records_separately(self):
         create_evaluation_scenario(self.conn, self.scenario)

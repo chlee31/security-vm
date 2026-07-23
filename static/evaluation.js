@@ -5,7 +5,9 @@ const state = {
   cases: [],
   selectedScenario: null,
   editingScenario: null,
-  comparisons: []
+  comparisons: [],
+  candidates: [],
+  correlationMetrics: null
 };
 
 if (state.view === "evaluation") state.view = "overview";
@@ -32,6 +34,7 @@ const els = {
   scenarioZeek: document.querySelector("#scenario-zeek"),
   scenarioMin: document.querySelector("#scenario-min-classification"),
   scenarioMax: document.querySelector("#scenario-max-classification"),
+  scenarioDistractors: document.querySelector("#scenario-distractors"),
   scenarioNotes: document.querySelector("#scenario-notes"),
   scenarioSave: document.querySelector("#scenario-save"),
   scenarioCancel: document.querySelector("#scenario-cancel"),
@@ -50,11 +53,12 @@ const els = {
   caseLinkList: document.querySelector("#case-link-list"),
   correlationScenario: document.querySelector("#correlation-scenario"),
   correlationMetrics: document.querySelector("#correlation-metrics"),
+  candidateScope: document.querySelector("#candidate-scope-summary"),
   eventLabelForm: document.querySelector("#event-label-form"),
   eventSensor: document.querySelector("#event-sensor"),
   eventUid: document.querySelector("#event-uid"),
-  eventCaseUid: document.querySelector("#event-case-uid"),
-  eventLabel: document.querySelector("#event-label"),
+  eventExpectedCaseUid: document.querySelector("#event-expected-case-uid"),
+  eventActualCaseUid: document.querySelector("#event-actual-case-uid"),
   eventNotes: document.querySelector("#event-notes"),
   eventOptions: document.querySelector("#scenario-event-options"),
   caseOptions: document.querySelector("#case-uid-options"),
@@ -179,6 +183,10 @@ function scenarioPayload() {
       els.scenarioSuricata.checked ? "suricata" : null,
       els.scenarioZeek.checked ? "zeek" : null
     ].filter(Boolean),
+    manual_distractor_event_uids: els.scenarioDistractors.value
+      .split(/[\n,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean),
     notes: els.scenarioNotes.value
   };
 }
@@ -216,6 +224,9 @@ function editScenario(scenario) {
   els.scenarioZeek.checked = (scenario.expected_sensors || []).includes("zeek");
   els.scenarioMin.value = scenario.expected_min_classification || "";
   els.scenarioMax.value = scenario.expected_max_classification || "";
+  els.scenarioDistractors.value = (
+    scenario.candidate_scope?.manual_distractor_event_uids || []
+  ).join("\n");
   els.scenarioNotes.value = scenario.notes || "";
   els.scenarioFormTitle.textContent = `Edit ${scenario.scenario_uid}`;
   els.scenarioSave.textContent = "Save Scenario";
@@ -316,36 +327,18 @@ async function saveCaseLink(event) {
   }
 }
 
-function ratio(numerator, denominator) {
-  return denominator ? numerator / denominator : null;
-}
-
 function metricValue(value) {
   return value == null ? "N/A" : `${(value * 100).toFixed(1)}%`;
 }
 
 async function loadScenarioEvents(scenario) {
-  const events = [];
-  for (const link of scenario.case_links || []) {
-    if (!link.case_exists) continue;
-    try {
-      const workspace = await getJson(`/api/cases/${encodeURIComponent(link.case_uid)}`);
-      for (const finding of workspace.sensor_findings || []) {
-        if (!finding.event_uid) continue;
-        events.push({
-          event_uid: finding.event_uid,
-          sensor: finding.sensor,
-          case_uid: link.case_uid,
-          name: finding.finding_name
-        });
-      }
-    } catch (_error) {
-      // A deleted operational case remains visible as an unavailable evaluation link.
-    }
-  }
-  els.eventOptions.innerHTML = events.map((item) => `
-    <option value="${escapeHtml(item.event_uid)}">${escapeHtml(item.sensor)} · ${escapeHtml(item.case_uid)} · ${escapeHtml(item.name || "")}</option>
+  state.candidates = await getJson(
+    `/api/evaluation/scenarios/${encodeURIComponent(scenario.scenario_uid)}/candidates?limit=10000`
+  );
+  els.eventOptions.innerHTML = state.candidates.map((item) => `
+    <option value="${escapeHtml(item.event_uid)}">${escapeHtml(item.sensor)} · ${escapeHtml(item.actual_case_uid || "not attached")} · ${escapeHtml(item.event_name || "")}</option>
   `).join("");
+  updateActualCase();
 }
 
 async function renderCorrelation() {
@@ -361,37 +354,40 @@ async function renderCorrelation() {
     return;
   }
   els.correlationScenario.value = state.selectedScenario.scenario_uid;
+  [state.correlationMetrics] = await Promise.all([
+    getJson(`/api/evaluation/scenarios/${encodeURIComponent(state.selectedScenario.scenario_uid)}/correlation-metrics`),
+    loadScenarioEvents(state.selectedScenario)
+  ]);
   const labels = state.selectedScenario.event_labels || [];
-  const tp = labels.filter((item) => item.label === "expected_correctly_attached").length;
-  const fn = labels.filter((item) => item.label === "expected_missing").length;
-  const fp = labels.filter((item) => item.label === "unexpected_incorrectly_attached").length;
-  const tn = labels.filter((item) => item.label === "correctly_excluded").length;
-  const precision = ratio(tp, tp + fp);
-  const recall = ratio(tp, tp + fn);
-  const f1 = precision == null || recall == null || precision + recall === 0
-    ? null
-    : (2 * precision * recall) / (precision + recall);
+  const metrics = state.correlationMetrics;
   els.correlationMetrics.innerHTML = [
-    ["Precision", metricValue(precision), `${tp} TP · ${fp} FP`],
-    ["Recall", metricValue(recall), `${tp} TP · ${fn} FN`],
-    ["F1", metricValue(f1), `${labels.length} labelled events`],
-    ["Correctly Excluded", tn, "True negatives"]
+    ["Precision", metricValue(metrics.precision), `${metrics.true_positives} TP · ${metrics.false_positives} FP`],
+    ["Recall", metricValue(metrics.recall), `${metrics.true_positives} TP · ${metrics.false_negatives} FN`],
+    ["F1", metricValue(metrics.f1), `${metrics.labelled_candidate_count} labelled · ${metrics.unlabelled_candidate_count} unlabelled`],
+    ["Wrong Case", metrics.wrong_case_assignments, "Counts as one FP and one FN"],
+    ["Correctly Excluded", metrics.true_negatives, `${metrics.candidate_event_count} eligible candidates · ${metrics.out_of_scope_label_count} out of scope`]
   ].map(([name, value, note]) => `<article class="metric"><span>${name}</span><strong>${value}</strong><small>${note}</small></article>`).join("");
+  const scope = state.selectedScenario.candidate_scope || {};
+  const window = scope.time_window || {};
+  els.candidateScope.innerHTML = `
+    <strong>${metrics.candidate_event_count}</strong>
+    <span>candidate events · ${escapeHtml(localDateTime(window.start))} to ${escapeHtml(localDateTime(window.end))} · endpoints ${(scope.source_ips || []).concat(scope.destination_ips || []).map(escapeHtml).join(", ") || "none"} · ${(scope.manual_distractor_event_uids || []).length} manual distractors</span>
+  `;
   els.eventLabelList.innerHTML = `
     <table class="evaluation-table">
-      <thead><tr><th>Event</th><th>Sensor</th><th>Membership</th><th>Actual case</th><th></th></tr></thead>
+      <thead><tr><th>Event</th><th>Sensor</th><th>Expected case</th><th>Actual case</th><th>Result</th><th></th></tr></thead>
       <tbody>${labels.map((item) => `
         <tr>
           <td><strong>${escapeHtml(item.event_uid)}</strong><small>${escapeHtml(item.notes || "No notes")}</small></td>
           <td>${escapeHtml(label(item.event_sensor))}</td>
-          <td>${escapeHtml(label(item.label))}</td>
+          <td>${escapeHtml(item.expected_case_uid || "None")}</td>
           <td>${escapeHtml(item.actual_case_uid || "Not attached")}</td>
+          <td>${escapeHtml(label(item.label))}</td>
           <td><button class="danger-button compact-command" type="button" data-event-delete="${escapeHtml(item.event_uid)}" data-event-sensor="${escapeHtml(item.event_sensor)}">Delete</button></td>
         </tr>
-      `).join("") || `<tr><td colspan="5">No event membership labels stored.</td></tr>`}</tbody>
+      `).join("") || `<tr><td colspan="6">No event membership labels stored.</td></tr>`}</tbody>
     </table>
   `;
-  await loadScenarioEvents(state.selectedScenario);
 }
 
 async function saveEventLabel(event) {
@@ -407,17 +403,27 @@ async function saveEventLabel(event) {
       {
         event_uid: els.eventUid.value,
         event_sensor: els.eventSensor.value,
-        actual_case_uid: els.eventCaseUid.value,
-        label: els.eventLabel.value,
+        expected_case_uid: els.eventExpectedCaseUid.value,
+        actual_case_uid: els.eventActualCaseUid.value,
         notes: els.eventNotes.value
       }
     );
     els.eventLabelForm.reset();
+    els.eventActualCaseUid.value = "";
     await selectScenario(state.selectedScenario.scenario_uid);
-    setStatus("ok", "Manual event membership label saved.");
+    setStatus("ok", "Expected and actual case assignment saved.");
   } catch (error) {
     setStatus("error", error.message);
   }
+}
+
+function updateActualCase() {
+  const candidate = state.candidates.find(
+    (item) =>
+      item.event_uid === els.eventUid.value &&
+      item.sensor === els.eventSensor.value
+  );
+  els.eventActualCaseUid.value = candidate?.actual_case_uid || "";
 }
 
 function renderScoring() {
@@ -506,6 +512,8 @@ els.scenarioCancel?.addEventListener("click", resetScenarioForm);
 els.scenarioRefresh?.addEventListener("click", refresh);
 els.caseLinkForm?.addEventListener("submit", saveCaseLink);
 els.eventLabelForm?.addEventListener("submit", saveEventLabel);
+els.eventUid?.addEventListener("input", updateActualCase);
+els.eventSensor?.addEventListener("change", updateActualCase);
 els.correlationScenario?.addEventListener("change", async () => {
   if (els.correlationScenario.value) await selectScenario(els.correlationScenario.value);
 });
