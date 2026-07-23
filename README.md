@@ -269,6 +269,14 @@ All three responses appear directly on the case investigation page with model na
 
 Model comparison is an evaluation feature. Candidate adjustments do not stack, do not replace the official case assessment, and do not alter Python's recorded classification or response.
 
+## Evaluation Lab
+
+Open `/evaluation` for the separate research workspace. Phase 1 supports analyst-defined scenarios, links to existing case UIDs, manual event-membership labels, correlation precision/recall/F1, and JSON/CSV export.
+
+Evaluation records use dedicated SQLite tables and never overwrite official case correlation, scores, classifications, model responses, or analyst reviews. Ground truth must come from the controlled experiment and reviewer, not from Security VM's own output.
+
+See [docs/evaluation-lab.md](docs/evaluation-lab.md) for routes, tables, and the evaluation procedure.
+
 ## Threat Intelligence
 
 Configure providers under `/admin` in the Threat Intelligence tab. Supported cached/bulk sources include ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, Feodo Tracker, and cached OTX results.

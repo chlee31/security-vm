@@ -226,6 +226,90 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS evaluation_scenarios (
+  scenario_uid TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  experiment_type TEXT NOT NULL,
+  ground_truth_class TEXT NOT NULL,
+  authorized_activity INTEGER,
+  attack_succeeded INTEGER,
+  source_ip TEXT,
+  destination_ip TEXT,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  expected_case_count INTEGER NOT NULL DEFAULT 1,
+  expected_min_classification TEXT,
+  expected_max_classification TEXT,
+  expected_sensors TEXT NOT NULL DEFAULT '[]',
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_case_links (
+  scenario_uid TEXT NOT NULL,
+  case_uid TEXT NOT NULL,
+  relationship_status TEXT NOT NULL DEFAULT 'expected_related',
+  analyst_confirmed INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (scenario_uid, case_uid),
+  FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_event_labels (
+  scenario_uid TEXT NOT NULL,
+  event_uid TEXT NOT NULL,
+  event_sensor TEXT NOT NULL,
+  actual_case_uid TEXT,
+  expected_membership INTEGER NOT NULL,
+  actual_membership INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (scenario_uid, event_sensor, event_uid),
+  FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_scoring_runs (
+  run_uid TEXT PRIMARY KEY,
+  scenario_uid TEXT,
+  case_uid TEXT NOT NULL,
+  evaluation_type TEXT NOT NULL,
+  baseline_policy TEXT NOT NULL,
+  experimental_parameters_json TEXT NOT NULL DEFAULT '{}',
+  baseline_score REAL NOT NULL,
+  experimental_score REAL NOT NULL,
+  baseline_classification TEXT NOT NULL,
+  experimental_classification TEXT NOT NULL,
+  score_difference REAL NOT NULL,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_model_reviews (
+  review_uid TEXT PRIMARY KEY,
+  comparison_run_uid TEXT NOT NULL,
+  profile_uid TEXT NOT NULL,
+  anonymous_label TEXT NOT NULL,
+  grounding_score INTEGER NOT NULL,
+  completeness_score INTEGER NOT NULL,
+  next_steps_score INTEGER NOT NULL,
+  uncertainty_score INTEGER NOT NULL,
+  usefulness_score INTEGER NOT NULL,
+  supported_claims INTEGER NOT NULL DEFAULT 0,
+  unsupported_claims INTEGER NOT NULL DEFAULT 0,
+  contradicted_claims INTEGER NOT NULL DEFAULT 0,
+  undecidable_claims INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  reviewer_name TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(comparison_run_uid, profile_uid)
+);
+
 CREATE TABLE IF NOT EXISTS ai_assessments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER NOT NULL,

@@ -17,6 +17,15 @@ class DatabaseMigrationTests(unittest.TestCase):
                 ).fetchall()
             }
             self.assertNotIn("incident_evidence", tables)
+            self.assertTrue(
+                {
+                    "evaluation_scenarios",
+                    "evaluation_case_links",
+                    "evaluation_event_labels",
+                    "evaluation_scoring_runs",
+                    "evaluation_model_reviews",
+                }.issubset(tables)
+            )
             alert_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()
             }

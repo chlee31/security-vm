@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security VM Evaluation Lab</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260723-evaluation-lab">
+  </head>
+  <body>
+    <main class="shell evaluation-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Research Workspace</p>
+          <h1>Evaluation Lab</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="evaluation-state">Loading</span>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/compare">Compare</a>
+          <a class="nav-link" href="/admin">Admin</a>
+        </div>
+      </section>
+
+      <nav class="evaluation-tabs" aria-label="Evaluation Lab sections">
+        <a href="/evaluation" data-evaluation-view="overview">Overview</a>
+        <a href="/evaluation/scenarios" data-evaluation-view="scenarios">Scenarios</a>
+        <a href="/evaluation/correlation" data-evaluation-view="correlation">Correlation</a>
+        <a href="/evaluation/scoring" data-evaluation-view="scoring">Scoring Sensitivity</a>
+        <a href="/evaluation/models" data-evaluation-view="models">LLM Comparison</a>
+      </nav>
+
+      <div id="evaluation-status" class="connection-status">Evaluation data is read-only toward operational cases.</div>
+
+      <section class="evaluation-view" data-view="overview">
+        <section id="evaluation-metrics" class="metrics evaluation-metrics"></section>
+        <section class="evaluation-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Ground Truth</p>
+                <h2>Recent Scenarios</h2>
+              </div>
+              <a class="text-button compact-command" href="/evaluation/scenarios">Manage</a>
+            </div>
+            <div id="evaluation-recent" class="workbook-list evaluation-scroll"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Isolation Boundary</p>
+                <h2>Evaluation State</h2>
+              </div>
+            </div>
+            <div class="evaluation-boundaries">
+              <div><strong>Operational cases</strong><span>Read only</span></div>
+              <div><strong>Official scores</strong><span>Unchanged</span></div>
+              <div><strong>AI comparison runs</strong><span>Reused</span></div>
+              <div><strong>Ground truth</strong><span>Analyst supplied</span></div>
+            </div>
+          </section>
+        </section>
+      </section>
+
+      <section class="evaluation-view" data-view="scenarios">
+        <section class="evaluation-grid scenario-layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Manual Ground Truth</p>
+                <h2 id="scenario-form-title">Create Scenario</h2>
+              </div>
+            </div>
+            <form id="scenario-form" class="form-grid evaluation-form">
+              <label class="field">
+                <span>Scenario UID</span>
+                <input id="scenario-uid" required maxlength="40" placeholder="COR-001">
+              </label>
+              <label class="field">
+                <span>Name</span>
+                <input id="scenario-name" required maxlength="160" placeholder="Community ID correlation">
+              </label>
+              <label class="field">
+                <span>Experiment</span>
+                <select id="scenario-experiment">
+                  <option value="correlation">Correlation</option>
+                  <option value="scoring">Scoring sensitivity</option>
+                  <option value="models">LLM comparison</option>
+                  <option value="combined">Combined</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Ground-truth category</span>
+                <input id="scenario-ground-truth" required maxlength="160" placeholder="Controlled suspicious activity">
+              </label>
+              <label class="field">
+                <span>Authorized activity</span>
+                <select id="scenario-authorized">
+                  <option value="">Unknown</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Attack succeeded</span>
+                <select id="scenario-succeeded">
+                  <option value="">Unknown</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Source IP</span>
+                <input id="scenario-source-ip" placeholder="192.168.57.40">
+              </label>
+              <label class="field">
+                <span>Destination IP</span>
+                <input id="scenario-destination-ip" placeholder="192.168.57.25">
+              </label>
+              <label class="field">
+                <span>Start time</span>
+                <input id="scenario-start" type="datetime-local" step="1" required>
+              </label>
+              <label class="field">
+                <span>End time</span>
+                <input id="scenario-end" type="datetime-local" step="1" required>
+              </label>
+              <label class="field">
+                <span>Expected case count</span>
+                <input id="scenario-case-count" type="number" min="0" max="10000" value="1" required>
+              </label>
+              <fieldset class="field sensor-choice">
+                <legend>Expected sensors</legend>
+                <label><input id="scenario-suricata" type="checkbox" checked> Suricata</label>
+                <label><input id="scenario-zeek" type="checkbox" checked> Zeek</label>
+              </fieldset>
+              <label class="field">
+                <span>Minimum reference classification</span>
+                <select id="scenario-min-classification">
+                  <option value="">Not specified</option>
+                  <option>Safe</option>
+                  <option>Human Review Required</option>
+                  <option>High Risk</option>
+                  <option>Dangerous</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Maximum reference classification</span>
+                <select id="scenario-max-classification">
+                  <option value="">Not specified</option>
+                  <option>Safe</option>
+                  <option>Human Review Required</option>
+                  <option>High Risk</option>
+                  <option>Dangerous</option>
+                </select>
+              </label>
+              <label class="field wide-field">
+                <span>Notes</span>
+                <textarea id="scenario-notes" maxlength="4000" placeholder="What was run and what actually occurred"></textarea>
+              </label>
+              <div class="evaluation-form-actions wide-field">
+                <button id="scenario-save" type="submit">Create Scenario</button>
+                <button id="scenario-cancel" type="button">Clear</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Scenario Register</p>
+                <h2>Saved Scenarios</h2>
+              </div>
+              <button id="scenario-refresh" class="toolbar-button" type="button">Refresh</button>
+            </div>
+            <div id="scenario-list" class="workbook-list evaluation-scroll tall"></div>
+          </section>
+        </section>
+
+        <section id="scenario-detail-panel" class="panel evaluation-detail-panel" hidden>
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Case Membership</p>
+              <h2 id="scenario-detail-title">Selected Scenario</h2>
+            </div>
+            <div class="panel-actions">
+              <a id="scenario-json-export" class="text-button compact-command" href="#">JSON</a>
+              <a id="scenario-csv-export" class="text-button compact-command" href="#">CSV</a>
+              <button id="scenario-delete" class="danger-button" type="button">Delete Scenario</button>
+            </div>
+          </div>
+          <form id="case-link-form" class="evaluation-link-form">
+            <label class="field">
+              <span>Security VM case</span>
+              <select id="case-link-uid" required></select>
+            </label>
+            <label class="field">
+              <span>Relationship</span>
+              <select id="case-link-status">
+                <option value="expected_related">Expected related</option>
+                <option value="observed_related">Observed related</option>
+                <option value="distractor">Unrelated distractor</option>
+                <option value="fragment">Fragmented case</option>
+                <option value="incorrect_merge">Incorrect merge</option>
+              </select>
+            </label>
+            <label class="checkbox-field">
+              <input id="case-link-confirmed" type="checkbox">
+              <span>Analyst confirmed</span>
+            </label>
+            <label class="field">
+              <span>Notes</span>
+              <input id="case-link-notes" maxlength="2000" placeholder="Observed relationship">
+            </label>
+            <button type="submit">Link Case</button>
+          </form>
+          <div id="case-link-list" class="evaluation-table-wrap"></div>
+        </section>
+      </section>
+
+      <section class="evaluation-view" data-view="correlation">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Manual Event Membership</p>
+              <h2>Correlation Labels</h2>
+            </div>
+            <label class="compact-filter">Scenario <select id="correlation-scenario"></select></label>
+          </div>
+          <section id="correlation-metrics" class="metrics evaluation-correlation-metrics"></section>
+          <form id="event-label-form" class="evaluation-link-form">
+            <label class="field">
+              <span>Sensor</span>
+              <select id="event-sensor">
+                <option value="suricata">Suricata</option>
+                <option value="zeek">Zeek</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Event UID</span>
+              <input id="event-uid" required list="scenario-event-options" placeholder="SUR-20260725-000001">
+              <datalist id="scenario-event-options"></datalist>
+            </label>
+            <label class="field">
+              <span>Actual case UID</span>
+              <input id="event-case-uid" list="case-uid-options" placeholder="CASE-20260725-000001">
+              <datalist id="case-uid-options"></datalist>
+            </label>
+            <label class="field">
+              <span>Membership label</span>
+              <select id="event-label">
+                <option value="expected_correctly_attached">Expected and correctly attached</option>
+                <option value="expected_missing">Expected but missing</option>
+                <option value="unexpected_incorrectly_attached">Unexpected and incorrectly attached</option>
+                <option value="correctly_excluded">Correctly excluded</option>
+              </select>
+            </label>
+            <label class="field wide-field">
+              <span>Notes</span>
+              <input id="event-notes" maxlength="2000" placeholder="Ground-truth evidence">
+            </label>
+            <button type="submit">Save Event Label</button>
+          </form>
+          <div id="event-label-list" class="evaluation-table-wrap"></div>
+        </section>
+      </section>
+
+      <section class="evaluation-view" data-view="scoring">
+        <section class="evaluation-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Frozen Evidence</p>
+                <h2>Scoring Experiment Inputs</h2>
+              </div>
+            </div>
+            <div id="scoring-case-list" class="workbook-list evaluation-scroll tall"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Phase State</p>
+                <h2>Sensitivity Runs</h2>
+              </div>
+            </div>
+            <div class="evaluation-boundaries">
+              <div><strong>Saved experiment runs</strong><span id="scoring-run-count">0</span></div>
+              <div><strong>Official case score</strong><span>Protected</span></div>
+              <div><strong>Experimental output</strong><span>Separate table</span></div>
+            </div>
+          </section>
+        </section>
+      </section>
+
+      <section class="evaluation-view" data-view="models">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Existing Evidence</p>
+              <h2>Three-Model Runs</h2>
+            </div>
+            <span id="model-run-count" class="panel-hint">0 stored runs</span>
+          </div>
+          <div id="model-run-list" class="workbook-list evaluation-scroll tall"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/evaluation.js?v=20260723-evaluation-lab"></script>
+  </body>
+</html>

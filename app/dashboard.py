@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 import requests
 from pydantic import BaseModel
@@ -25,14 +25,22 @@ from app.database import (
     asset_summary,
     case_workspace,
     connect,
+    create_evaluation_scenario,
     create_ai_profile,
     deactivate_asset,
+    delete_evaluation_case_link,
+    delete_evaluation_event_label,
+    delete_evaluation_scenario,
     delete_asset,
     delete_ai_profile,
     default_asset_score,
     default_asset_types,
     ensure_ai_profile_from_config,
+    evaluation_case_options,
+    evaluation_export_bundle,
+    evaluation_overview,
     get_ai_profile,
+    get_evaluation_scenario,
     init_db,
     insert_app_event,
     detection_type_detail,
@@ -52,6 +60,7 @@ from app.database import (
     list_ai_profiles,
     list_ai_comparison_runs,
     list_all_assets,
+    list_evaluation_scenarios,
     list_firewall_candidates,
     list_firewall_history,
     list_firewall_blocks,
@@ -67,10 +76,19 @@ from app.database import (
     upsert_asset,
     update_asset,
     update_ai_profile,
+    update_evaluation_scenario,
+    upsert_evaluation_case_link,
+    upsert_evaluation_event_label,
     vote_ai_comparison,
     zeek_context_for_detection,
     zeek_event_counts,
     zeek_telemetry_summary,
+)
+from app.evaluation import (
+    evaluation_bundle_csv,
+    normalize_case_link,
+    normalize_event_label,
+    normalize_scenario,
 )
 from app.bootstrap import detect_os_release, zeek_os_recommendation
 from app.enrichment import lookup_otx_ip, test_otx_connection
@@ -200,6 +218,39 @@ class EmailNotificationRequest(BaseModel):
     recipients: str = ""
     cooldown_minutes: int = 15
     dashboard_base_url: str = ""
+
+
+class EvaluationScenarioRequest(BaseModel):
+    scenario_uid: str
+    name: str
+    experiment_type: str
+    ground_truth_class: str
+    authorized_activity: Optional[bool] = None
+    attack_succeeded: Optional[bool] = None
+    source_ip: str = ""
+    destination_ip: str = ""
+    start_time: str
+    end_time: str
+    expected_case_count: int = 1
+    expected_min_classification: str = ""
+    expected_max_classification: str = ""
+    expected_sensors: List[str] = []
+    notes: str = ""
+
+
+class EvaluationCaseLinkRequest(BaseModel):
+    case_uid: str
+    relationship_status: str = "expected_related"
+    analyst_confirmed: bool = False
+    notes: str = ""
+
+
+class EvaluationEventLabelRequest(BaseModel):
+    event_uid: str
+    event_sensor: str
+    actual_case_uid: str = ""
+    label: str
+    notes: str = ""
 
 
 ADMIN_SYSTEM_TOOLS = {
@@ -582,6 +633,200 @@ def create_app(config_path):
     @app.get("/admin")
     def admin_controls():
         return static_page("admin.html")
+
+    @app.get("/evaluation")
+    @app.get("/evaluation/scenarios")
+    @app.get("/evaluation/correlation")
+    @app.get("/evaluation/scoring")
+    @app.get("/evaluation/models")
+    def evaluation_lab():
+        return static_page("evaluation.html")
+
+    @app.get("/api/evaluation/overview")
+    def api_evaluation_overview():
+        conn = connect(db_path)
+        try:
+            return evaluation_overview(conn)
+        finally:
+            conn.close()
+
+    @app.get("/api/evaluation/cases")
+    def api_evaluation_cases(limit: int = 250):
+        conn = connect(db_path)
+        try:
+            return evaluation_case_options(conn, max(1, min(limit, 1000)))
+        finally:
+            conn.close()
+
+    @app.get("/api/evaluation/scenarios")
+    def api_evaluation_scenarios(limit: int = 200, experiment_type: str = None):
+        conn = connect(db_path)
+        try:
+            return list_evaluation_scenarios(
+                conn,
+                max(1, min(limit, 1000)),
+                experiment_type=experiment_type,
+            )
+        finally:
+            conn.close()
+
+    @app.post("/api/evaluation/scenarios")
+    def api_create_evaluation_scenario(payload: EvaluationScenarioRequest):
+        try:
+            scenario = normalize_scenario(payload.dict())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        conn = connect(db_path)
+        try:
+            try:
+                return create_evaluation_scenario(conn, scenario)
+            except sqlite3.IntegrityError:
+                raise HTTPException(status_code=409, detail="Scenario UID already exists")
+        finally:
+            conn.close()
+
+    @app.get("/api/evaluation/scenarios/{scenario_uid}")
+    def api_evaluation_scenario(scenario_uid: str):
+        conn = connect(db_path)
+        try:
+            scenario = get_evaluation_scenario(conn, scenario_uid.upper())
+            if not scenario:
+                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+            return scenario
+        finally:
+            conn.close()
+
+    @app.put("/api/evaluation/scenarios/{scenario_uid}")
+    def api_update_evaluation_scenario(
+        scenario_uid: str, payload: EvaluationScenarioRequest
+    ):
+        try:
+            scenario = normalize_scenario(payload.dict(), scenario_uid=scenario_uid)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        conn = connect(db_path)
+        try:
+            saved = update_evaluation_scenario(conn, scenario_uid.upper(), scenario)
+            if not saved:
+                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+            return saved
+        finally:
+            conn.close()
+
+    @app.delete("/api/evaluation/scenarios/{scenario_uid}")
+    def api_delete_evaluation_scenario(scenario_uid: str):
+        conn = connect(db_path)
+        try:
+            if not delete_evaluation_scenario(conn, scenario_uid.upper()):
+                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+            return {"status": "deleted", "scenario_uid": scenario_uid.upper()}
+        finally:
+            conn.close()
+
+    @app.post("/api/evaluation/scenarios/{scenario_uid}/cases")
+    def api_link_evaluation_case(
+        scenario_uid: str, payload: EvaluationCaseLinkRequest
+    ):
+        try:
+            link = normalize_case_link(payload.dict())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        conn = connect(db_path)
+        try:
+            uid = scenario_uid.upper()
+            if not get_evaluation_scenario(conn, uid):
+                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+            if not conn.execute(
+                "SELECT 1 FROM detections WHERE case_uid = ?", (link["case_uid"],)
+            ).fetchone():
+                raise HTTPException(status_code=404, detail="Operational case not found")
+            return upsert_evaluation_case_link(conn, uid, link)
+        finally:
+            conn.close()
+
+    @app.delete("/api/evaluation/scenarios/{scenario_uid}/cases/{case_uid}")
+    def api_unlink_evaluation_case(scenario_uid: str, case_uid: str):
+        conn = connect(db_path)
+        try:
+            if not delete_evaluation_case_link(
+                conn, scenario_uid.upper(), case_uid
+            ):
+                raise HTTPException(status_code=404, detail="Evaluation case link not found")
+            return {"status": "deleted"}
+        finally:
+            conn.close()
+
+    @app.post("/api/evaluation/scenarios/{scenario_uid}/events")
+    def api_label_evaluation_event(
+        scenario_uid: str, payload: EvaluationEventLabelRequest
+    ):
+        try:
+            label = normalize_event_label(payload.dict())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        conn = connect(db_path)
+        try:
+            uid = scenario_uid.upper()
+            if not get_evaluation_scenario(conn, uid):
+                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+            event_table = "alerts" if label["event_sensor"] == "suricata" else "zeek_events"
+            if not conn.execute(
+                f"SELECT 1 FROM {event_table} WHERE event_uid = ?",
+                (label["event_uid"],),
+            ).fetchone():
+                raise HTTPException(status_code=404, detail="Sensor event not found")
+            return upsert_evaluation_event_label(conn, uid, label)
+        finally:
+            conn.close()
+
+    @app.delete(
+        "/api/evaluation/scenarios/{scenario_uid}/events/{event_sensor}/{event_uid}"
+    )
+    def api_delete_evaluation_event_label(
+        scenario_uid: str, event_sensor: str, event_uid: str
+    ):
+        conn = connect(db_path)
+        try:
+            if not delete_evaluation_event_label(
+                conn, scenario_uid.upper(), event_sensor.lower(), event_uid
+            ):
+                raise HTTPException(status_code=404, detail="Evaluation event label not found")
+            return {"status": "deleted"}
+        finally:
+            conn.close()
+
+    @app.get("/api/evaluation/export")
+    def api_export_evaluation(format: str = "json", scenario_uid: str = None):
+        export_format = format.lower()
+        if export_format not in {"json", "csv"}:
+            raise HTTPException(status_code=400, detail="Export format must be json or csv")
+        conn = connect(db_path)
+        try:
+            bundle = evaluation_export_bundle(
+                conn, scenario_uid.upper() if scenario_uid else None
+            )
+        finally:
+            conn.close()
+        if scenario_uid and not bundle["scenarios"]:
+            raise HTTPException(status_code=404, detail="Evaluation scenario not found")
+        suffix = scenario_uid.upper() if scenario_uid else "all"
+        if export_format == "csv":
+            return Response(
+                content=evaluation_bundle_csv(bundle),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f'attachment; filename="security-vm-evaluation-{suffix}.csv"',
+                    **NO_CACHE_HEADERS,
+                },
+            )
+        return Response(
+            content=json.dumps(bundle, indent=2, sort_keys=True),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="security-vm-evaluation-{suffix}.json"',
+                **NO_CACHE_HEADERS,
+            },
+        )
 
     @app.get("/api/admin/settings")
     def api_admin_settings(limit: int = 500):

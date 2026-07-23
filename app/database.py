@@ -85,6 +85,7 @@ def ensure_migrations(conn):
     ensure_case_identity_columns(conn)
     ensure_decision_audit_tables(conn)
     ensure_ai_comparison_tables(conn)
+    ensure_evaluation_tables(conn)
     migrate_legacy_ai_reports(conn)
 
     conn.execute(
@@ -229,6 +230,104 @@ def ensure_ai_comparison_tables(conn):
     }
     if "threat_intel_analysis_json" not in candidate_columns:
         conn.execute("ALTER TABLE ai_comparison_candidates ADD COLUMN threat_intel_analysis_json TEXT")
+
+
+def ensure_evaluation_tables(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS evaluation_scenarios (
+          scenario_uid TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          experiment_type TEXT NOT NULL,
+          ground_truth_class TEXT NOT NULL,
+          authorized_activity INTEGER,
+          attack_succeeded INTEGER,
+          source_ip TEXT,
+          destination_ip TEXT,
+          start_time TEXT NOT NULL,
+          end_time TEXT NOT NULL,
+          expected_case_count INTEGER NOT NULL DEFAULT 1,
+          expected_min_classification TEXT,
+          expected_max_classification TEXT,
+          expected_sensors TEXT NOT NULL DEFAULT '[]',
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_evaluation_scenarios_experiment
+          ON evaluation_scenarios(experiment_type, start_time DESC);
+
+        CREATE TABLE IF NOT EXISTS evaluation_case_links (
+          scenario_uid TEXT NOT NULL,
+          case_uid TEXT NOT NULL,
+          relationship_status TEXT NOT NULL DEFAULT 'expected_related',
+          analyst_confirmed INTEGER NOT NULL DEFAULT 0,
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (scenario_uid, case_uid),
+          FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evaluation_case_links_case
+          ON evaluation_case_links(case_uid);
+
+        CREATE TABLE IF NOT EXISTS evaluation_event_labels (
+          scenario_uid TEXT NOT NULL,
+          event_uid TEXT NOT NULL,
+          event_sensor TEXT NOT NULL,
+          actual_case_uid TEXT,
+          expected_membership INTEGER NOT NULL,
+          actual_membership INTEGER NOT NULL,
+          label TEXT NOT NULL,
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (scenario_uid, event_sensor, event_uid),
+          FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
+        );
+
+        CREATE TABLE IF NOT EXISTS evaluation_scoring_runs (
+          run_uid TEXT PRIMARY KEY,
+          scenario_uid TEXT,
+          case_uid TEXT NOT NULL,
+          evaluation_type TEXT NOT NULL,
+          baseline_policy TEXT NOT NULL,
+          experimental_parameters_json TEXT NOT NULL DEFAULT '{}',
+          baseline_score REAL NOT NULL,
+          experimental_score REAL NOT NULL,
+          baseline_classification TEXT NOT NULL,
+          experimental_classification TEXT NOT NULL,
+          score_difference REAL NOT NULL,
+          result_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evaluation_scoring_runs_case
+          ON evaluation_scoring_runs(case_uid, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS evaluation_model_reviews (
+          review_uid TEXT PRIMARY KEY,
+          comparison_run_uid TEXT NOT NULL,
+          profile_uid TEXT NOT NULL,
+          anonymous_label TEXT NOT NULL,
+          grounding_score INTEGER NOT NULL,
+          completeness_score INTEGER NOT NULL,
+          next_steps_score INTEGER NOT NULL,
+          uncertainty_score INTEGER NOT NULL,
+          usefulness_score INTEGER NOT NULL,
+          supported_claims INTEGER NOT NULL DEFAULT 0,
+          unsupported_claims INTEGER NOT NULL DEFAULT 0,
+          contradicted_claims INTEGER NOT NULL DEFAULT 0,
+          undecidable_claims INTEGER NOT NULL DEFAULT 0,
+          notes TEXT,
+          reviewer_name TEXT NOT NULL,
+          reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(comparison_run_uid, profile_uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evaluation_model_reviews_run
+          ON evaluation_model_reviews(comparison_run_uid, reviewed_at DESC);
+        """
+    )
 
 
 def table_exists(conn, table_name):
@@ -4512,3 +4611,592 @@ def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profil
         params,
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _evaluation_bool(value):
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _evaluation_scenario_row(row):
+    if not row:
+        return None
+    item = dict(row)
+    item["authorized_activity"] = _evaluation_bool(item.get("authorized_activity"))
+    item["attack_succeeded"] = _evaluation_bool(item.get("attack_succeeded"))
+    try:
+        item["expected_sensors"] = json.loads(item.get("expected_sensors") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        item["expected_sensors"] = []
+    return item
+
+
+def create_evaluation_scenario(conn, scenario):
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO evaluation_scenarios (
+          scenario_uid, name, experiment_type, ground_truth_class,
+          authorized_activity, attack_succeeded, source_ip, destination_ip,
+          start_time, end_time, expected_case_count,
+          expected_min_classification, expected_max_classification,
+          expected_sensors, notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            scenario["scenario_uid"],
+            scenario["name"],
+            scenario["experiment_type"],
+            scenario["ground_truth_class"],
+            scenario.get("authorized_activity"),
+            scenario.get("attack_succeeded"),
+            scenario.get("source_ip"),
+            scenario.get("destination_ip"),
+            scenario["start_time"],
+            scenario["end_time"],
+            int(scenario.get("expected_case_count", 1)),
+            scenario.get("expected_min_classification"),
+            scenario.get("expected_max_classification"),
+            json.dumps(scenario.get("expected_sensors") or []),
+            scenario.get("notes"),
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return get_evaluation_scenario(conn, scenario["scenario_uid"])
+
+
+def update_evaluation_scenario(conn, scenario_uid, scenario):
+    now = utc_now()
+    cur = conn.execute(
+        """
+        UPDATE evaluation_scenarios
+        SET name = ?, experiment_type = ?, ground_truth_class = ?,
+            authorized_activity = ?, attack_succeeded = ?,
+            source_ip = ?, destination_ip = ?, start_time = ?, end_time = ?,
+            expected_case_count = ?, expected_min_classification = ?,
+            expected_max_classification = ?, expected_sensors = ?, notes = ?,
+            updated_at = ?
+        WHERE scenario_uid = ?
+        """,
+        (
+            scenario["name"],
+            scenario["experiment_type"],
+            scenario["ground_truth_class"],
+            scenario.get("authorized_activity"),
+            scenario.get("attack_succeeded"),
+            scenario.get("source_ip"),
+            scenario.get("destination_ip"),
+            scenario["start_time"],
+            scenario["end_time"],
+            int(scenario.get("expected_case_count", 1)),
+            scenario.get("expected_min_classification"),
+            scenario.get("expected_max_classification"),
+            json.dumps(scenario.get("expected_sensors") or []),
+            scenario.get("notes"),
+            now,
+            scenario_uid,
+        ),
+    )
+    conn.commit()
+    return get_evaluation_scenario(conn, scenario_uid) if cur.rowcount else None
+
+
+def list_evaluation_scenarios(conn, limit=200, experiment_type=None):
+    where = ""
+    params = []
+    if experiment_type:
+        where = "WHERE experiment_type = ?"
+        params.append(experiment_type)
+    params.append(int(limit))
+    rows = conn.execute(
+        f"""
+        SELECT scenarios.*,
+               COUNT(DISTINCT links.case_uid) AS linked_case_count,
+               COUNT(DISTINCT labels.event_sensor || ':' || labels.event_uid) AS event_label_count
+        FROM evaluation_scenarios AS scenarios
+        LEFT JOIN evaluation_case_links AS links
+          ON links.scenario_uid = scenarios.scenario_uid
+        LEFT JOIN evaluation_event_labels AS labels
+          ON labels.scenario_uid = scenarios.scenario_uid
+        {where}
+        GROUP BY scenarios.scenario_uid
+        ORDER BY scenarios.start_time DESC, scenarios.scenario_uid
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [_evaluation_scenario_row(row) for row in rows]
+
+
+def get_evaluation_scenario(conn, scenario_uid):
+    row = conn.execute(
+        "SELECT * FROM evaluation_scenarios WHERE scenario_uid = ?",
+        (scenario_uid,),
+    ).fetchone()
+    item = _evaluation_scenario_row(row)
+    if not item:
+        return None
+    item["case_links"] = list_evaluation_case_links(conn, scenario_uid)
+    item["event_labels"] = list_evaluation_event_labels(conn, scenario_uid)
+    return item
+
+
+def delete_evaluation_scenario(conn, scenario_uid):
+    if not conn.execute(
+        "SELECT 1 FROM evaluation_scenarios WHERE scenario_uid = ?",
+        (scenario_uid,),
+    ).fetchone():
+        return False
+    for table in (
+        "evaluation_case_links",
+        "evaluation_event_labels",
+        "evaluation_scoring_runs",
+    ):
+        conn.execute(f"DELETE FROM {table} WHERE scenario_uid = ?", (scenario_uid,))
+    conn.execute(
+        "DELETE FROM evaluation_scenarios WHERE scenario_uid = ?",
+        (scenario_uid,),
+    )
+    conn.commit()
+    return True
+
+
+def upsert_evaluation_case_link(conn, scenario_uid, link):
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO evaluation_case_links (
+          scenario_uid, case_uid, relationship_status, analyst_confirmed,
+          notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(scenario_uid, case_uid) DO UPDATE SET
+          relationship_status = excluded.relationship_status,
+          analyst_confirmed = excluded.analyst_confirmed,
+          notes = excluded.notes,
+          updated_at = excluded.updated_at
+        """,
+        (
+            scenario_uid,
+            link["case_uid"],
+            link.get("relationship_status", "expected_related"),
+            int(bool(link.get("analyst_confirmed"))),
+            link.get("notes"),
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return next(
+        (
+            item
+            for item in list_evaluation_case_links(conn, scenario_uid)
+            if item["case_uid"] == link["case_uid"]
+        ),
+        None,
+    )
+
+
+def list_evaluation_case_links(conn, scenario_uid):
+    rows = conn.execute(
+        """
+        SELECT links.*, detections.id AS detection_id, detections.first_seen,
+               detections.last_seen, detections.detection_type,
+               detections.sensor_state, responses.final_classification,
+               responses.final_score
+        FROM evaluation_case_links AS links
+        LEFT JOIN detections ON detections.case_uid = links.case_uid
+        LEFT JOIN responses ON responses.id = (
+          SELECT MAX(response_rows.id)
+          FROM responses AS response_rows
+          WHERE response_rows.detection_id = detections.id
+        )
+        WHERE links.scenario_uid = ?
+        ORDER BY links.created_at, links.case_uid
+        """,
+        (scenario_uid,),
+    ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["analyst_confirmed"] = bool(item.get("analyst_confirmed"))
+        item["case_exists"] = item.get("detection_id") is not None
+        items.append(item)
+    return items
+
+
+def delete_evaluation_case_link(conn, scenario_uid, case_uid):
+    cur = conn.execute(
+        "DELETE FROM evaluation_case_links WHERE scenario_uid = ? AND case_uid = ?",
+        (scenario_uid, case_uid),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def upsert_evaluation_event_label(conn, scenario_uid, label):
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO evaluation_event_labels (
+          scenario_uid, event_uid, event_sensor, actual_case_uid,
+          expected_membership, actual_membership, label, notes,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(scenario_uid, event_sensor, event_uid) DO UPDATE SET
+          actual_case_uid = excluded.actual_case_uid,
+          expected_membership = excluded.expected_membership,
+          actual_membership = excluded.actual_membership,
+          label = excluded.label,
+          notes = excluded.notes,
+          updated_at = excluded.updated_at
+        """,
+        (
+            scenario_uid,
+            label["event_uid"],
+            label["event_sensor"],
+            label.get("actual_case_uid"),
+            int(bool(label.get("expected_membership"))),
+            int(bool(label.get("actual_membership"))),
+            label["label"],
+            label.get("notes"),
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return next(
+        (
+            item
+            for item in list_evaluation_event_labels(conn, scenario_uid)
+            if item["event_uid"] == label["event_uid"]
+            and item["event_sensor"] == label["event_sensor"]
+        ),
+        None,
+    )
+
+
+def list_evaluation_event_labels(conn, scenario_uid):
+    rows = conn.execute(
+        """
+        SELECT * FROM evaluation_event_labels
+        WHERE scenario_uid = ?
+        ORDER BY event_sensor, event_uid
+        """,
+        (scenario_uid,),
+    ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["expected_membership"] = bool(item.get("expected_membership"))
+        item["actual_membership"] = bool(item.get("actual_membership"))
+        items.append(item)
+    return items
+
+
+def delete_evaluation_event_label(conn, scenario_uid, event_sensor, event_uid):
+    cur = conn.execute(
+        """
+        DELETE FROM evaluation_event_labels
+        WHERE scenario_uid = ? AND event_sensor = ? AND event_uid = ?
+        """,
+        (scenario_uid, event_sensor, event_uid),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def create_evaluation_scoring_run(conn, run):
+    run_uid = run.get("run_uid") or f"eval-score-{uuid.uuid4().hex[:12]}"
+    conn.execute(
+        """
+        INSERT INTO evaluation_scoring_runs (
+          run_uid, scenario_uid, case_uid, evaluation_type, baseline_policy,
+          experimental_parameters_json, baseline_score, experimental_score,
+          baseline_classification, experimental_classification,
+          score_difference, result_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_uid,
+            run.get("scenario_uid"),
+            run["case_uid"],
+            run["evaluation_type"],
+            run["baseline_policy"],
+            json.dumps(run.get("experimental_parameters") or {}, sort_keys=True),
+            float(run["baseline_score"]),
+            float(run["experimental_score"]),
+            run["baseline_classification"],
+            run["experimental_classification"],
+            float(run["experimental_score"]) - float(run["baseline_score"]),
+            json.dumps(run.get("result") or {}, sort_keys=True),
+            utc_now(),
+        ),
+    )
+    conn.commit()
+    return run_uid
+
+
+def get_evaluation_scoring_run(conn, run_uid):
+    row = conn.execute(
+        "SELECT * FROM evaluation_scoring_runs WHERE run_uid = ?",
+        (run_uid,),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["experimental_parameters"] = json.loads(
+        item.pop("experimental_parameters_json") or "{}"
+    )
+    item["result"] = json.loads(item.pop("result_json") or "{}")
+    return item
+
+
+def update_evaluation_scoring_run(conn, run_uid, run):
+    cur = conn.execute(
+        """
+        UPDATE evaluation_scoring_runs
+        SET scenario_uid = ?, case_uid = ?, evaluation_type = ?,
+            baseline_policy = ?, experimental_parameters_json = ?,
+            baseline_score = ?, experimental_score = ?,
+            baseline_classification = ?, experimental_classification = ?,
+            score_difference = ?, result_json = ?
+        WHERE run_uid = ?
+        """,
+        (
+            run.get("scenario_uid"),
+            run["case_uid"],
+            run["evaluation_type"],
+            run["baseline_policy"],
+            json.dumps(run.get("experimental_parameters") or {}, sort_keys=True),
+            float(run["baseline_score"]),
+            float(run["experimental_score"]),
+            run["baseline_classification"],
+            run["experimental_classification"],
+            float(run["experimental_score"]) - float(run["baseline_score"]),
+            json.dumps(run.get("result") or {}, sort_keys=True),
+            run_uid,
+        ),
+    )
+    conn.commit()
+    return get_evaluation_scoring_run(conn, run_uid) if cur.rowcount else None
+
+
+def list_evaluation_scoring_runs(conn, limit=200, scenario_uid=None):
+    where = ""
+    params = []
+    if scenario_uid:
+        where = "WHERE scenario_uid = ?"
+        params.append(scenario_uid)
+    params.append(int(limit))
+    rows = conn.execute(
+        f"""
+        SELECT * FROM evaluation_scoring_runs
+        {where}
+        ORDER BY created_at DESC, run_uid
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["experimental_parameters"] = json.loads(
+            item.pop("experimental_parameters_json") or "{}"
+        )
+        item["result"] = json.loads(item.pop("result_json") or "{}")
+        items.append(item)
+    return items
+
+
+def delete_evaluation_scoring_run(conn, run_uid):
+    cur = conn.execute(
+        "DELETE FROM evaluation_scoring_runs WHERE run_uid = ?",
+        (run_uid,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def upsert_evaluation_model_review(conn, review):
+    review_uid = review.get("review_uid") or f"eval-model-{uuid.uuid4().hex[:12]}"
+    reviewed_at = utc_now()
+    conn.execute(
+        """
+        INSERT INTO evaluation_model_reviews (
+          review_uid, comparison_run_uid, profile_uid, anonymous_label,
+          grounding_score, completeness_score, next_steps_score,
+          uncertainty_score, usefulness_score, supported_claims,
+          unsupported_claims, contradicted_claims, undecidable_claims,
+          notes, reviewer_name, reviewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(comparison_run_uid, profile_uid) DO UPDATE SET
+          anonymous_label = excluded.anonymous_label,
+          grounding_score = excluded.grounding_score,
+          completeness_score = excluded.completeness_score,
+          next_steps_score = excluded.next_steps_score,
+          uncertainty_score = excluded.uncertainty_score,
+          usefulness_score = excluded.usefulness_score,
+          supported_claims = excluded.supported_claims,
+          unsupported_claims = excluded.unsupported_claims,
+          contradicted_claims = excluded.contradicted_claims,
+          undecidable_claims = excluded.undecidable_claims,
+          notes = excluded.notes,
+          reviewer_name = excluded.reviewer_name,
+          reviewed_at = excluded.reviewed_at
+        """,
+        (
+            review_uid,
+            review["comparison_run_uid"],
+            review["profile_uid"],
+            review["anonymous_label"],
+            int(review["grounding_score"]),
+            int(review["completeness_score"]),
+            int(review["next_steps_score"]),
+            int(review["uncertainty_score"]),
+            int(review["usefulness_score"]),
+            int(review.get("supported_claims", 0)),
+            int(review.get("unsupported_claims", 0)),
+            int(review.get("contradicted_claims", 0)),
+            int(review.get("undecidable_claims", 0)),
+            review.get("notes"),
+            review["reviewer_name"],
+            reviewed_at,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT * FROM evaluation_model_reviews
+        WHERE comparison_run_uid = ? AND profile_uid = ?
+        """,
+        (review["comparison_run_uid"], review["profile_uid"]),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_evaluation_model_reviews(conn, limit=500, comparison_run_uid=None):
+    where = ""
+    params = []
+    if comparison_run_uid:
+        where = "WHERE comparison_run_uid = ?"
+        params.append(comparison_run_uid)
+    params.append(int(limit))
+    rows = conn.execute(
+        f"""
+        SELECT * FROM evaluation_model_reviews
+        {where}
+        ORDER BY reviewed_at DESC, review_uid
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_evaluation_model_review(conn, review_uid):
+    cur = conn.execute(
+        "DELETE FROM evaluation_model_reviews WHERE review_uid = ?",
+        (review_uid,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def evaluation_case_options(conn, limit=250):
+    rows = conn.execute(
+        """
+        SELECT detections.case_uid, detections.id AS detection_id,
+               detections.first_seen, detections.last_seen,
+               detections.src_ip, detections.dest_ip,
+               detections.detection_type, detections.sensor_state,
+               responses.final_classification, responses.final_score
+        FROM detections
+        LEFT JOIN responses ON responses.id = (
+          SELECT MAX(response_rows.id)
+          FROM responses AS response_rows
+          WHERE response_rows.detection_id = detections.id
+        )
+        WHERE detections.case_uid IS NOT NULL
+        ORDER BY detections.id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def evaluation_overview(conn):
+    counts = {}
+    for name, table in {
+        "scenarios": "evaluation_scenarios",
+        "case_links": "evaluation_case_links",
+        "event_labels": "evaluation_event_labels",
+        "scoring_runs": "evaluation_scoring_runs",
+        "model_reviews": "evaluation_model_reviews",
+        "comparison_runs": "ai_comparison_runs",
+    }.items():
+        counts[name] = conn.execute(
+            f"SELECT COUNT(*) AS count FROM {table}"
+        ).fetchone()["count"]
+    experiment_rows = conn.execute(
+        """
+        SELECT experiment_type, COUNT(*) AS count
+        FROM evaluation_scenarios
+        GROUP BY experiment_type
+        ORDER BY experiment_type
+        """
+    ).fetchall()
+    counts["experiments"] = {
+        row["experiment_type"]: row["count"] for row in experiment_rows
+    }
+    counts["recent_scenarios"] = list_evaluation_scenarios(conn, limit=8)
+    return counts
+
+
+def evaluation_export_bundle(conn, scenario_uid=None):
+    if scenario_uid:
+        scenario = get_evaluation_scenario(conn, scenario_uid)
+        scenarios = [scenario] if scenario else []
+    else:
+        scenarios = [
+            get_evaluation_scenario(conn, item["scenario_uid"])
+            for item in list_evaluation_scenarios(conn, limit=10000)
+        ]
+    scenario_uids = {item["scenario_uid"] for item in scenarios if item}
+    scoring_runs = list_evaluation_scoring_runs(conn, limit=10000)
+    if scenario_uid:
+        scoring_runs = [
+            item for item in scoring_runs if item.get("scenario_uid") in scenario_uids
+        ]
+    model_reviews = list_evaluation_model_reviews(conn, limit=10000)
+    if scenario_uid:
+        linked_cases = {
+            link["case_uid"]
+            for scenario in scenarios
+            for link in (scenario.get("case_links") or [])
+        }
+        comparison_uids = {
+            row["comparison_uid"]
+            for row in conn.execute(
+                """
+                SELECT comparison_uid, case_uid
+                FROM ai_comparison_runs
+                """
+            ).fetchall()
+            if row["case_uid"] in linked_cases
+        }
+        model_reviews = [
+            review
+            for review in model_reviews
+            if review.get("comparison_run_uid") in comparison_uids
+        ]
+    return {
+        "schema_version": "evaluation-lab-v1",
+        "exported_at": utc_now(),
+        "scenarios": [item for item in scenarios if item],
+        "scoring_runs": scoring_runs,
+        "model_reviews": model_reviews,
+    }
