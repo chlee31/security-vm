@@ -227,21 +227,28 @@ class ThreatIntelTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(dict(usage), {"source": "virustotal", "stage": "post_initial_verification"})
 
-    def test_virustotal_never_changes_the_score(self):
+    def test_virustotal_verification_does_not_change_the_qualitative_decision(self):
         alert = {"src_ip": "192.168.11.50", "dest_ip": "8.8.8.8"}
-        detection = {"python_initial_score": 60}
-        base = decide(self.conn, {"system": {"mode": "alert_only"}}, alert, detection, {"risk_adjustment": 4})
+        detection = {"agreement_state": "single_sensor"}
+        base = decide(
+            self.conn,
+            {"system": {"mode": "alert_only"}},
+            alert,
+            detection,
+            {"classification": "Dangerous"},
+        )
         verified = decide(
             self.conn,
             {"system": {"mode": "alert_only"}},
             alert,
             detection,
             {
-                "risk_adjustment": 4,
+                "classification": "Dangerous",
                 "virustotal_verification": [{"malicious_count": 50, "suspicious_count": 10}],
             },
         )
-        self.assertEqual(base["final_score"], verified["final_score"])
+        self.assertEqual(base["final_classification"], verified["final_classification"])
+        self.assertNotIn("final_score", verified)
 
     def test_virustotal_rejects_non_global_and_shared_space(self):
         self.assertFalse(eligible_ip("192.168.11.50"))

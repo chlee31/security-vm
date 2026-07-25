@@ -6,12 +6,10 @@ from pathlib import Path
 
 from app.database import (
     create_evaluation_scenario,
-    create_evaluation_scoring_run,
     delete_evaluation_case_link,
     delete_evaluation_event_label,
     delete_evaluation_model_review,
     delete_evaluation_scenario,
-    delete_evaluation_scoring_run,
     evaluation_candidate_events,
     evaluation_correlation_metrics,
     evaluation_export_bundle,
@@ -20,7 +18,6 @@ from app.database import (
     init_db,
     insert_sensor_finding,
     list_evaluation_model_reviews,
-    list_evaluation_scoring_runs,
     list_evaluation_scenarios,
     update_evaluation_scenario,
     upsert_evaluation_case_link,
@@ -207,7 +204,6 @@ class EvaluationLabTests(unittest.TestCase):
                         "evaluation_scenarios",
                         "evaluation_case_links",
                         "evaluation_event_labels",
-                        "evaluation_scoring_runs",
                         "evaluation_model_reviews",
                     }.issubset(tables)
                 )
@@ -317,29 +313,8 @@ class EvaluationLabTests(unittest.TestCase):
             )
         )
 
-    def test_scoring_and_model_review_storage_is_evaluation_only(self):
+    def test_model_review_storage_is_evaluation_only(self):
         create_evaluation_scenario(self.conn, self.scenario)
-        run_uid = create_evaluation_scoring_run(
-            self.conn,
-            {
-                "scenario_uid": "COR-001",
-                "case_uid": "CASE-20260725-000001",
-                "evaluation_type": "ablation",
-                "baseline_policy": "deterministic-score-v2",
-                "experimental_parameters": {"without": "threat_intelligence"},
-                "baseline_score": 45,
-                "experimental_score": 30,
-                "baseline_classification": "Human Review Required",
-                "experimental_classification": "Human Review Required",
-                "result": {"official_case_modified": False},
-            },
-        )
-        runs = list_evaluation_scoring_runs(self.conn)
-        self.assertEqual(runs[0]["score_difference"], -15)
-        self.assertEqual(
-            runs[0]["experimental_parameters"]["without"], "threat_intelligence"
-        )
-
         review = upsert_evaluation_model_review(
             self.conn,
             {
@@ -359,12 +334,6 @@ class EvaluationLabTests(unittest.TestCase):
         self.assertEqual(review["grounding_score"], 4)
         self.assertEqual(len(list_evaluation_model_reviews(self.conn)), 1)
         self.assertTrue(delete_evaluation_model_review(self.conn, review["review_uid"]))
-        self.assertTrue(delete_evaluation_scoring_run(self.conn, run_uid))
-
-        detection = self.conn.execute(
-            "SELECT * FROM detections WHERE case_uid = 'CASE-20260725-000001'"
-        ).fetchone()
-        self.assertIsNone(detection["python_initial_score"])
 
     def test_validation_rejects_circular_or_invalid_inputs(self):
         with self.assertRaisesRegex(ValueError, "Scenario UID"):

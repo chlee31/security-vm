@@ -6,7 +6,7 @@ import time
 import requests
 
 
-PROMPT_VERSION = "security-vm-case-explanation-v10-audited-evidence"
+PROMPT_VERSION = "security-vm-case-explanation-v11-qualitative-evidence"
 
 THREAT_INTEL_PROVIDER_NAMES = (
     "otx",
@@ -33,7 +33,6 @@ AI_RESPONSE_SCHEMA = {
             "enum": ["Safe", "Human Review Required", "Dangerous"],
         },
         "confidence": {"type": "string", "enum": ["Low", "Medium", "High"]},
-        "risk_adjustment": {"type": "integer", "minimum": -10, "maximum": 10},
         "reason": {"type": "string"},
         "summary": {"type": "string"},
         "who": {"type": "string"},
@@ -109,7 +108,6 @@ AI_RESPONSE_SCHEMA = {
     "required": [
         "classification",
         "confidence",
-        "risk_adjustment",
         "reason",
         "summary",
         "who",
@@ -137,6 +135,14 @@ OMITTED_AI_EVIDENCE_KEYS = {
     "password",
     "secret",
     "token",
+    "asset_score",
+    "python_initial_score",
+    "final_score",
+    "risk_adjustment",
+    "ai_risk_adjustment",
+    "analyst_score",
+    "original_score",
+    "score_breakdowns",
 }
 
 
@@ -309,19 +315,23 @@ def _evidence_source_map(package):
             }
             for item in zeek_items
         ],
-        "deterministic_scoring": {
-            "source": "risk_score.deterministic_score and score_breakdowns",
-        },
         "threat_intel": {
             "source": "threat_intel_sources, threat_intel_indicators, threat_intel_lookups, and threat_intel_usage",
             "matched_records": intel_records,
         },
-        "registered_asset_context": {"source": "registered IP role records in assets"},
+        "registered_ip_role_context": {"source": "registered IP role records in assets"},
     }
 
 
 def _build_prompt_components(alert, detection, evidence_context=None):
     asset_context = detection.get("asset_context") or {}
+    role_fields = ("ip_address", "name", "device_type", "network_interface", "function", "notes")
+
+    def role_context(value):
+        if not isinstance(value, dict):
+            return None
+        return {key: value.get(key) for key in role_fields if value.get(key) not in (None, "")}
+
     encrypted_ports = {22, 443, 853, 8443, 1194, 500, 4500, 51820}
     signature_text = " ".join(
         str(value or "")
@@ -365,15 +375,10 @@ def _build_prompt_components(alert, detection, evidence_context=None):
             "technique_name": detection.get("mitre_name"),
             "role": "descriptive_context_only",
         },
-        "risk_score": {
-            "python_initial_score": detection.get("python_initial_score"),
-            "asset_score_applied": detection.get("asset_score_applied", 0),
-        },
-        "registered_asset_context": {
+        "registered_ip_role_context": {
             "match": asset_context.get("asset_match", "none"),
-            "asset_score": asset_context.get("asset_score", 0),
-            "src_asset": asset_context.get("src_asset"),
-            "dest_asset": asset_context.get("dest_asset"),
+            "source_ip_role": role_context(asset_context.get("src_asset")),
+            "destination_ip_role": role_context(asset_context.get("dest_asset")),
         },
         "encrypted_traffic_context": {
             "likely_encrypted_or_tunneled": likely_encrypted,
@@ -406,29 +411,20 @@ def _build_prompt_components(alert, detection, evidence_context=None):
     )
 
     instructions = """
-You are assisting a cybersecurity lab system that triages unified network detections from Suricata and Zeek.
-Python already calculated a deterministic score from five auditable categories with a maximum of 80 points. Your job is not to replace that score; your job is to provide a bounded second opinion.
+You are assisting a cybersecurity lab system that reviews unified network detections from Suricata and Zeek.
+Analyze the supplied evidence qualitatively. Do not calculate, infer, or return a numerical risk score, point value, probability, or score adjustment.
 
 Return only valid JSON with exactly these keys:
-classification, confidence, risk_adjustment, reason, summary, who, what, when, where, why, how, next_steps, threat_intel_analysis, evidence_review, recommended_action.
+classification, confidence, reason, summary, who, what, when, where, why, how, next_steps, threat_intel_analysis, evidence_review, recommended_action.
 
 Allowed values:
 - classification: Safe, Human Review Required, Dangerous
 - confidence: Low, Medium, High
-- risk_adjustment: integer from -10 to 10
 - recommended_action: log_only, human_review, investigate, escalate
 - reason, summary, who, what, when, where, why, and how: concise strings grounded only in supplied evidence
 - next_steps: an ordered array of two to five concrete analyst investigation steps
 - threat_intel_analysis: an object containing overall, influence, and providers. providers must contain one concise interpretation for every named source: otx, threatfox, urlhaus, sslbl, spamhaus_drop, openphish, ipsum, feodo, and virustotal.
 - evidence_review: identify the supplied top-level sections, the specific records or fields used, missing or ambiguous evidence, and the method used to reach the conclusion. This is a model acknowledgement; Python independently preserves the authoritative request record.
-
-Scoring guidance:
-- Use risk_adjustment to tune Python's score, not to create a new score.
-- -10 to -6: strong evidence this is benign, expected, noisy, or normal software behavior.
-- -5 to -1: somewhat lower risk than Python estimated.
-- 0: Python score looks reasonable, or evidence is insufficient.
-- 1 to 10: suspicious context raises risk.
-- 6 to 10: strong malicious indicators, high-confidence attack behavior, or critical asset impact.
 
 Classification guidance:
 - Safe: likely benign or routine activity. Usually recommend log_only.
@@ -436,20 +432,19 @@ Classification guidance:
 - Dangerous: high-confidence malicious behavior, clear attack pattern, or severe risk to a high-value asset. Recommend escalate.
 
 Asset guidance:
-- registered_asset_context comes from analyst-defined SQLite inventory.
-- asset_score is 0-10. Higher means higher business impact.
-- Laptops, servers, routers/firewalls, and security appliances should raise concern when targeted or behaving unusually.
-- Do not mark something Dangerous only because asset_score is high; combine asset importance with alert behavior.
+- registered_ip_role_context comes from analyst-defined SQLite inventory.
+- Use the registered name, device type, function, interface, and notes as descriptive business context.
+- A registered role may affect what behavior is expected, but it is not a numerical input and cannot prove maliciousness by itself.
 
 Evidence rules:
 - sensor_fusion in evidence_context is authoritative about which sensors produced findings. Evaluate every finding independently and then explain whether they support the same security conclusion.
 - A Suricata signature may initiate a detection without a Zeek notice. A Zeek notice may initiate a detection without a Suricata signature. Absence of a finding from one sensor is missing evidence, not evidence that the traffic is safe, and must never cancel the other sensor's finding.
 - When sensor_state is multi_sensor, use Community ID or flow/time correlation metadata to understand why findings were grouped. Corroborating independent findings should increase confidence, but should not automatically mean Dangerous.
-- correlation_rule_strength is a configured rule value, not a calibrated probability or model confidence score.
+- correlation_rule_strength is a configured matching value, not a calibrated probability, risk score, or model confidence.
 - Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
 - Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
 - If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Human Review Required and describe the disputed evidence.
-- Treat observed DNS tunneling, port scans, repeated connections, or many destination ports according to the supplied sensor evidence. MITRE mapping is derived descriptive context only: it must not independently increase risk, confidence, or the adjustment.
+- Treat observed DNS tunneling, port scans, repeated connections, or many destination ports according to the supplied sensor evidence. MITRE mapping is derived descriptive context only and must not independently determine classification or confidence.
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
 - Use threat_intel in evidence_context when present. provider_status describes whether each source was active and refreshed; each observable's providers list describes matched, no_match, not_active, or unavailable results. Treat matches from independent sources as corroborating evidence and consider confidence, category, and freshness.
 - In threat_intel_analysis.providers, discuss every provider separately. State "Not active", "No match", or "Unavailable" when that is the supplied state. For matches, name the observable, category, confidence when supplied, and what the match means. Do not turn a no-match result into proof that traffic is benign.
@@ -463,8 +458,8 @@ Evidence rules:
 - For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent, prefer Human Review Required or Safe with clear low-confidence wording.
 - If context is missing, prefer Human Review Required with Low or Medium confidence instead of guessing.
 - Do not identify, advertise, or speculate about the model or provider that produced the response. Python records model identity separately.
-- The reason must briefly explain the main evidence and why the adjustment was chosen.
-- In evidence_review.received_sections, list only section names that are actually present in the event package. In evidence_used, cite concrete event UIDs, Zeek log types, fields, observables, or score categories. Do not claim to have received raw sensor JSON because Python deliberately retains raw records locally.
+- The reason must briefly explain the main evidence supporting the classification.
+- In evidence_review.received_sections, list only section names that are actually present in the event package. In evidence_used, cite concrete event UIDs, Zeek log types, fields, and observables. Do not claim to have received raw sensor JSON because Python deliberately retains raw records locally.
 
 Analyze this event package:
 """
@@ -523,22 +518,6 @@ def build_prompt_audit(config, alert, detection, evidence_context=None):
     }
 
 
-def normalize_risk_adjustment(value):
-    try:
-        adjustment = int(value)
-    except (TypeError, ValueError):
-        text = str(value or "").lower()
-        if "high" in text or "danger" in text or "severe" in text:
-            adjustment = 10
-        elif "medium" in text or "moderate" in text:
-            adjustment = 5
-        elif "low" in text or "safe" in text:
-            adjustment = 0
-        else:
-            adjustment = 0
-    return max(-10, min(10, adjustment))
-
-
 def normalize_text(value, fallback=""):
     if value is None:
         return fallback
@@ -585,7 +564,6 @@ def parse_model_response(raw_text):
     for key in (
         "classification",
         "confidence",
-        "risk_adjustment",
         "reason",
         "summary",
         "who",
@@ -642,7 +620,6 @@ def normalize_report(parsed):
             "Dangerous" if severity in {"high", "critical", "dangerous"} else "Safe" if severity == "low" else "Human Review Required",
         )
         parsed.setdefault("confidence", risk.get("confidence_score"))
-        parsed.setdefault("risk_adjustment", 0)
         parsed.setdefault("summary", threat_summary.get("activity_pattern") or normalize_text(threat_summary))
         parsed.setdefault("who", threat_summary.get("ip_address") or "Endpoints named in the supplied evidence")
         parsed.setdefault("what", threat_summary.get("activity_pattern") or "Network sensor finding")
@@ -662,7 +639,6 @@ def normalize_report(parsed):
             **parsed,
             "classification": "Human Review Required",
             "confidence": "Low",
-            "risk_adjustment": 0,
             "reason": "The model echoed a sensor record instead of returning an analytical explanation.",
             "summary": "Invalid analytical response: the model copied normalized sensor evidence.",
             "who": f"{parsed.get('src_ip') or parsed.get('source_ip') or 'unknown source'} to {parsed.get('dest_ip') or parsed.get('destination_ip') or 'unknown destination'}",
@@ -679,7 +655,7 @@ def normalize_report(parsed):
         }
     parsed["classification"] = normalize_text(parsed.get("classification"), "Human Review Required")
     parsed["confidence"] = normalize_confidence(parsed.get("confidence"))
-    parsed["risk_adjustment"] = normalize_risk_adjustment(parsed.get("risk_adjustment"))
+    parsed.pop("risk_adjustment", None)
     parsed["reason"] = normalize_text(
         parsed.get("reason") or parsed.get("reasoning") or parsed.get("analysis"),
         "AI model did not provide a reason.",
@@ -838,7 +814,6 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
         parsed = {
             "classification": "Human Review Required",
             "confidence": "Low",
-            "risk_adjustment": 0,
             "reason": "AI model returned non-JSON output.",
             "recommended_action": "human_review",
             "summary": "The model response could not be parsed.",
@@ -856,7 +831,6 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
     if partial_response:
         parsed["classification"] = "Human Review Required"
         parsed["confidence"] = "Low"
-        parsed["risk_adjustment"] = 0
         parsed["recommended_action"] = "human_review"
         parsed["reason"] = f"Model output was truncated. {parsed['reason']}"
     parsed.update(audit)

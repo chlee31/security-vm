@@ -1108,70 +1108,29 @@ textarea {
   background: var(--panel-2);
 }
 
-.score-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px;
+.classification-badge {
   align-items: center;
-}
-
-.score-badge {
-  display: grid;
-  place-items: center;
-  align-content: center;
-  min-width: 78px;
-  min-height: 74px;
-  padding: 8px 10px;
+  background: #111619;
   border: 1px solid var(--line);
   border-left: 4px solid var(--green);
-  border-radius: 8px;
-  background: #111619;
-  text-align: center;
-}
-
-.score-badge span {
-  color: var(--muted);
-  font-size: 0.7rem;
+  border-radius: 6px;
+  display: inline-flex;
+  font-size: 0.78rem;
   font-weight: 800;
+  justify-content: center;
+  min-height: 52px;
+  min-width: 124px;
+  padding: 8px 12px;
+  text-align: center;
   text-transform: uppercase;
 }
 
-.score-badge strong {
-  font-size: 2rem;
-  line-height: 1;
-}
-
-.score-badge small {
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.score-badge.review {
+.classification-badge.review {
   border-left-color: var(--amber);
 }
 
-.score-badge.danger {
+.classification-badge.danger {
   border-left-color: var(--red);
-}
-
-.score-badge.priority {
-  min-width: 70px;
-  min-height: 64px;
-  border-left-color: var(--cyan);
-}
-
-.score-badge.priority strong {
-  font-size: 1.65rem;
-}
-
-.mini-list.dense .score-badge strong {
-  overflow: visible;
-  font-size: 2rem;
-  white-space: normal;
-}
-
-.evidence-item > .score-badge {
-  margin-top: 10px;
 }
 
 .selectable-evidence {
@@ -1346,12 +1305,12 @@ textarea {
   min-height: 150px;
 }
 
-.unified-alert > .score-badge {
+.unified-alert > .classification-badge {
   width: 124px;
   min-width: 0;
 }
 
-.unified-alert > .score-badge span {
+.unified-alert > .classification-badge span {
   max-width: 100%;
   overflow-wrap: anywhere;
 }
@@ -1969,7 +1928,7 @@ time,
     grid-template-columns: 1fr;
   }
 
-  .unified-alert > .score-badge {
+  .unified-alert > .classification-badge {
     width: 100%;
   }
 
@@ -2011,10 +1970,6 @@ time,
   }
 
   .timeline-row {
-    grid-template-columns: 1fr;
-  }
-
-  .score-row {
     grid-template-columns: 1fr;
   }
 
@@ -2380,11 +2335,11 @@ time,
   color: var(--green);
 }
 
-.comparison-scorecard-panel {
+.comparison-selection-panel {
   margin-top: 14px;
 }
 
-.scorecard-row .bar {
+.selection-summary-row .bar {
   margin-top: 9px;
 }
 

@@ -27,7 +27,6 @@ from app.database import (
     insert_detection,
     insert_ai_assessment,
     insert_ai_report,
-    insert_score_breakdown,
     insert_response,
     insert_sensor_finding,
     ip_enrichment_profile,
@@ -36,16 +35,14 @@ from app.database import (
     sensor_findings_for_detection,
     sensor_finding_detection_id,
     threat_intel_matches,
-    update_detection_python_score,
     upsert_ai_run_audit,
     upsert_pending_review,
     zeek_context_for_detection,
     zeek_flow_for_uid,
 )
-from app.decision_engine import decide, safe_risk_adjustment
+from app.decision_engine import decide
 from app.normalizer import detection_type_from_alert, normalize_suricata_event
 from app.ai_client import ask_ai_model, build_prompt_audit, check_ai_model, model_metadata, model_run_id
-from app.risk_score import cap_score, deterministic_score
 from app.suricata_reader import follow_file, permission_help
 from app.sensor_fusion import suricata_finding, zeek_detection, zeek_finding
 from app.threat_intel import (
@@ -321,17 +318,11 @@ def ensure_ai_report_metadata(config, alert, report):
 
 def apply_asset_context(detection, asset_context):
     detection["asset_context"] = asset_context
-    detection["asset_score_applied"] = asset_context.get("asset_score", 0)
-    if detection["asset_score_applied"]:
-        detection["python_initial_score"] = cap_score(
-            int(detection.get("python_initial_score") or 0) + detection["asset_score_applied"]
-        )
     return detection
 
 
 def attach_asset_context(detection, asset_context):
     detection["asset_context"] = asset_context
-    detection["asset_score_applied"] = asset_context.get("asset_score", 0)
     return detection
 
 
@@ -345,17 +336,6 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
         detection_id=detection_id,
     )
     findings = sensor_findings_for_detection(conn, detection_id)
-    score_breakdown = deterministic_score(
-        alert,
-        detection,
-        findings=findings,
-        evidence_context=evidence_context,
-    )
-    update_detection_python_score(conn, detection_id, score_breakdown["python_score"])
-    detection["python_initial_score"] = score_breakdown["python_score"]
-    detection["forced_review"] = score_breakdown["forced_review"]
-    detection["forced_review_reason"] = score_breakdown["forced_review_reason"]
-    evidence_context["deterministic_scoring"] = score_breakdown
     record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_context)
     try:
         ai_report = ask_ai_model(
@@ -393,7 +373,6 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             **prompt_audit,
             "classification": "Human Review Required",
             "confidence": "Low",
-            "risk_adjustment": 0,
             "reason": f"AI model unavailable: {exc}",
             "recommended_action": "human_review",
             "summary": "The local AI model was unavailable, so this case requires analyst review.",
@@ -401,7 +380,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             "what": alert.get("signature") or "A network sensor finding was recorded.",
             "when": f"Observed at {alert.get('timestamp') or 'an unknown time'}.",
             "where": f"{alert.get('src_ip') or '?'}:{alert.get('src_port') or '?'} to {alert.get('dest_ip') or '?'}:{alert.get('dest_port') or '?'}.",
-            "why": "Automated explanation was unavailable; review the deterministic score and sensor evidence.",
+            "why": "Automated explanation was unavailable; review the stored sensor and threat-intelligence evidence.",
             "how": "Python correlated the stored Suricata and Zeek evidence without an AI response.",
             "next_steps": ["Review the original sensor findings and related Zeek context."],
             "raw_response": "",
@@ -435,21 +414,10 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
         assessment_type="initial",
         evidence_sources={
             "sensor_findings": [item.get("event_uid") for item in findings],
-            "score_breakdown": score_breakdown,
         },
     )
     response = decide(conn, runtime_config, alert, detection, ai_report)
     response["detection_id"] = detection_id
-    insert_score_breakdown(
-        conn,
-        detection_id,
-        score_breakdown,
-        ai_report_id=ai_report_id,
-        assessment_type="initial",
-        llm_adjustment_raw=ai_report.get("risk_adjustment", 0),
-        llm_adjustment_applied=safe_risk_adjustment(ai_report),
-        provisional_score=response["final_score"],
-    )
     try:
         ai_report["virustotal_verification"] = verify_dangerous_with_virustotal(
             conn,
@@ -476,7 +444,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
         conn,
         "info",
         "decision",
-        f"{response['final_classification']} action={response['final_action']} score={response['final_score']}",
+        f"{response['final_classification']} action={response['final_action']}",
         {
             "alert_id": alert_id,
             "detection_id": detection_id,
@@ -487,7 +455,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
     print(
         f"[{response['final_classification']}] {alert.get('src_ip')} -> {alert.get('dest_ip')} "
         f"{alert.get('signature')} sensor={detection.get('sensor_state')} "
-        f"score={response['final_score']} action={response['final_action']}"
+        f"action={response['final_action']}"
     )
     return response
 
@@ -977,7 +945,6 @@ def run_ai_backfill(config_path, limit):
             "time_window_seconds": row.get("time_window_seconds"),
             "mitre_id": row.get("mitre_id"),
             "mitre_name": row.get("mitre_name"),
-            "python_initial_score": row.get("python_initial_score"),
             "status": row.get("status"),
         }
         detection = attach_asset_context(detection, asset_context_for_alert(conn, alert))
@@ -989,12 +956,6 @@ def run_ai_backfill(config_path, limit):
             detection_id=row["detection_id"],
         )
         findings = sensor_findings_for_detection(conn, row["detection_id"])
-        breakdown = deterministic_score(alert, detection, findings, evidence_context)
-        detection["python_initial_score"] = breakdown["python_score"]
-        detection["forced_review"] = breakdown["forced_review"]
-        detection["forced_review_reason"] = breakdown["forced_review_reason"]
-        evidence_context["deterministic_scoring"] = breakdown
-        update_detection_python_score(conn, row["detection_id"], breakdown["python_score"])
         record_pre_ai_threat_intel_usage(
             conn,
             row["detection_id"],
@@ -1023,16 +984,9 @@ def run_ai_backfill(config_path, limit):
                 row["detection_id"],
                 report,
                 assessment_type="backfill",
-                evidence_sources={"score_breakdown": breakdown},
-            )
-            insert_score_breakdown(
-                conn,
-                row["detection_id"],
-                breakdown,
-                ai_report_id=report_id,
-                assessment_type="backfill",
-                llm_adjustment_raw=report.get("risk_adjustment", 0),
-                llm_adjustment_applied=safe_risk_adjustment(report),
+                evidence_sources={
+                    "sensor_findings": [item.get("event_uid") for item in findings],
+                },
             )
             try:
                 report["virustotal_verification"] = verify_dangerous_with_virustotal(

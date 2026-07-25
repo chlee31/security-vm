@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS detections (
   time_window_seconds INTEGER,
   mitre_id TEXT,
   mitre_name TEXT,
-  python_initial_score INTEGER,
   status TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -158,7 +157,6 @@ CREATE TABLE IF NOT EXISTS assets (
   name TEXT NOT NULL,
   device_type TEXT NOT NULL,
   network_interface TEXT DEFAULT 'ens37',
-  asset_score INTEGER NOT NULL,
   function TEXT,
   notes TEXT,
   status TEXT DEFAULT 'active',
@@ -207,7 +205,6 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   prompt_version TEXT,
   classification TEXT,
   confidence TEXT,
-  risk_adjustment INTEGER,
   reason TEXT,
   recommended_action TEXT,
   summary TEXT,
@@ -317,23 +314,6 @@ CREATE TABLE IF NOT EXISTS evaluation_event_labels (
   FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
 );
 
-CREATE TABLE IF NOT EXISTS evaluation_scoring_runs (
-  run_uid TEXT PRIMARY KEY,
-  scenario_uid TEXT,
-  case_uid TEXT NOT NULL,
-  evaluation_type TEXT NOT NULL,
-  baseline_policy TEXT NOT NULL,
-  experimental_parameters_json TEXT NOT NULL DEFAULT '{}',
-  baseline_score REAL NOT NULL,
-  experimental_score REAL NOT NULL,
-  baseline_classification TEXT NOT NULL,
-  experimental_classification TEXT NOT NULL,
-  score_difference REAL NOT NULL,
-  result_json TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
-);
-
 CREATE TABLE IF NOT EXISTS evaluation_model_reviews (
   review_uid TEXT PRIMARY KEY,
   comparison_run_uid TEXT NOT NULL,
@@ -362,7 +342,6 @@ CREATE TABLE IF NOT EXISTS ai_assessments (
   model_name TEXT NOT NULL,
   classification TEXT NOT NULL,
   confidence REAL,
-  risk_adjustment INTEGER,
   reason TEXT,
   recommended_action TEXT,
   evidence_sources_json TEXT,
@@ -370,29 +349,6 @@ CREATE TABLE IF NOT EXISTS ai_assessments (
   raw_response TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (detection_id) REFERENCES detections(id)
-);
-
-CREATE TABLE IF NOT EXISTS score_breakdowns (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  detection_id INTEGER NOT NULL,
-  ai_report_id INTEGER,
-  assessment_type TEXT NOT NULL DEFAULT 'initial',
-  sensor_severity INTEGER NOT NULL DEFAULT 0,
-  behavior_correlation INTEGER NOT NULL DEFAULT 0,
-  threat_intelligence INTEGER NOT NULL DEFAULT 0,
-  mitre_relevance INTEGER NOT NULL DEFAULT 0,
-  asset_direction INTEGER NOT NULL DEFAULT 0,
-  sensor_corroboration INTEGER NOT NULL DEFAULT 0,
-  python_score INTEGER NOT NULL DEFAULT 0,
-  llm_adjustment_raw INTEGER NOT NULL DEFAULT 0,
-  llm_adjustment_applied INTEGER NOT NULL DEFAULT 0,
-  provisional_score INTEGER NOT NULL DEFAULT 0,
-  forced_review INTEGER NOT NULL DEFAULT 0,
-  forced_review_reason TEXT,
-  details_json TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (detection_id) REFERENCES detections(id),
-  FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
 );
 
 CREATE TABLE IF NOT EXISTS virustotal_verifications (
@@ -461,7 +417,6 @@ CREATE TABLE IF NOT EXISTS ai_comparison_candidates (
   prompt_sha256 TEXT,
   classification TEXT,
   confidence TEXT,
-  risk_adjustment INTEGER,
   summary TEXT,
   who_summary TEXT,
   what_summary TEXT,
@@ -500,7 +455,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_comparison_votes_one_per_run
 CREATE TABLE IF NOT EXISTS responses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,
-  final_score INTEGER,
   final_classification TEXT,
   final_action TEXT,
   target_ip TEXT,
@@ -564,12 +518,10 @@ CREATE TABLE IF NOT EXISTS app_events (
 CREATE TABLE IF NOT EXISTS analyst_reviews (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER NOT NULL UNIQUE,
-  original_score INTEGER NOT NULL,
   original_classification TEXT,
   original_action TEXT,
   review_status TEXT DEFAULT 'pending' CHECK(review_status IN ('pending', 'confirmed', 'overridden', 'expired')),
   analyst_name TEXT,
-  analyst_score INTEGER,
   analyst_classification TEXT,
   analyst_action TEXT,
   analyst_notes TEXT,
@@ -595,8 +547,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_case_uid
   ON detections(case_uid);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_zeek_events_event_uid
   ON zeek_events(event_uid);
-CREATE INDEX IF NOT EXISTS idx_score_breakdowns_detection
-  ON score_breakdowns(detection_id, assessment_type);
 CREATE INDEX IF NOT EXISTS idx_vt_verifications_detection
   ON virustotal_verifications(detection_id, assessment_stage);
 

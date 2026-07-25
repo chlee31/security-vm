@@ -1,6 +1,6 @@
 # Evaluation Lab
 
-The Evaluation Lab is a research workspace built alongside the operational Security VM case workflow. It stores analyst-defined ground truth and references existing cases without changing their official correlation, score, classification, AI report, or analyst review.
+The Evaluation Lab is a research workspace built alongside the operational Security VM case workflow. It stores analyst-defined ground truth and references existing cases without changing their official correlation, classification, AI report, or analyst review.
 
 ## Routes
 
@@ -9,7 +9,6 @@ The Evaluation Lab is a research workspace built alongside the operational Secur
 | `/evaluation` | Evaluation overview and record counts |
 | `/evaluation/scenarios` | Create scenarios and link existing Security VM cases |
 | `/evaluation/correlation` | Label expected and actual event membership |
-| `/evaluation/scoring` | Browse frozen case inputs for later sensitivity runs |
 | `/evaluation/models` | Browse existing three-model comparison runs |
 
 The corresponding APIs use the `/api/evaluation` prefix.
@@ -31,7 +30,7 @@ The corresponding APIs use the `/api/evaluation` prefix.
    - neither case is present: true negative.
 8. Export one scenario or the complete evaluation dataset as JSON or CSV.
 
-Security VM does not infer ground truth from its own score or AI output.
+Security VM does not infer ground truth from its own AI output.
 
 ## Correlation Ground Truth
 
@@ -94,10 +93,11 @@ TN.
 | `evaluation_scenarios` | Controlled scenario definition and manual ground truth |
 | `evaluation_case_links` | References from a scenario to existing case UIDs |
 | `evaluation_event_labels` | Expected and actual case assignments for candidate events |
-| `evaluation_scoring_runs` | Evaluation-only scoring experiment results |
 | `evaluation_model_reviews` | Manual rubric results for stored model responses |
 
 Scenario deletion removes only records in the evaluation tables. It does not delete or modify operational cases.
+Databases upgraded from earlier revisions may retain unused legacy tables; the
+application neither writes to nor exposes them.
 
 ## Exports
 
@@ -147,12 +147,10 @@ cases and existing model runs.
 
 The following experiment engines remain subsequent phases:
 
-- deterministic score ablation, multiplier, threshold, and AI-adjustment sweeps;
-- blinded manual LLM rubrics and aggregate model scorecards;
+- blinded manual LLM rubrics and aggregate model-selection summaries;
 - stored narrow/current/wide correlation-configuration comparisons and
   complete case-construction metrics with reproducibility metadata;
 - model-review exports containing frozen evidence and prompt hashes, candidate
   responses, latency, parse status, identity reveal data, and rubric values;
-- scoring-run exports containing the complete frozen baseline score breakdown.
 
 Those phases must continue to write only to evaluation tables.

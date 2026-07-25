@@ -1,6 +1,5 @@
 from app.mitre_mapper import map_detection
 from app.normalizer import detection_type_from_alert
-from app.risk_score import asset_direction_score, cap_python_score, severity_score
 
 
 class Correlator:
@@ -12,10 +11,6 @@ class Correlator:
     def correlate(self, alert, alert_id):
         detection_type = detection_type_from_alert(alert)
         mitre = map_detection(detection_type)
-        score = (
-            severity_score(alert.get("priority"))
-            + asset_direction_score(alert, self.config)
-        )
         strengths = self.config.get("correlation", {}).get("strengths", {})
         try:
             single_sensor_strength = float(strengths.get("single_sensor", 0.5))
@@ -42,6 +37,5 @@ class Correlator:
             "time_window_seconds": 0,
             "mitre_id": mitre.get("id"),
             "mitre_name": mitre.get("name"),
-            "python_initial_score": cap_python_score(score),
             "status": "developing",
         }

@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 
 
-EXPERIMENT_TYPES = ("correlation", "scoring", "models", "combined")
+EXPERIMENT_TYPES = ("correlation", "models")
 EXPECTED_SENSORS = ("suricata", "zeek")
 RELATIONSHIP_STATUSES = (
     "expected_related",
@@ -25,7 +25,6 @@ EVENT_LABELS = (
 REFERENCE_CLASSIFICATIONS = (
     "Safe",
     "Human Review Required",
-    "High Risk",
     "Dangerous",
 )
 CLASSIFICATION_ORDER = {
@@ -382,17 +381,6 @@ def evaluation_bundle_csv(bundle):
                     "details_json": json.dumps(metrics, sort_keys=True),
                 }
             )
-    for run in bundle.get("scoring_runs") or []:
-        write(
-            {
-                "record_type": "scoring_run",
-                "scenario_uid": run.get("scenario_uid"),
-                "record_uid": run.get("run_uid"),
-                "status": run.get("evaluation_type"),
-                "case_uid": run.get("case_uid"),
-                "details_json": json.dumps(run, sort_keys=True),
-            }
-        )
     for review in bundle.get("model_reviews") or []:
         write(
             {

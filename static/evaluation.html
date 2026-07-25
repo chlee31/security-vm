@@ -27,7 +27,6 @@
         <a href="/evaluation" data-evaluation-view="overview">Overview</a>
         <a href="/evaluation/scenarios" data-evaluation-view="scenarios">Scenarios</a>
         <a href="/evaluation/correlation" data-evaluation-view="correlation">Correlation</a>
-        <a href="/evaluation/scoring" data-evaluation-view="scoring">Scoring Sensitivity</a>
         <a href="/evaluation/models" data-evaluation-view="models">LLM Comparison</a>
       </nav>
 
@@ -55,7 +54,7 @@
             </div>
             <div class="evaluation-boundaries">
               <div><strong>Operational cases</strong><span>Read only</span></div>
-              <div><strong>Official scores</strong><span>Unchanged</span></div>
+              <div><strong>Operational classifications</strong><span>Read only</span></div>
               <div><strong>AI comparison runs</strong><span>Reused</span></div>
               <div><strong>Ground truth</strong><span>Analyst supplied</span></div>
             </div>
@@ -85,9 +84,7 @@
                 <span>Experiment</span>
                 <select id="scenario-experiment">
                   <option value="correlation">Correlation</option>
-                  <option value="scoring">Scoring sensitivity</option>
                   <option value="models">LLM comparison</option>
-                  <option value="combined">Combined</option>
                 </select>
               </label>
               <label class="field">
@@ -141,7 +138,6 @@
                   <option value="">Not specified</option>
                   <option>Safe</option>
                   <option>Human Review Required</option>
-                  <option>High Risk</option>
                   <option>Dangerous</option>
                 </select>
               </label>
@@ -151,7 +147,6 @@
                   <option value="">Not specified</option>
                   <option>Safe</option>
                   <option>Human Review Required</option>
-                  <option>High Risk</option>
                   <option>Dangerous</option>
                 </select>
               </label>
@@ -263,33 +258,6 @@
             <button type="submit">Save Assignment</button>
           </form>
           <div id="event-label-list" class="evaluation-table-wrap"></div>
-        </section>
-      </section>
-
-      <section class="evaluation-view" data-view="scoring">
-        <section class="evaluation-grid">
-          <section class="panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Frozen Evidence</p>
-                <h2>Scoring Experiment Inputs</h2>
-              </div>
-            </div>
-            <div id="scoring-case-list" class="workbook-list evaluation-scroll tall"></div>
-          </section>
-          <section class="panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Phase State</p>
-                <h2>Sensitivity Runs</h2>
-              </div>
-            </div>
-            <div class="evaluation-boundaries">
-              <div><strong>Saved experiment runs</strong><span id="scoring-run-count">0</span></div>
-              <div><strong>Official case score</strong><span>Protected</span></div>
-              <div><strong>Experimental output</strong><span>Separate table</span></div>
-            </div>
-          </section>
         </section>
       </section>
 

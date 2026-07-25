@@ -16,9 +16,9 @@ The draft should be revised in the areas below before submission. These are prim
 - Original sensor JSON is retained alongside normalized records in SQLite.
 - The dashboard presents combined findings, correlation context, threat-intelligence evidence, AI explanations, and analyst feedback.
 - Cached and bulk threat-intelligence providers are evaluated before AI processing.
-- VirusTotal is separate post-AI verification for a Dangerous AI classification and contributes no numerical points.
-- Python calculates the deterministic score and retains final control over the stored outcome.
-- AI adjustment is bounded to `-10` through `+10`.
+- VirusTotal is separate post-AI verification for a Dangerous AI classification.
+- Python validates model output, applies sensor-dispute safeguards, and retains final control over the stored action.
+- The AI returns a qualitative classification and does not return a numerical adjustment.
 - API credentials are not sent to the AI model.
 - The evaluated analysis workflow does not automatically block, contain, or close cases.
 - The system does not claim endpoint visibility or TLS payload decryption.
@@ -28,11 +28,11 @@ The draft should be revised in the areas below before submission. These are prim
 
 ### 1. Use the Current Asset Terminology
 
-Replace **asset inventory** with **registered IP role context**, **registered machine context**, or **analyst-defined IP context**. The current interface keeps a small list of internal IP addresses, names, roles, importance values, and notes in the Admin page. It does not provide a separate enterprise asset-inventory application or endpoint coverage.
+Replace **asset inventory** with **registered IP role context**, **registered machine context**, or **analyst-defined IP context**. The current interface keeps a small list of internal IP addresses, names, roles, and notes in the Admin page. It does not provide a separate enterprise asset-inventory application or endpoint coverage.
 
 Suggested objective wording:
 
-> The system enriches cases with analyst-defined context for registered internal IP addresses, including machine name, role, business function, importance, and notes. This context supports prioritization but does not establish maliciousness or endpoint state.
+> The system enriches cases with analyst-defined context for registered internal IP addresses, including machine name, role, business function, interface, and notes. This context helps the reviewer interpret expected behavior but does not establish maliciousness or endpoint state.
 
 The internal SQLite table may retain its historical `assets` name for migration compatibility; the report should describe the user-facing capability rather than the table name.
 
@@ -70,32 +70,21 @@ Suggested wording:
 
 ### 5. Describe VirusTotal Precisely
 
-VirusTotal is not part of the deterministic numerical score. The current sequence is:
+VirusTotal is separate verification evidence. The current sequence is:
 
 1. Match enabled cached and bulk providers.
-2. Calculate the Python score.
-3. Request the AI assessment.
+2. Build a bounded evidence package.
+3. Request the qualitative AI assessment.
 4. If the AI classification is Dangerous, use a fresh cached VirusTotal result or request public-IP verification.
 5. Store VirusTotal as `corroborated`, `not_corroborated`, or `unavailable` verification evidence.
 
 A no-detection result does not lower a classification. Private, loopback, link-local, multicast, reserved, and `100.64.0.0/10` addresses are not queried. The API key is never included in AI evidence or dashboard responses.
 
-### 6. Frame the Score as a Heuristic
+### 6. Describe Qualitative Classification Precisely
 
-The score is an investigation-priority and evidence-strength heuristic, not a probability of compromise. Keep the five-category table, but explicitly state that the weights are design choices requiring evaluation. Avoid claiming that a higher score proves an attack.
+Security VM no longer calculates a deterministic or AI-adjusted risk score. The model reviews the bounded evidence and returns `Safe`, `Human Review Required`, or `Dangerous`, together with confidence, reasoning, six-part case explanation, threat-intelligence interpretation, and next steps.
 
-The current policy is:
-
-| Category | Maximum |
-| --- | ---: |
-| Sensor finding severity | 20 |
-| Behavior and time correlation | 20 |
-| Cached and bulk threat intelligence | 20 |
-| Registered IP importance and traffic direction | 10 |
-| Suricata-Zeek corroboration | 10 |
-| **Python maximum** | **80** |
-
-MITRE ATT&CK is retained as descriptive reviewer context, not independent scoring evidence. AI may adjust the Python total by `-10` to `+10`. Materially disputed sensor findings force human review. The current boundaries remain provisional and require sensitivity testing; under the new policy, Dangerous occupies the reachable `85-90` range.
+Python validates this structure and maps it to `log_only`, `human_review`, or `escalate`. Missing or invalid classifications default to Human Review Required. Materially disputed Suricata and Zeek findings also force human review. Describe confidence as the model's qualitative assessment, not a calibrated probability.
 
 ### 7. Add the Three-Model Comparison Experiment
 
@@ -147,7 +136,7 @@ Use wording such as **the experiment evaluates whether** until results demonstra
 | Zeek ingestion | `app/zeek_ingest.py`, `app/zeek_normalizer.py`, `app/zeek_inventory.py` |
 | Sensor correlation and cases | `app/sensor_fusion.py`, `app/correlator.py`, `app/database.py` |
 | Threat intelligence | `app/threat_intel.py`, `app/virustotal.py` |
-| Deterministic scoring | `app/risk_score.py`, `app/decision_engine.py` |
+| Qualitative action policy | `app/decision_engine.py` |
 | AI evidence and explanation | `app/ai_client.py`, `app/case_assessment.py` |
 | Three-model comparison | `app/ai_comparison.py` |
 | API and dashboard | `app/dashboard.py`, `static/index.html`, `static/investigation.html`, `static/compare.html` |
@@ -163,4 +152,4 @@ Use wording such as **the experiment evaluates whether** until results demonstra
 
 ## Review Decision
 
-The current development is suitable for publication to the `dev` branch after verification. The report draft is conceptually aligned with the implementation, but the factual corrections above should be applied before final submission. The strongest implementation chapter will distinguish clearly among sensor facts, deterministic Python processing, external enrichment, AI explanation, and the final human decision.
+The current development is suitable for publication to the `dev` branch after verification. The report draft is conceptually aligned with the implementation, but the factual corrections above should be applied before final submission. The strongest implementation chapter will distinguish clearly among sensor facts, deterministic Python correlation, external enrichment, qualitative AI explanation, Python safety rules, and the final human decision.

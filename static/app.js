@@ -3,7 +3,6 @@ const els = {
   totalDetections: document.querySelector("#total-detections"),
   safeCount: document.querySelector("#safe-count"),
   reviewCount: document.querySelector("#review-count"),
-  highRiskCount: document.querySelector("#high-risk-count"),
   dangerCount: document.querySelector("#danger-count"),
   topDetection: document.querySelector("#top-detection"),
   systemMode: document.querySelector("#system-mode"),
@@ -132,24 +131,6 @@ function displayTimestamp(value) {
 function detectionLabel(value) {
   if (!value) return "Unknown";
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function scoreClass(score) {
-  const value = Number(score || 0);
-  if (value >= 70) return "danger";
-  if (value >= 30) return "review";
-  return "safe";
-}
-
-function scoreBadge(score, label = "Score") {
-  const value = Number(score || 0);
-  return `
-    <div class="score-badge ${scoreClass(value)}">
-      <span>${label}</span>
-      <strong>${value}</strong>
-      <small>/100</small>
-    </div>
-  `;
 }
 
 function cssVar(name) {
@@ -359,7 +340,6 @@ function renderMetrics(metrics) {
   els.totalDetections.textContent = metrics.total_detections ?? 0;
   els.safeCount.textContent = metrics.outcome_counts?.safe ?? 0;
   els.reviewCount.textContent = metrics.outcome_counts?.human_review ?? 0;
-  els.highRiskCount.textContent = metrics.outcome_counts?.high_risk ?? 0;
   els.dangerCount.textContent = metrics.outcome_counts?.dangerous ?? 0;
   els.zeekNoticeCount.textContent = metrics.zeek_notice_count ?? 0;
   els.zeekWeirdCount.textContent = metrics.zeek_weird_count ?? 0;
@@ -444,7 +424,9 @@ function renderAlerts(alerts) {
             `).join("") || `<small>No linked sensor findings stored.</small>`}
           </div>
         </div>
-        ${scoreBadge(alert.final_score ?? 0, alert.final_classification || "Pending")}
+        <div class="classification-badge ${classificationClass(alert.final_classification)}">
+          <span>${escapeHtml(alert.final_classification || "Pending review")}</span>
+        </div>
       </a>
     `;
   }).join("") || `<div class="empty">No unified detections yet. Start Suricata and Zeek ingestion, then refresh.</div>`;
@@ -472,7 +454,7 @@ function renderAiModelReports(reports) {
         </p>
         <p>${detectionLabel(report.sensor_state || "suricata_only")} · ${detectionLabel(report.agreement_state || "single_sensor")}</p>
         <p>${report.reason || "No reason returned."}</p>
-        <p>Recommended action: ${report.recommended_action || "none"} · risk adjustment ${report.risk_adjustment ?? 0}</p>
+        <p>Recommended action: ${report.recommended_action || "none"}</p>
         <p>Profile ${report.ai_profile_uid || "legacy-profile"} · run ${report.model_run_id || "not recorded"} · ${report.elapsed_ms ?? 0}ms</p>
       </div>
     </a>

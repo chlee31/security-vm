@@ -5,7 +5,6 @@ const requestedCaseUid = params.get("case");
 const els = {
   title: document.querySelector("#investigation-title"),
   updated: document.querySelector("#investigation-updated"),
-  finalScore: document.querySelector("#inv-final-score"),
   decision: document.querySelector("#inv-decision"),
   action: document.querySelector("#inv-action"),
   aiConfidence: document.querySelector("#inv-ai-confidence"),
@@ -18,7 +17,6 @@ const els = {
   findingCount: document.querySelector("#inv-finding-count"),
   findingViewButtons: document.querySelectorAll("[data-finding-view]"),
   ai: document.querySelector("#inv-ai"),
-  scoring: document.querySelector("#inv-scoring"),
   intel: document.querySelector("#inv-intel"),
   zeek: document.querySelector("#inv-zeek"),
   audit: document.querySelector("#inv-audit"),
@@ -31,7 +29,6 @@ const els = {
   review: document.querySelector("#inv-review"),
   reviewForm: document.querySelector("#inv-review-form"),
   reviewName: document.querySelector("#inv-review-name"),
-  reviewScore: document.querySelector("#inv-review-score"),
   reviewAction: document.querySelector("#inv-review-action"),
   reviewLabel: document.querySelector("#inv-review-label"),
   reviewNotes: document.querySelector("#inv-review-notes"),
@@ -83,7 +80,7 @@ function renderModelCandidate(candidate, vote) {
       ` : `
         <div class="candidate-verdict">
           <strong>${escapeHtml(candidate.classification || "No classification")}</strong>
-          <span>${escapeHtml(candidate.confidence || "Unknown")} confidence · adjustment ${candidate.risk_adjustment ?? 0}</span>
+          <span>${escapeHtml(candidate.confidence || "Unknown")} confidence</span>
         </div>
         <section>
           <h3>Case Summary</h3>
@@ -220,7 +217,7 @@ function intelEndpointRow(title, profile, asset) {
       <strong>${title}</strong>
       <p>${profile?.ip_address || "unknown"} · ${profile?.location || "No local profile"} · ${profile?.scope || "unknown"}</p>
       <small>
-        ${asset ? `Asset: ${asset.name} (${label(asset.device_type)}) score ${asset.asset_score}` : "No registered asset"}
+        ${asset ? `Registered role: ${asset.name} (${label(asset.device_type)})` : "No registered role"}
       </small>
     </div>
   `;
@@ -528,7 +525,6 @@ function render(data) {
   if (data.case_uid && !requestedCaseUid) {
     history.replaceState(null, "", `/investigation?case=${encodeURIComponent(data.case_uid)}`);
   }
-  els.finalScore.textContent = data.final_score ?? data.python_initial_score ?? 0;
   els.decision.textContent = data.final_classification || "No decision";
   els.action.textContent = data.final_action || "No action";
   els.aiConfidence.textContent = data.ai_confidence || "None";
@@ -544,7 +540,7 @@ function render(data) {
     row("What", escapeHtml(data.ai_what || data.signature || "Network sensor activity")),
     row("When", escapeHtml(data.ai_when || `${displayTimestamp(data.first_seen)} to ${displayTimestamp(data.last_seen)}`)),
     row("Where", escapeHtml(data.ai_where || `${data.src_ip || "?"}:${data.src_port || "?"} to ${data.dest_ip || "?"}:${data.dest_port || "?"}`)),
-    row("Why", escapeHtml(data.ai_why || data.ai_reason || "Review the sensor evidence and deterministic score.")),
+    row("Why", escapeHtml(data.ai_why || data.ai_reason || "Review the correlated sensor and threat-intelligence evidence.")),
     row("How", escapeHtml(data.ai_how || `Correlated using ${label(data.correlation_method || "single_sensor")}.`)),
     row("Next Steps", nextSteps.length ? nextSteps.map(escapeHtml).join(" · ") : escapeHtml(data.ai_recommended_action || "Review the evidence and record an analyst decision."))
   ].join("");
@@ -555,7 +551,7 @@ function render(data) {
   const selectedIntelAnalysis = data.ai_threat_intel_analysis || {};
   const assessmentHistory = assessments.map((item) => row(
     `${label(item.assessment_type)} · ${item.model_name || "unknown model"}`,
-    `${item.classification || "Unknown"} · adjustment ${item.risk_adjustment ?? 0}`,
+    item.classification || "Unknown",
     `${item.confidence || "Unknown"} confidence · ${displayTimestamp(item.created_at)}`
   )).join("");
   els.ai.innerHTML = [
@@ -570,7 +566,7 @@ function render(data) {
       `Influence: ${label(selectedIntelAnalysis.influence || "unavailable")}`
     ),
     row("Evidence Boundaries", "Network metadata only", "No raw packet capture, decrypted payload, endpoint telemetry, or user identity was supplied to the model."),
-    row("Recommended Action", data.ai_recommended_action || "none", `Risk adjustment ${data.ai_risk_adjustment ?? 0}`),
+    row("Recommended Action", data.ai_recommended_action || "none"),
     assessments.length ? `
       <section class="bounded-history">
         <div class="bounded-history-head">
@@ -581,35 +577,6 @@ function render(data) {
       </section>
     ` : "",
   ].join("");
-
-  const breakdowns = data.score_breakdowns || [];
-  const latestBreakdown = breakdowns.at(-1);
-  const categoryLabels = {
-    sensor_severity: "Sensor finding severity",
-    behavior_correlation: "Behavior and time correlation",
-    threat_intelligence: "Cached and bulk threat intelligence",
-    asset_direction: "Registered IP importance and direction",
-    sensor_corroboration: "Suricata-Zeek corroboration"
-  };
-  const categoryMax = {
-    sensor_severity: 20,
-    behavior_correlation: 20,
-    threat_intelligence: 20,
-    asset_direction: 10,
-    sensor_corroboration: 10
-  };
-  els.scoring.innerHTML = [
-    row("Python Deterministic Score", latestBreakdown?.python_score ?? data.python_initial_score ?? 0, "Maximum 80 points"),
-    ...Object.entries(categoryLabels).map(([key, title]) => row(
-      title,
-      `${latestBreakdown?.[key] ?? 0} / ${categoryMax[key]}`,
-      latestBreakdown?.details?.[key]?.explanation || "No stored category explanation for this legacy decision."
-    )),
-    row("AI Adjustment", latestBreakdown?.llm_adjustment_applied ?? data.ai_risk_adjustment ?? 0, "Independently clamped from -10 to +10"),
-    latestBreakdown?.forced_review ? row("Mandatory Review Override", "Human Review Required", latestBreakdown.forced_review_reason || "Materially disputed sensor findings") : "",
-    row("Correlation", `${data.alert_count || 0} sensor events · ${data.unique_dest_ports || 0} destination ports · ${data.unique_dest_hosts || 0} hosts`, `${data.time_window_seconds || 0}s window · ${label(data.correlation_method || "single_sensor")}`),
-    row("Suggested MITRE context", data.mitre_id ? `${data.mitre_id} · ${data.mitre_name || ""}` : "No suggested mapping"),
-  ].filter(Boolean).join("");
 
   const vtRows = data.virustotal_verifications || [];
   const virustotalHistory = vtRows.map((item) => row(
@@ -625,7 +592,7 @@ function render(data) {
     row(
       "VirusTotal Verification",
       vtRows.length ? `${vtRows.length} stored verification record${vtRows.length === 1 ? "" : "s"}` : "Not requested",
-      "Post-AI evidence only. VirusTotal never changes the numerical score."
+      "Post-classification verification only. VirusTotal does not determine or lower the model classification."
     ),
     vtRows.length ? `
       <section class="bounded-history">
@@ -644,7 +611,6 @@ function render(data) {
     row("Analyst Notes", data.analyst_notes || "No notes"),
   ].join("");
   els.reviewName.value = data.analyst_name || "";
-  els.reviewScore.value = data.analyst_score ?? "";
   els.reviewNotes.value = data.analyst_notes || "";
   setStatus("", data.review_status ? `Current review status: ${data.review_status}` : "No review item stored yet.");
 
@@ -663,7 +629,6 @@ function render(data) {
 function classificationForAction(action) {
   if (action === "log_only") return "Safe";
   if (action === "escalate") return "Dangerous";
-  if (action === "investigate") return "High Risk";
   return "Human Review Required";
 }
 
@@ -671,14 +636,12 @@ async function submitReview(event) {
   event.preventDefault();
   if (!currentInvestigation?.detection_id) return;
   const action = els.reviewAction.value;
-  const scoreValue = els.reviewScore.value;
   try {
     await sendJson(`/api/reviews/${currentInvestigation.detection_id}`, "POST", {
       action,
       analyst_name: els.reviewName.value,
       notes: els.reviewNotes.value,
       tuning_label: els.reviewLabel.value,
-      score: action === "confirm" || scoreValue === "" ? null : Number(scoreValue),
       classification: classificationForAction(action)
     });
     await refresh();

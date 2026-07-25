@@ -8,16 +8,13 @@ from app.database import (
     insert_ai_report,
     insert_app_event,
     insert_response,
-    insert_score_breakdown,
     latest_threat_intel_for_ip,
     sensor_findings_for_detection,
     threat_intel_matches,
-    update_detection_python_score,
     upsert_ai_run_audit,
     upsert_pending_review,
 )
-from app.decision_engine import decide, safe_risk_adjustment
-from app.risk_score import deterministic_score
+from app.decision_engine import decide
 from app.threat_intel import (
     PRE_AI_PROVIDERS,
     ai_provider_status,
@@ -135,7 +132,7 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
             ),
         },
         "threat_intel": {
-            "policy": "Cached and bulk providers inform the deterministic score. VirusTotal remains separate verification evidence.",
+            "policy": "Cached and bulk providers are supplied as qualitative evidence. VirusTotal remains separate post-classification verification evidence.",
             "provider_status": ai_provider_status(config, conn),
             "src_ip": _ip_intel(conn, config, alert.get("src_ip")),
             "dest_ip": _ip_intel(conn, config, alert.get("dest_ip")),
@@ -155,7 +152,6 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
                 "model_name": item.get("model_name"),
                 "classification": item.get("classification"),
                 "confidence": item.get("confidence"),
-                "risk_adjustment": item.get("risk_adjustment"),
                 "reason": item.get("reason"),
                 "created_at": item.get("created_at"),
             }
@@ -200,7 +196,6 @@ def prepare_case_context(conn, config, case_uid, assessment_type="reassessment")
             "time_window_seconds",
             "mitre_id",
             "mitre_name",
-            "python_initial_score",
             "status",
         }
     }
@@ -214,20 +209,14 @@ def prepare_case_context(conn, config, case_uid, assessment_type="reassessment")
         detection,
         assessment_type=assessment_type,
     )
-    breakdown = deterministic_score(alert, detection, findings, evidence)
-    detection["python_initial_score"] = breakdown["python_score"]
-    detection["forced_review"] = breakdown["forced_review"]
-    detection["forced_review_reason"] = breakdown["forced_review_reason"]
-    evidence["deterministic_scoring"] = breakdown
-    return workspace, alert, detection, evidence, breakdown, findings
+    return workspace, alert, detection, evidence, findings
 
 
 def reassess_case(conn, config, case_uid):
-    workspace, alert, detection, evidence, breakdown, findings = prepare_case_context(
+    workspace, alert, detection, evidence, findings = prepare_case_context(
         conn, config, case_uid
     )
     detection_id = workspace["detection_id"]
-    update_detection_python_score(conn, detection_id, breakdown["python_score"])
 
     report = ask_ai_model(config, alert, detection, evidence_context=evidence)
     report_id = insert_ai_report(conn, detection_id, report)
@@ -255,17 +244,6 @@ def reassess_case(conn, config, case_uid):
     response["detection_id"] = detection_id
     response_id = insert_response(conn, response)
     upsert_pending_review(conn, response)
-    insert_score_breakdown(
-        conn,
-        detection_id,
-        breakdown,
-        ai_report_id=report_id,
-        assessment_type="reassessment",
-        llm_adjustment_raw=report.get("risk_adjustment", 0),
-        llm_adjustment_applied=safe_risk_adjustment(report),
-        provisional_score=response["final_score"],
-    )
-
     verification = verify_dangerous(
         conn,
         config,
@@ -291,7 +269,6 @@ def reassess_case(conn, config, case_uid):
         "case_uid": case_uid,
         "assessment_id": assessment_id,
         "response_id": response_id,
-        "score_breakdown": breakdown,
         "response": response,
         "virustotal_verification": verification,
     }

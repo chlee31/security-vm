@@ -5,8 +5,8 @@ const els = {
   title: document.querySelector("#workbook-title"),
   updated: document.querySelector("#workbook-updated"),
   total: document.querySelector("#wb-total"),
-  avgScore: document.querySelector("#wb-avg-score"),
-  maxScore: document.querySelector("#wb-max-score"),
+  firstSeen: document.querySelector("#wb-first-seen"),
+  lastSeen: document.querySelector("#wb-last-seen"),
   publicIps: document.querySelector("#wb-public-ips"),
   ipPie: document.querySelector("#wb-ip-pie"),
   aiChart: document.querySelector("#wb-ai-chart"),
@@ -25,24 +25,6 @@ async function getJson(path) {
 function label(value) {
   if (!value) return "Unknown";
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function scoreClass(score) {
-  const value = Number(score || 0);
-  if (value >= 70) return "danger";
-  if (value >= 30) return "review";
-  return "safe";
-}
-
-function scoreBadge(score, badgeLabel = "Score") {
-  const value = Number(score || 0);
-  return `
-    <div class="score-badge ${scoreClass(value)}">
-      <span>${badgeLabel}</span>
-      <strong>${value}</strong>
-      <small>/100</small>
-    </div>
-  `;
 }
 
 function cssVar(name) {
@@ -133,7 +115,7 @@ function renderIps(ips) {
     <div class="workbook-row">
       <div>
         <strong>${item.ip_address}</strong>
-        <p>${item.asset ? `${item.asset.name} · ${label(item.asset.device_type)} · score ${item.asset.asset_score}` : item.location}</p>
+        <p>${item.asset ? `${item.asset.name} · ${label(item.asset.device_type)}` : item.location}</p>
         <small>${item.scope} · seen ${item.count}</small>
       </div>
     </div>
@@ -142,8 +124,7 @@ function renderIps(ips) {
 
 function renderRecent(recent) {
   els.recent.innerHTML = recent.map((item) => `
-    <div class="workbook-row score-row">
-      ${scoreBadge(item.python_initial_score || 0, "Score")}
+    <div class="workbook-row">
       <div>
         <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
         <p>${item.signature || "Detection"}</p>
@@ -161,7 +142,6 @@ function renderEvidence(rows) {
         <strong>${row.final_classification || "Decision"}</strong>
         <span>${row.final_action || "none"}</span>
       </div>
-      ${scoreBadge(row.final_score ?? 0, "Final")}
       <div class="evidence-chain">
         <div>
           <span>Alert</span>
@@ -203,8 +183,8 @@ async function refresh() {
 
     const summary = detail.summary || {};
     els.total.textContent = summary.total || 0;
-    els.avgScore.textContent = Math.round(summary.avg_score || 0);
-    els.maxScore.textContent = summary.max_score || 0;
+    els.firstSeen.textContent = summary.first_seen || "Unknown";
+    els.lastSeen.textContent = summary.last_seen || "Unknown";
     renderPie(detail.ips || []);
     renderAiModelChart(evidence || []);
     renderTimeline(detail.timeline || []);

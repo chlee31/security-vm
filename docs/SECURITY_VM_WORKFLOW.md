@@ -31,18 +31,13 @@ flowchart TB
         DB --> CONTEXT --> CASE
     end
 
-    subgraph ENRICH[Python Evidence and Score]
+    subgraph ENRICH[Python Evidence Preparation]
         ASSET[(Admin-managed IP roles)]
         TI[(Cached threat intelligence)]
         MITRE[(Suggested MITRE context<br/>descriptive only)]
-        SCORE[Explainable deterministic score 0-80<br/>severity 20 + behavior 20 + TI 20<br/>registered IP/direction 10<br/>sensor corroboration 10]
         PACKAGE[Structured case evidence package]
-        CASE --> SCORE
-        ASSET --> SCORE
-        TI --> SCORE
         CASE --> PACKAGE
         CONTEXT --> PACKAGE
-        SCORE --> PACKAGE
         ASSET --> PACKAGE
         TI --> PACKAGE
         CASE --> MITRE --> PACKAGE
@@ -51,35 +46,32 @@ flowchart TB
     subgraph AI[Bounded Local AI Explanation]
         PROMPT[Versioned evidence-only prompt<br/>who, what, when, where, why, how, next steps]
         MODEL[Configured local/compatible model]
-        REPORT[Structured explanation<br/>adjustment clamped -10 to +10]
+        REPORT[Structured explanation<br/>Safe, Human Review Required, or Dangerous]
         PACKAGE --> PROMPT --> MODEL --> REPORT
     end
 
     subgraph OUTCOME[Python Final Control]
-        FINAL[Effective final score 0-90]
-        SAFE[Safe 0-29]
-        REVIEW[Human Review Required 30-69]
-        HIGH[High Risk 70-84]
-        DANGER[Dangerous 85-90]
-        SCORE --> FINAL
-        REPORT --> FINAL
-        FINAL --> SAFE
-        FINAL --> REVIEW
-        FINAL --> HIGH
-        FINAL --> DANGER
+        VALIDATE[Validate structured response<br/>and apply sensor-dispute safeguard]
+        SAFE[Safe<br/>log only]
+        REVIEW[Human Review Required<br/>analyst queue]
+        DANGER[Dangerous<br/>escalate]
+        REPORT --> VALIDATE
+        VALIDATE --> SAFE
+        VALIDATE --> REVIEW
+        VALIDATE --> DANGER
     end
 
     subgraph VERIFY[Post-AI Verification]
         VT{AI said Dangerous?}
         VTR[Use fresh cache or query eligible global IP]
-        VTDB[(Store VirusTotal separately<br/>no numerical score change)]
+        VTDB[(Store VirusTotal separately<br/>verification evidence only)]
         REPORT --> VT
         VT -->|yes| VTR --> VTDB
         VT -->|no| VTDB
     end
 
     subgraph ANALYST[Centralized Investigation]
-        PAGE[Case page<br/>all findings + context + timeline<br/>score + TI + AI explanation]
+        PAGE[Case page<br/>all findings + context + timeline<br/>TI + AI explanation]
         FEEDBACK[Analyst decision, notes and tuning label]
         REASSESS[Explicit reassessment<br/>one new AI request]
         BLIND[Optional model comparison<br/>same frozen evidence package]
@@ -88,7 +80,7 @@ flowchart TB
         REPORT --> PAGE
         VTDB --> PAGE
         PAGE --> FEEDBACK --> DB
-        PAGE --> REASSESS --> SCORE
+        PAGE --> REASSESS --> PACKAGE
         PAGE --> BLIND
     end
 
@@ -97,7 +89,7 @@ flowchart TB
         B[Model Response B]
         C[Model Response C]
         VOTE[Analyst selects A, B, C,<br/>tie, or reject all]
-        REVEAL[Record selected model<br/>update selection scorecard]
+        REVEAL[Record selected model<br/>update selection summary]
         BLIND --> A
         A --> B
         B --> C
@@ -140,9 +132,9 @@ Each normalized Suricata event also receives a SHA-256 fingerprint of canonical 
 
 Detection type is a conservative, rule-based label used for grouping and display. Explicit patterns identify port scanning, DNS tunnelling, beaconing/C2, and brute force. Generic words such as `DNS`, `SYN`, `login`, or `SSH` do not establish those behaviors and remain `unknown`. These labels are not a trained classifier and should be evaluated against labelled Suricata and Zeek scenarios.
 
-## Scoring Interpretation
+## Classification Interpretation
 
-The five-category policy is versioned as `deterministic-score-v2` and has a maximum of 80 points. MITRE ATT&CK mappings remain descriptive context because they are derived from the existing behavior label rather than independent evidence. The score is an investigation-priority and evidence-strength heuristic, not a probability of compromise. Category maxima and the policy version are stored with each score breakdown. The current weights and outcome thresholds require sensitivity, ablation, and analyst-review evaluation before they can be described as validated.
+Security VM does not calculate an operational risk score. The model returns a qualitative `Safe`, `Human Review Required`, or `Dangerous` classification with confidence, evidence-based reasoning, and investigation steps. Python validates the response and owns the final action mapping. Invalid output and materially disputed sensor findings are routed to Human Review Required.
 
 ## Sensor Responsibilities
 
@@ -152,16 +144,16 @@ The five-category policy is versioned as `deterministic-score-v2` and has a maxi
 | Zeek `notice.log` | Yes | Behavioral or policy finding |
 | Zeek protocol logs | Normally no | Connection, DNS, HTTP, TLS/certificate, file, SSH and timing context |
 | Zeek `weird.log` | Context by default | Protocol anomaly that needs corroboration |
-| Cached threat intelligence | No | Supporting indicator evidence and deterministic score input |
-| VirusTotal | No | Post-AI verification only; zero score points |
+| Cached threat intelligence | No | Supporting indicator evidence supplied to the model |
+| VirusTotal | No | Post-AI verification for Dangerous classifications |
 | Registered IP roles | No | Analyst-defined business impact and traffic direction |
 
 ## Evidence Boundaries
 
-- Python owns correlation, the deterministic score, classification thresholds, and the recorded outcome.
-- The AI model supplies a bounded adjustment and explanation; it does not execute a response.
+- Python owns correlation, response validation, safety overrides, action mapping, and the recorded outcome.
+- The AI model supplies a qualitative classification and explanation; it does not execute a response.
 - Model comparison runs three requests sequentially against the same evidence. Candidate outputs remain advisory and cannot change the official case decision.
-- All three model identities and responses appear directly on the investigation page. Analyst selections update the aggregate scorecard.
+- All three model identities and responses appear directly on the investigation page. Analyst selections update the aggregate selection summary.
 - Network evidence cannot establish endpoint process, user identity, or decrypted payload content unless another source explicitly supplies it.
 - API keys are not included in prompts, logs, evidence responses, or dashboard payloads.
 - The dashboard binds to localhost by default. A remote management address must be selected deliberately.

@@ -48,7 +48,7 @@ def _config_for_profile(config, profile):
 
 def run_model_comparison(conn, config, case_uid, requested_uids=None):
     profiles = _comparison_profiles(conn, config, requested_uids)
-    workspace, alert, detection, evidence, _breakdown, _findings = prepare_case_context(
+    workspace, alert, detection, evidence, _findings = prepare_case_context(
         conn,
         config,
         case_uid,

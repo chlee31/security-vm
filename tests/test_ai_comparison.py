@@ -4,7 +4,7 @@ from unittest.mock import patch
 from app.ai_comparison import run_model_comparison
 from app.database import (
     ai_comparison_detail,
-    ai_comparison_scorecard,
+    ai_comparison_selection_summary,
     create_ai_comparison_run,
     create_ai_profile,
     delete_ai_profile,
@@ -47,7 +47,6 @@ class AIComparisonTests(unittest.TestCase):
             "prompt_sha256": "same-evidence",
             "classification": "Human Review Required",
             "confidence": "Medium",
-            "risk_adjustment": 2,
             "summary": f"Summary from {model}",
             "who": "source and destination",
             "what": "network event",
@@ -98,7 +97,10 @@ class AIComparisonTests(unittest.TestCase):
         self.assertTrue(vote_ai_comparison(self.conn, comparison_uid, "analyst", "B", "Best next steps"))
         reviewed = ai_comparison_detail(self.conn, comparison_uid)
         self.assertEqual(reviewed["candidates"][1]["model_identity"], "ollama:two")
-        self.assertEqual(ai_comparison_scorecard(self.conn)["models"][0]["ai_profile_uid"], self.profile_uids[1])
+        self.assertEqual(
+            ai_comparison_selection_summary(self.conn)["models"][0]["ai_profile_uid"],
+            self.profile_uids[1],
+        )
         with self.assertRaisesRegex(ValueError, "already been reviewed"):
             vote_ai_comparison(self.conn, comparison_uid, "second analyst", "A")
 
@@ -129,7 +131,6 @@ class AIComparisonTests(unittest.TestCase):
         detection = {
             "case_uid": "CASE-TEST",
             "detection_type": "unknown",
-            "python_initial_score": 30,
         }
         evidence = {
             "sensor_fusion": {"findings": [{"sensor": "suricata"}]},
@@ -138,7 +139,7 @@ class AIComparisonTests(unittest.TestCase):
                 "dest_ip": {"indicator": "203.0.113.10", "providers": []},
             },
         }
-        mock_prepare.return_value = (workspace, alert, detection, evidence, {}, [])
+        mock_prepare.return_value = (workspace, alert, detection, evidence, [])
 
         def answer(config, _alert, _detection, evidence_context=None):
             uid = config["ai_model"]["active_profile_uid"]

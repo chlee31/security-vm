@@ -16,11 +16,11 @@ const els = {
   analyst: document.querySelector("#cmp-analyst"),
   notes: document.querySelector("#cmp-notes"),
   voteStatus: document.querySelector("#cmp-vote-status"),
-  scorecard: document.querySelector("#cmp-scorecard"),
+  selectionSummary: document.querySelector("#cmp-selection-summary"),
   refresh: document.querySelector("#compare-refresh")
 };
 
-let state = { runs: [], selected: null, scorecard: null };
+let state = { runs: [], selected: null, selectionSummary: null };
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -176,7 +176,7 @@ function renderCandidates() {
           <ol>${(candidate.next_steps || []).map((step) => `<li>${escapeHtml(step)}</li>`).join("") || `<li>No concrete next steps returned.</li>`}</ol>
         </section>
         <details class="model-raw-response"><summary>View complete raw model response</summary><pre class="raw-json">${escapeHtml(candidate.raw_response || "No raw response stored.")}</pre></details>
-        <footer>Adjustment ${candidate.risk_adjustment ?? 0} · ${candidate.elapsed_ms ?? 0}ms · run ${escapeHtml(candidate.model_run_id || "not recorded")}</footer>
+        <footer>${candidate.elapsed_ms ?? 0}ms · run ${escapeHtml(candidate.model_run_id || "not recorded")}</footer>
       `}
     </article>
     `).join("")}
@@ -192,12 +192,12 @@ function renderCandidates() {
   }
 }
 
-function renderScorecard() {
-  const scorecard = state.scorecard || { models: [], votes: 0, ties: 0, rejected: 0 };
-  els.neutral.textContent = Number(scorecard.ties || 0) + Number(scorecard.rejected || 0);
-  const decisiveVotes = Math.max(1, Number(scorecard.votes || 0) - Number(scorecard.ties || 0) - Number(scorecard.rejected || 0));
-  els.scorecard.innerHTML = (scorecard.models || []).map((model, index) => `
-    <div class="workbook-row scorecard-row">
+function renderSelectionSummary() {
+  const summary = state.selectionSummary || { models: [], votes: 0, ties: 0, rejected: 0 };
+  els.neutral.textContent = Number(summary.ties || 0) + Number(summary.rejected || 0);
+  const decisiveVotes = Math.max(1, Number(summary.votes || 0) - Number(summary.ties || 0) - Number(summary.rejected || 0));
+  els.selectionSummary.innerHTML = (summary.models || []).map((model, index) => `
+    <div class="workbook-row selection-summary-row">
       <div class="row tight">
         <strong>${index + 1}. ${escapeHtml(model.model_identity || model.model_name || "Unknown model")}</strong>
         <span>${model.wins} selection${model.wins === 1 ? "" : "s"}</span>
@@ -230,12 +230,12 @@ async function submitVote(event) {
       "POST",
       { analyst_name: els.analyst.value, selection, notes: els.notes.value }
     );
-    state.scorecard = await getJson("/api/ai-comparisons/scorecard");
+    state.selectionSummary = await getJson("/api/ai-comparisons/selection-summary");
     const run = state.runs.find((item) => item.comparison_uid === state.selected.comparison_uid);
     if (run) run.vote_count = 1;
     renderRuns();
     renderCandidates();
-    renderScorecard();
+    renderSelectionSummary();
   } catch (error) {
     setStatus("error", error.message);
   }
@@ -245,15 +245,15 @@ async function refresh() {
   els.refresh.disabled = true;
   try {
     const query = requestedCase ? `?limit=100&case_uid=${encodeURIComponent(requestedCase)}` : "?limit=100";
-    [state.runs, state.scorecard] = await Promise.all([
+    [state.runs, state.selectionSummary] = await Promise.all([
       getJson(`/api/ai-comparisons${query}`),
-      getJson("/api/ai-comparisons/scorecard")
+      getJson("/api/ai-comparisons/selection-summary")
     ]);
     const selectedUid = state.selected?.comparison_uid || requestedRun || state.runs[0]?.comparison_uid;
     if (selectedUid) state.selected = await getJson(`/api/ai-comparisons/${encodeURIComponent(selectedUid)}`);
     renderRuns();
     renderCandidates();
-    renderScorecard();
+    renderSelectionSummary();
     els.updated.textContent = new Date().toLocaleTimeString();
   } catch (error) {
     els.updated.textContent = "Comparison API error";

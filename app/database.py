@@ -7,7 +7,6 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.risk_score import PYTHON_SCORE_MAX
 from app.zeek_normalizer import zeek_evidence_details
 
 
@@ -84,7 +83,7 @@ def ensure_migrations(conn):
     ensure_threat_intel_tables(conn)
     ensure_sensor_fusion_tables(conn)
     ensure_case_identity_columns(conn)
-    ensure_decision_audit_tables(conn)
+    ensure_virustotal_verification_table(conn)
     ensure_ai_comparison_tables(conn)
     ensure_evaluation_tables(conn)
     migrate_legacy_ai_reports(conn)
@@ -186,7 +185,6 @@ def ensure_ai_comparison_tables(conn):
           prompt_sha256 TEXT,
           classification TEXT,
           confidence TEXT,
-          risk_adjustment INTEGER,
           summary TEXT,
           who_summary TEXT,
           what_summary TEXT,
@@ -289,25 +287,6 @@ def ensure_evaluation_tables(conn):
           FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
         );
 
-        CREATE TABLE IF NOT EXISTS evaluation_scoring_runs (
-          run_uid TEXT PRIMARY KEY,
-          scenario_uid TEXT,
-          case_uid TEXT NOT NULL,
-          evaluation_type TEXT NOT NULL,
-          baseline_policy TEXT NOT NULL,
-          experimental_parameters_json TEXT NOT NULL DEFAULT '{}',
-          baseline_score REAL NOT NULL,
-          experimental_score REAL NOT NULL,
-          baseline_classification TEXT NOT NULL,
-          experimental_classification TEXT NOT NULL,
-          score_difference REAL NOT NULL,
-          result_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (scenario_uid) REFERENCES evaluation_scenarios(scenario_uid)
-        );
-        CREATE INDEX IF NOT EXISTS idx_evaluation_scoring_runs_case
-          ON evaluation_scoring_runs(case_uid, created_at DESC);
-
         CREATE TABLE IF NOT EXISTS evaluation_model_reviews (
           review_uid TEXT PRIMARY KEY,
           comparison_run_uid TEXT NOT NULL,
@@ -386,6 +365,14 @@ def table_exists(conn, table_name):
     return row is not None
 
 
+def table_columns(conn, table_name):
+    if not table_exists(conn, table_name):
+        return set()
+    return {
+        row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+
+
 def ensure_suricata_ingest_tables(conn):
     alert_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()
@@ -453,33 +440,7 @@ def ensure_case_identity_columns(conn):
         )
 
 
-def ensure_decision_audit_tables(conn):
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS score_breakdowns (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          detection_id INTEGER NOT NULL,
-          ai_report_id INTEGER,
-          assessment_type TEXT NOT NULL DEFAULT 'initial',
-          sensor_severity INTEGER NOT NULL DEFAULT 0,
-          behavior_correlation INTEGER NOT NULL DEFAULT 0,
-          threat_intelligence INTEGER NOT NULL DEFAULT 0,
-          mitre_relevance INTEGER NOT NULL DEFAULT 0,
-          asset_direction INTEGER NOT NULL DEFAULT 0,
-          sensor_corroboration INTEGER NOT NULL DEFAULT 0,
-          python_score INTEGER NOT NULL DEFAULT 0,
-          llm_adjustment_raw INTEGER NOT NULL DEFAULT 0,
-          llm_adjustment_applied INTEGER NOT NULL DEFAULT 0,
-          provisional_score INTEGER NOT NULL DEFAULT 0,
-          forced_review INTEGER NOT NULL DEFAULT 0,
-          forced_review_reason TEXT,
-          details_json TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (detection_id) REFERENCES detections(id),
-          FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
-        )
-        """
-    )
+def ensure_virustotal_verification_table(conn):
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS virustotal_verifications (
@@ -501,10 +462,6 @@ def ensure_decision_audit_tables(conn):
           FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
         )
         """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_score_breakdowns_detection "
-        "ON score_breakdowns(detection_id, assessment_type)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_vt_verifications_detection "
@@ -708,7 +665,6 @@ def ensure_ai_assessments_table(conn):
           model_name TEXT NOT NULL,
           classification TEXT NOT NULL,
           confidence REAL,
-          risk_adjustment INTEGER,
           reason TEXT,
           recommended_action TEXT,
           evidence_sources_json TEXT,
@@ -790,14 +746,14 @@ def migrate_legacy_ai_reports(conn):
         INSERT OR IGNORE INTO ai_reports (
           id, detection_id, ai_profile_uid, model_provider, model_name,
           model_identity, model_endpoint, model_run_id, prompt_version,
-          classification, confidence, risk_adjustment, reason,
+          classification, confidence, reason,
           recommended_action, raw_response, elapsed_ms, prompt_sha256,
           prompt_chars, created_at
         )
         SELECT
           id, detection_id, ai_profile_uid, model_provider, model_name,
           model_identity, model_endpoint, model_run_id, prompt_version,
-          classification, confidence, risk_adjustment, reason,
+          classification, confidence, reason,
           recommended_action, raw_response, elapsed_ms, prompt_sha256,
           prompt_chars, created_at
         FROM {legacy_table}
@@ -809,12 +765,28 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+LEGACY_OPERATIONAL_SCORE_FIELDS = {
+    "python_initial_score",
+    "final_score",
+    "risk_adjustment",
+    "ai_risk_adjustment",
+    "analyst_score",
+    "original_score",
+}
+
+
+def without_operational_scores(value):
+    item = dict(value)
+    for key in LEGACY_OPERATIONAL_SCORE_FIELDS:
+        item.pop(key, None)
+    return item
+
+
 def normalize_ip(ip_address):
     return str(ipaddress.ip_address(str(ip_address).strip()))
 
 
 def default_asset_types(config):
-    scores = config.get("assets", {}).get("default_scores", {})
     labels = {
         "laptop": "Laptop",
         "desktop": "Desktop",
@@ -827,14 +799,9 @@ def default_asset_types(config):
         "other": "Other",
     }
     return [
-        {"value": key, "label": labels.get(key, key.replace("_", " ").title()), "default_score": int(value)}
-        for key, value in scores.items()
+        {"value": key, "label": labels.get(key, key.replace("_", " ").title())}
+        for key in labels
     ]
-
-
-def default_asset_score(config, device_type):
-    scores = config.get("assets", {}).get("default_scores", {})
-    return int(scores.get(device_type, scores.get("unknown", 6)))
 
 
 def new_ai_profile_uid():
@@ -884,13 +851,13 @@ def insert_ai_comparison_candidate(conn, comparison_run_id, slot, profile_uid, r
         INSERT INTO ai_comparison_candidates (
           comparison_run_id, anonymous_slot, ai_profile_uid, model_provider,
           model_name, model_identity, model_run_id, prompt_version, prompt_sha256,
-          classification, confidence, risk_adjustment, summary, who_summary,
+          classification, confidence, summary, who_summary,
           what_summary, when_summary, where_summary, why_summary, how_summary,
           next_steps_json, threat_intel_analysis_json, recommended_action,
           raw_response, elapsed_ms, status,
           error_message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             comparison_run_id,
@@ -904,7 +871,6 @@ def insert_ai_comparison_candidate(conn, comparison_run_id, slot, profile_uid, r
             report.get("prompt_sha256"),
             report.get("classification"),
             report.get("confidence"),
-            int(report.get("risk_adjustment") or 0),
             report.get("summary"),
             report.get("who"),
             report.get("what"),
@@ -947,7 +913,7 @@ def _comparison_votes(conn, comparison_run_id):
         """,
         (comparison_run_id,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [without_operational_scores(row) for row in rows]
 
 
 def ai_comparison_detail(conn, comparison_uid):
@@ -970,7 +936,7 @@ def ai_comparison_detail(conn, comparison_uid):
         """
         SELECT id, anonymous_slot, ai_profile_uid, model_provider, model_name,
                model_identity, model_run_id, prompt_version, prompt_sha256,
-               classification, confidence, risk_adjustment, summary,
+               classification, confidence, summary,
                who_summary, what_summary, when_summary, where_summary,
                why_summary, how_summary, next_steps_json,
                threat_intel_analysis_json, recommended_action,
@@ -1011,7 +977,6 @@ def ai_comparison_detail(conn, comparison_uid):
                 for source_key, item_key in {
                     "classification": "classification",
                     "confidence": "confidence",
-                    "risk_adjustment": "risk_adjustment",
                     "summary": "summary",
                     "who": "who_summary",
                     "what": "what_summary",
@@ -1026,7 +991,7 @@ def ai_comparison_detail(conn, comparison_uid):
                 item["threat_intel_analysis"] = recovered.get("threat_intel_analysis") or {}
             except (TypeError, ValueError):
                 pass
-        candidates.append(item)
+        candidates.append(without_operational_scores(item))
     result["candidates"] = candidates
     result["votes"] = votes
     result["identities_revealed"] = True
@@ -1097,7 +1062,7 @@ def vote_ai_comparison(conn, comparison_uid, analyst_name, selection, notes=""):
     return True
 
 
-def ai_comparison_scorecard(conn):
+def ai_comparison_selection_summary(conn):
     rows = conn.execute(
         """
         SELECT candidates.ai_profile_uid, candidates.model_provider,
@@ -1270,7 +1235,7 @@ def ensure_ai_profile_from_config(conn, config):
 def list_assets(conn, limit=100):
     rows = conn.execute(
         """
-        SELECT id, ip_address, name, device_type, network_interface, asset_score,
+        SELECT id, ip_address, name, device_type, network_interface,
                function, notes, status, created_at, updated_at
         FROM assets
         WHERE status = 'active'
@@ -1285,7 +1250,7 @@ def list_assets(conn, limit=100):
 def list_all_assets(conn, limit=500):
     rows = conn.execute(
         """
-        SELECT id, ip_address, name, device_type, network_interface, asset_score,
+        SELECT id, ip_address, name, device_type, network_interface,
                function, notes, status, created_at, updated_at
         FROM assets
         ORDER BY status ASC, updated_at DESC, id DESC
@@ -1301,7 +1266,7 @@ def lookup_asset(conn, ip_address):
         return None
     row = conn.execute(
         """
-        SELECT id, ip_address, name, device_type, network_interface, asset_score,
+        SELECT id, ip_address, name, device_type, network_interface,
                function, notes, status, created_at, updated_at
         FROM assets
         WHERE ip_address = ? AND status = 'active'
@@ -1319,7 +1284,6 @@ def asset_context_for_alert(conn, alert):
         "src_asset": src_asset,
         "dest_asset": dest_asset,
         "matched_asset": matched_asset,
-        "asset_score": int(matched_asset["asset_score"]) if matched_asset else 0,
         "asset_match": "src_ip" if src_asset else "dest_ip" if dest_asset else "none",
     }
 
@@ -1328,35 +1292,55 @@ def upsert_asset(conn, asset):
     now = utc_now()
     ip_address = normalize_ip(asset.get("ip_address"))
     cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO assets (
-          ip_address, name, device_type, network_interface, asset_score,
-          function, notes, status, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-        ON CONFLICT(ip_address) DO UPDATE SET
-          name = excluded.name,
-          device_type = excluded.device_type,
-          network_interface = excluded.network_interface,
-          asset_score = excluded.asset_score,
-          function = excluded.function,
-          notes = excluded.notes,
-          status = 'active',
-          updated_at = excluded.updated_at
-        """,
-        (
-            ip_address,
-            asset.get("name"),
-            asset.get("device_type"),
-            asset.get("network_interface") or "ens37",
-            int(asset.get("asset_score")),
-            asset.get("function"),
-            asset.get("notes"),
-            now,
-            now,
-        ),
+    values = (
+        ip_address,
+        asset.get("name"),
+        asset.get("device_type"),
+        asset.get("network_interface") or "ens37",
+        asset.get("function"),
+        asset.get("notes"),
+        now,
+        now,
     )
+    if "asset_score" in table_columns(conn, "assets"):
+        cur.execute(
+            """
+            INSERT INTO assets (
+              ip_address, name, device_type, network_interface, asset_score,
+              function, notes, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 0, ?, ?, 'active', ?, ?)
+            ON CONFLICT(ip_address) DO UPDATE SET
+              name = excluded.name,
+              device_type = excluded.device_type,
+              network_interface = excluded.network_interface,
+              asset_score = 0,
+              function = excluded.function,
+              notes = excluded.notes,
+              status = 'active',
+              updated_at = excluded.updated_at
+            """,
+            values,
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO assets (
+              ip_address, name, device_type, network_interface,
+              function, notes, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            ON CONFLICT(ip_address) DO UPDATE SET
+              name = excluded.name,
+              device_type = excluded.device_type,
+              network_interface = excluded.network_interface,
+              function = excluded.function,
+              notes = excluded.notes,
+              status = 'active',
+              updated_at = excluded.updated_at
+            """,
+            values,
+        )
     conn.commit()
     row = conn.execute("SELECT id FROM assets WHERE ip_address = ?", (ip_address,)).fetchone()
     return row["id"] if row else cur.lastrowid
@@ -1380,33 +1364,38 @@ def delete_asset(conn, asset_id):
 def update_asset(conn, asset_id, asset):
     now = utc_now()
     ip_address = normalize_ip(asset.get("ip_address"))
-    cur = conn.execute(
-        """
-        UPDATE assets
-        SET ip_address = ?,
-            name = ?,
-            device_type = ?,
-            network_interface = ?,
-            asset_score = ?,
-            function = ?,
-            notes = ?,
-            status = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (
-            ip_address,
-            asset.get("name"),
-            asset.get("device_type"),
-            asset.get("network_interface") or "ens37",
-            int(asset.get("asset_score")),
-            asset.get("function"),
-            asset.get("notes"),
-            asset.get("status") or "active",
-            now,
-            asset_id,
-        ),
+    values = (
+        ip_address,
+        asset.get("name"),
+        asset.get("device_type"),
+        asset.get("network_interface") or "ens37",
+        asset.get("function"),
+        asset.get("notes"),
+        asset.get("status") or "active",
+        now,
+        asset_id,
     )
+    if "asset_score" in table_columns(conn, "assets"):
+        cur = conn.execute(
+            """
+            UPDATE assets
+            SET ip_address = ?, name = ?, device_type = ?, network_interface = ?,
+                asset_score = 0, function = ?, notes = ?, status = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            values,
+        )
+    else:
+        cur = conn.execute(
+            """
+            UPDATE assets
+            SET ip_address = ?, name = ?, device_type = ?, network_interface = ?,
+                function = ?, notes = ?, status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            values,
+        )
     conn.commit()
     return cur.rowcount > 0
 
@@ -1414,7 +1403,7 @@ def update_asset(conn, asset_id, asset):
 def asset_summary(conn):
     rows = conn.execute(
         """
-        SELECT device_type, COUNT(*) AS count, AVG(asset_score) AS avg_score
+        SELECT device_type, COUNT(*) AS count
         FROM assets
         WHERE status = 'active'
         GROUP BY device_type
@@ -1513,9 +1502,9 @@ def insert_detection(conn, detection):
           protocol, community_id, sensor_state, agreement_state, correlation_method,
           correlation_confidence, detection_type,
           alert_count, unique_dest_ports, unique_dest_hosts, time_window_seconds,
-          mitre_id, mitre_name, python_initial_score, status
+          mitre_id, mitre_name, status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection.get("first_alert_id"),
@@ -1538,7 +1527,6 @@ def insert_detection(conn, detection):
             detection.get("time_window_seconds"),
             detection.get("mitre_id"),
             detection.get("mitre_name"),
-            detection.get("python_initial_score"),
             detection.get("status"),
         ),
     )
@@ -1569,12 +1557,12 @@ def insert_ai_report(conn, detection_id, report):
         INSERT INTO ai_reports (
           detection_id, ai_profile_uid, model_provider, model_name, model_identity,
           model_endpoint, model_run_id, prompt_version, classification, confidence,
-          risk_adjustment, reason, recommended_action, summary,
+          reason, recommended_action, summary,
           who_summary, what_summary, when_summary, where_summary,
           why_summary, how_summary, next_steps_json, threat_intel_analysis_json,
           evidence_review_json, raw_response, elapsed_ms, prompt_sha256, prompt_chars
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection_id,
@@ -1587,7 +1575,6 @@ def insert_ai_report(conn, detection_id, report):
             sqlite_value(report.get("prompt_version")),
             sqlite_value(report.get("classification")),
             sqlite_value(report.get("confidence")),
-            sqlite_int(report.get("risk_adjustment", 0)),
             sqlite_value(report.get("reason")),
             sqlite_value(report.get("recommended_action")),
             sqlite_value(report.get("summary")),
@@ -1727,10 +1714,10 @@ def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", 
         """
         INSERT INTO ai_assessments (
           detection_id, assessment_type, provider,
-          model_name, classification, confidence, risk_adjustment, reason,
+          model_name, classification, confidence, reason,
           recommended_action, evidence_sources_json, response_time_ms,
           raw_response, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection_id,
@@ -1739,7 +1726,6 @@ def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", 
             report.get("model_name") or "unknown",
             report.get("classification") or "Human Review Required",
             report.get("confidence") or "Low",
-            int(report.get("risk_adjustment") or 0),
             report.get("reason"),
             report.get("recommended_action"),
             json.dumps(evidence_sources or {}, sort_keys=True),
@@ -1750,87 +1736,6 @@ def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", 
     )
     conn.commit()
     return cur.lastrowid
-
-
-def update_detection_python_score(conn, detection_id, score):
-    conn.execute(
-        "UPDATE detections SET python_initial_score = ? WHERE id = ?",
-        (max(0, min(int(score), PYTHON_SCORE_MAX)), detection_id),
-    )
-    conn.commit()
-
-
-def insert_score_breakdown(
-    conn,
-    detection_id,
-    breakdown,
-    ai_report_id=None,
-    assessment_type="initial",
-    llm_adjustment_raw=0,
-    llm_adjustment_applied=0,
-    provisional_score=None,
-):
-    python_score = max(0, min(int(breakdown.get("python_score") or 0), PYTHON_SCORE_MAX))
-    provisional = max(
-        0,
-        min(
-            PYTHON_SCORE_MAX + 10,
-            int(provisional_score if provisional_score is not None else python_score + llm_adjustment_applied),
-        ),
-    )
-    details = dict(breakdown.get("details") or {})
-    details["_policy"] = {
-        "version": breakdown.get("policy_version") or "unversioned",
-        "category_maximums": breakdown.get("category_maximums") or {},
-        "interpretation": "Investigation-priority heuristic, not probability of compromise.",
-    }
-    cur = conn.execute(
-        """
-        INSERT INTO score_breakdowns (
-          detection_id, ai_report_id, assessment_type, sensor_severity,
-          behavior_correlation, threat_intelligence, mitre_relevance,
-          asset_direction, sensor_corroboration, python_score,
-          llm_adjustment_raw, llm_adjustment_applied, provisional_score,
-          forced_review, forced_review_reason, details_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            detection_id,
-            ai_report_id,
-            assessment_type,
-            int(breakdown.get("sensor_severity") or 0),
-            int(breakdown.get("behavior_correlation") or 0),
-            int(breakdown.get("threat_intelligence") or 0),
-            int(breakdown.get("mitre_relevance") or 0),
-            int(breakdown.get("asset_direction") or 0),
-            int(breakdown.get("sensor_corroboration") or 0),
-            python_score,
-            int(llm_adjustment_raw or 0),
-            int(llm_adjustment_applied or 0),
-            provisional,
-            1 if breakdown.get("forced_review") else 0,
-            breakdown.get("forced_review_reason"),
-            json.dumps(details, sort_keys=True),
-        ),
-    )
-    conn.commit()
-    return cur.lastrowid
-
-
-def score_breakdowns_for_detection(conn, detection_id):
-    rows = conn.execute(
-        "SELECT * FROM score_breakdowns WHERE detection_id = ? ORDER BY id",
-        (detection_id,),
-    ).fetchall()
-    result = []
-    for row in rows:
-        item = dict(row)
-        try:
-            item["details"] = json.loads(item.pop("details_json") or "{}")
-        except (TypeError, ValueError):
-            item["details"] = {}
-        result.append(item)
-    return result
 
 
 def insert_virustotal_verification(conn, detection_id, verification, ai_report_id=None, stage="initial"):
@@ -2056,12 +1961,12 @@ def sensor_finding_detection_id(conn, sensor, sensor_event_id):
 
 def detection_by_id(conn, detection_id):
     row = conn.execute("SELECT * FROM detections WHERE id = ?", (detection_id,)).fetchone()
-    return dict(row) if row else None
+    return without_operational_scores(row) if row else None
 
 
 def detection_by_case_uid(conn, case_uid):
     row = conn.execute("SELECT * FROM detections WHERE case_uid = ?", (case_uid,)).fetchone()
-    return dict(row) if row else None
+    return without_operational_scores(row) if row else None
 
 
 def _event_time(value):
@@ -2344,7 +2249,6 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
     detection = detection_by_id(conn, detection_id)
     if not detection:
         return None
-    score = min(PYTHON_SCORE_MAX, int(detection.get("python_initial_score") or 0))
     finding_rows = conn.execute(
         """
         SELECT sensor_findings.sensor, sensor_findings.finding_name,
@@ -2402,7 +2306,7 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
             community_id = COALESCE(community_id, ?),
             sensor_state = ?,
             agreement_state = ?, correlation_method = ?,
-            correlation_confidence = ?, python_initial_score = ?,
+            correlation_confidence = ?,
             alert_count = ?, unique_dest_ports = ?, unique_dest_hosts = ?,
             time_window_seconds = ?, status = ?
         WHERE id = ?
@@ -2416,7 +2320,6 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
             agreement_state,
             correlation_method,
             correlation_confidence,
-            score,
             finding_count,
             len(unique_ports),
             len(unique_hosts),
@@ -2852,14 +2755,13 @@ def insert_response(conn, response):
     cur = conn.execute(
         """
         INSERT INTO responses (
-          detection_id, final_score, final_classification, final_action,
+          detection_id, final_classification, final_action,
           target_ip, response_method, response_status, response_time_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             response.get("detection_id"),
-            response.get("final_score"),
             response.get("final_classification"),
             response.get("final_action"),
             response.get("target_ip"),
@@ -2903,8 +2805,7 @@ def list_notification_events(conn, limit=50):
     rows = conn.execute(
         """
         SELECT notification_events.*, detections.src_ip, detections.dest_ip,
-               detections.detection_type, responses.final_score,
-               responses.final_classification
+               detections.detection_type, responses.final_classification
         FROM notification_events
         LEFT JOIN detections ON detections.id = notification_events.detection_id
         LEFT JOIN responses ON responses.id = notification_events.response_id
@@ -3018,7 +2919,6 @@ def list_firewall_candidates(conn, limit=50):
         SELECT
           responses.id AS response_id,
           responses.detection_id,
-          responses.final_score,
           responses.final_classification,
           responses.final_action,
           responses.target_ip,
@@ -3122,7 +3022,6 @@ def get_firewall_candidate(conn, response_id):
         SELECT
           responses.id AS response_id,
           responses.detection_id,
-          responses.final_score,
           responses.final_classification,
           responses.final_action,
           responses.target_ip,
@@ -3203,21 +3102,32 @@ def upsert_pending_review(conn, response, review_days=3):
 
     now = datetime.now(timezone.utc)
     due_at = now + timedelta(days=review_days)
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO analyst_reviews (
-          detection_id, original_score, original_classification, original_action, due_at
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            response.get("detection_id"),
-            response.get("final_score"),
-            response.get("final_classification"),
-            response.get("final_action"),
-            due_at.isoformat(),
-        ),
+    values = (
+        response.get("detection_id"),
+        response.get("final_classification"),
+        response.get("final_action"),
+        due_at.isoformat(),
     )
+    if "original_score" in table_columns(conn, "analyst_reviews"):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO analyst_reviews (
+              detection_id, original_score, original_classification, original_action, due_at
+            )
+            VALUES (?, 0, ?, ?, ?)
+            """,
+            values,
+        )
+    else:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO analyst_reviews (
+              detection_id, original_classification, original_action, due_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            values,
+        )
     conn.commit()
 
 
@@ -3257,11 +3167,12 @@ def reset_dashboard_logs(conn):
         "zeek_ingest_checkpoints",
         "ai_assessments",
         "sensor_findings",
-        "score_breakdowns",
         "virustotal_verifications",
     ]
     counts = {}
     for table in tables:
+        if not table_exists(conn, table):
+            continue
         counts[table] = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
@@ -3276,7 +3187,6 @@ def latest_alerts(conn, limit=50):
           detections.id AS detection_id,
           detections.case_uid,
           detections.detection_type,
-          responses.final_score,
           responses.final_classification
         FROM alerts
         LEFT JOIN detections ON detections.first_alert_id = alerts.id
@@ -3288,7 +3198,7 @@ def latest_alerts(conn, limit=50):
         """,
         (limit,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [without_operational_scores(row) for row in rows]
 
 
 def latest_sensor_alerts(conn, limit=50, sensor_filter=None):
@@ -3353,7 +3263,6 @@ def latest_sensor_alerts(conn, limit=50, sensor_filter=None):
           detections.correlation_method,
           detections.correlation_confidence,
           detections.community_id,
-          responses.final_score,
           responses.final_classification,
           responses.final_action
         FROM detections
@@ -3369,7 +3278,7 @@ def latest_sensor_alerts(conn, limit=50, sensor_filter=None):
     ).fetchall()
     results = []
     for row in rows:
-        item = dict(row)
+        item = without_operational_scores(row)
         item["sensor_findings"] = sensor_findings_for_detection(conn, item["detection_id"])
         results.append(item)
     return results
@@ -3390,7 +3299,6 @@ def latest_ai_opinions(conn, limit=50):
           ai_reports.prompt_version,
           ai_reports.classification,
           ai_reports.confidence,
-          ai_reports.risk_adjustment,
           ai_reports.reason,
           ai_reports.recommended_action,
           ai_reports.summary,
@@ -3407,7 +3315,6 @@ def latest_ai_opinions(conn, limit=50):
           ai_reports.created_at,
           detections.case_uid,
           detections.detection_type,
-          detections.python_initial_score,
           COALESCE(alerts.timestamp, detections.first_seen) AS timestamp,
           COALESCE(alerts.src_ip, detections.src_ip) AS src_ip,
           COALESCE(alerts.dest_ip, detections.dest_ip) AS dest_ip,
@@ -3428,7 +3335,7 @@ def latest_ai_opinions(conn, limit=50):
         """,
         (limit,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [without_operational_scores(row) for row in rows]
 
 
 def ai_model_comparison(conn):
@@ -3441,7 +3348,6 @@ def ai_model_comparison(conn):
           COALESCE(model_name, 'unknown') AS model_name,
           COALESCE(classification, 'No opinion') AS classification,
           COUNT(*) AS count,
-          AVG(COALESCE(risk_adjustment, 0)) AS avg_risk_adjustment,
           AVG(COALESCE(elapsed_ms, 0)) AS avg_elapsed_ms
         FROM ai_reports
         GROUP BY ai_profile_uid, model_identity, classification
@@ -3609,7 +3515,7 @@ def threat_intel_usage_summary(conn):
     ).fetchall()
     summary = {}
     for row in rows:
-        item = dict(row)
+        item = without_operational_scores(row)
         source = item.pop("source")
         summary.setdefault(source, {"usage_count": 0, "last_used": None, "stages": {}})
         summary[source]["usage_count"] += int(item.get("usage_count") or 0)
@@ -3840,9 +3746,7 @@ def detection_type_detail(conn, detection_type=None, limit=50):
         SELECT
           COUNT(*) AS total,
           MIN(first_seen) AS first_seen,
-          MAX(last_seen) AS last_seen,
-          AVG(python_initial_score) AS avg_score,
-          MAX(python_initial_score) AS max_score
+          MAX(last_seen) AS last_seen
         FROM detections
         {filter_sql}
         """,
@@ -3894,7 +3798,6 @@ def detection_type_detail(conn, detection_type=None, limit=50):
           detections.first_seen,
           detections.src_ip,
           detections.dest_ip,
-          detections.python_initial_score,
           detections.mitre_id,
           detections.mitre_name,
           COALESCE(alerts.signature, (
@@ -3930,7 +3833,7 @@ def detection_type_detail(conn, detection_type=None, limit=50):
 
     recent_rows = []
     for row in recent:
-        item = dict(row)
+        item = without_operational_scores(row)
         item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
         item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
         recent_rows.append(item)
@@ -4041,7 +3944,6 @@ def ip_detail(conn, ip_address, limit=100):
           detections.time_window_seconds,
           detections.mitre_id,
           detections.mitre_name,
-          detections.python_initial_score,
           alerts.timestamp,
           alerts.src_port,
           alerts.dest_port,
@@ -4051,7 +3953,6 @@ def ip_detail(conn, ip_address, limit=100):
           alerts.priority,
           ai_reports.classification AS ai_classification,
           ai_reports.confidence AS ai_confidence,
-          ai_reports.risk_adjustment AS ai_risk_adjustment,
           ai_reports.reason AS ai_reason,
           ai_reports.recommended_action AS ai_recommended_action,
           ai_reports.summary AS ai_summary,
@@ -4064,7 +3965,6 @@ def ip_detail(conn, ip_address, limit=100):
           ai_reports.next_steps_json AS ai_next_steps_json,
           ai_reports.ai_profile_uid AS ai_profile_uid,
           ai_reports.model_identity AS ai_model_identity,
-          responses.final_score,
           responses.final_classification,
           responses.final_action,
           responses.target_ip,
@@ -4195,8 +4095,6 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
             lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
             """
         )
-    elif outcome == "high_risk":
-        filters.append("lower(COALESCE(responses.final_classification, '')) = 'high risk'")
     elif outcome == "safe":
         filters.append("lower(COALESCE(responses.final_classification, '')) = 'safe'")
     filter_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
@@ -4208,7 +4106,6 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           responses.id AS response_id,
           responses.detection_id,
           detections.case_uid,
-          responses.final_score,
           responses.final_classification,
           responses.final_action,
           responses.target_ip,
@@ -4221,7 +4118,6 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           detections.time_window_seconds,
           detections.mitre_id,
           detections.mitre_name,
-          detections.python_initial_score,
           detections.sensor_state,
           detections.agreement_state,
           detections.correlation_method,
@@ -4238,7 +4134,6 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           alerts.priority,
           ai_reports.classification AS ai_classification,
           ai_reports.confidence AS ai_confidence,
-          ai_reports.risk_adjustment AS ai_risk_adjustment,
           ai_reports.summary AS ai_summary,
           ai_reports.who_summary AS ai_who,
           ai_reports.what_summary AS ai_what,
@@ -4260,7 +4155,6 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           ai_reports.prompt_chars AS ai_prompt_chars,
           analyst_reviews.review_status,
           analyst_reviews.analyst_name,
-          analyst_reviews.analyst_score,
           analyst_reviews.analyst_action
         FROM responses
         LEFT JOIN detections ON detections.id = responses.detection_id
@@ -4277,7 +4171,7 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
     ).fetchall()
     evidence = []
     for row in rows:
-        item = dict(row)
+        item = without_operational_scores(row)
         item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
         item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
         item["sensor_findings"] = sensor_findings_for_detection(conn, item["detection_id"])
@@ -4306,7 +4200,6 @@ def investigation_detail(conn, detection_id):
           detections.time_window_seconds,
           detections.mitre_id,
           detections.mitre_name,
-          detections.python_initial_score,
           detections.sensor_state,
           detections.agreement_state,
           detections.correlation_method,
@@ -4327,7 +4220,6 @@ def investigation_detail(conn, detection_id):
           alerts.raw_json,
           ai_reports.classification AS ai_classification,
           ai_reports.confidence AS ai_confidence,
-          ai_reports.risk_adjustment AS ai_risk_adjustment,
           ai_reports.reason AS ai_reason,
           ai_reports.recommended_action AS ai_recommended_action,
           ai_reports.summary AS ai_summary,
@@ -4352,7 +4244,6 @@ def investigation_detail(conn, detection_id):
           ai_reports.prompt_sha256 AS ai_prompt_sha256,
           ai_reports.prompt_chars AS ai_prompt_chars,
           ai_reports.created_at AS ai_created_at,
-          responses.final_score,
           responses.final_classification,
           responses.final_action,
           responses.target_ip,
@@ -4361,7 +4252,6 @@ def investigation_detail(conn, detection_id):
           responses.created_at AS response_created_at,
           analyst_reviews.review_status,
           analyst_reviews.analyst_name,
-          analyst_reviews.analyst_score,
           analyst_reviews.analyst_classification,
           analyst_reviews.analyst_action,
           analyst_reviews.analyst_notes,
@@ -4385,7 +4275,7 @@ def investigation_detail(conn, detection_id):
     if not row:
         return None
 
-    item = dict(row)
+    item = without_operational_scores(row)
     if (
         item.get("ai_raw_response")
         and item.get("ai_summary") == "The model response could not be parsed."
@@ -4435,17 +4325,16 @@ def investigation_detail(conn, detection_id):
     item["dest_otx"] = latest_threat_intel_for_ip(conn, item.get("dest_ip"), "otx")
     item["sensor_findings"] = sensor_findings_for_detection(conn, detection_id)
     item["ai_run_audits"] = ai_run_audits_for_detection(conn, detection_id)
-    item["score_breakdowns"] = score_breakdowns_for_detection(conn, detection_id)
     item["virustotal_verifications"] = virustotal_verifications_for_detection(conn, detection_id)
     item["ai_assessments"] = [
-        dict(value)
+        without_operational_scores(value)
         for value in conn.execute(
             "SELECT * FROM ai_assessments WHERE detection_id = ? ORDER BY id",
             (detection_id,),
         ).fetchall()
     ]
     item["responses"] = [
-        dict(value)
+        without_operational_scores(value)
         for value in conn.execute(
             "SELECT * FROM responses WHERE detection_id = ? ORDER BY id",
             (detection_id,),
@@ -4620,11 +4509,15 @@ def expire_stale_reviews(conn):
 
 
 def seed_pending_reviews_from_responses(conn):
+    legacy_score = "original_score," if "original_score" in table_columns(
+        conn, "analyst_reviews"
+    ) else ""
+    legacy_value = "0," if legacy_score else ""
     conn.execute(
-        """
+        f"""
         INSERT OR IGNORE INTO analyst_reviews (
           detection_id,
-          original_score,
+          {legacy_score}
           original_classification,
           original_action,
           due_at,
@@ -4632,7 +4525,7 @@ def seed_pending_reviews_from_responses(conn):
         )
         SELECT
           responses.detection_id,
-          responses.final_score,
+          {legacy_value}
           responses.final_classification,
           responses.final_action,
           datetime(responses.created_at, '+3 days'),
@@ -4653,12 +4546,10 @@ def list_review_queue(conn, limit=50):
         SELECT
           analyst_reviews.id,
           analyst_reviews.detection_id,
-          analyst_reviews.original_score,
           analyst_reviews.original_classification,
           analyst_reviews.original_action,
           analyst_reviews.review_status,
           analyst_reviews.analyst_name,
-          analyst_reviews.analyst_score,
           analyst_reviews.analyst_classification,
           analyst_reviews.analyst_action,
           analyst_reviews.analyst_notes,
@@ -4692,7 +4583,7 @@ def list_review_queue(conn, limit=50):
         """,
         (limit,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [without_operational_scores(row) for row in rows]
 
 
 def submit_analyst_review(
@@ -4701,23 +4592,20 @@ def submit_analyst_review(
     action,
     analyst_name,
     notes="",
-    score=None,
     classification=None,
     tuning_label=None,
 ):
     now = datetime.now(timezone.utc).isoformat()
     existing = conn.execute(
-        "SELECT id, original_score, original_classification, original_action FROM analyst_reviews WHERE detection_id = ?",
+        "SELECT id, original_classification, original_action FROM analyst_reviews WHERE detection_id = ?",
         (detection_id,),
     ).fetchone()
     if not existing:
         source = conn.execute(
             """
             SELECT
-              responses.final_score,
               responses.final_classification,
-              responses.final_action,
-              detections.python_initial_score
+              responses.final_action
             FROM detections
             LEFT JOIN responses ON responses.detection_id = detections.id
             WHERE detections.id = ?
@@ -4728,40 +4616,45 @@ def submit_analyst_review(
         ).fetchone()
         if not source:
             return False
-        original_score = source["final_score"]
-        if original_score is None:
-            original_score = source["python_initial_score"] or 0
         original_classification = source["final_classification"] or "Human Review Required"
         original_action = source["final_action"] or "human_review"
-        conn.execute(
-            """
-            INSERT INTO analyst_reviews (
-              detection_id, original_score, original_classification, original_action, due_at
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                detection_id,
-                original_score,
-                original_classification,
-                original_action,
-                (datetime.now(timezone.utc) + timedelta(days=3)).isoformat(),
-            ),
+        values = (
+            detection_id,
+            original_classification,
+            original_action,
+            (datetime.now(timezone.utc) + timedelta(days=3)).isoformat(),
         )
+        if "original_score" in table_columns(conn, "analyst_reviews"):
+            conn.execute(
+                """
+                INSERT INTO analyst_reviews (
+                  detection_id, original_score, original_classification, original_action, due_at
+                )
+                VALUES (?, 0, ?, ?, ?)
+                """,
+                values,
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO analyst_reviews (
+                  detection_id, original_classification, original_action, due_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                values,
+            )
         existing = {
-            "original_score": original_score,
             "original_classification": original_classification,
             "original_action": original_action,
         }
 
     if action == "confirm":
         review_status = "confirmed"
-        analyst_score = existing["original_score"]
         analyst_classification = existing["original_classification"]
         analyst_action = existing["original_action"]
     else:
         review_status = "overridden"
-        analyst_score = score
         analyst_classification = classification
         analyst_action = action
 
@@ -4770,7 +4663,6 @@ def submit_analyst_review(
         UPDATE analyst_reviews
         SET review_status = ?,
             analyst_name = ?,
-            analyst_score = ?,
             analyst_classification = ?,
             analyst_action = ?,
             analyst_notes = ?,
@@ -4780,7 +4672,6 @@ def submit_analyst_review(
         (
             review_status,
             analyst_name,
-            analyst_score,
             analyst_classification,
             analyst_action,
             notes,
@@ -4851,7 +4742,6 @@ def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profil
           detections.time_window_seconds,
           detections.mitre_id,
           detections.mitre_name,
-          detections.python_initial_score,
           detections.src_port AS detection_src_port,
           detections.dest_port AS detection_dest_port,
           detections.protocol AS detection_protocol,
@@ -5036,7 +4926,6 @@ def delete_evaluation_scenario(conn, scenario_uid):
     for table in (
         "evaluation_case_links",
         "evaluation_event_labels",
-        "evaluation_scoring_runs",
     ):
         conn.execute(f"DELETE FROM {table} WHERE scenario_uid = ?", (scenario_uid,))
     conn.execute(
@@ -5087,8 +4976,7 @@ def list_evaluation_case_links(conn, scenario_uid):
         """
         SELECT links.*, detections.id AS detection_id, detections.first_seen,
                detections.last_seen, detections.detection_type,
-               detections.sensor_state, responses.final_classification,
-               responses.final_score
+               detections.sensor_state, responses.final_classification
         FROM evaluation_case_links AS links
         LEFT JOIN detections ON detections.case_uid = links.case_uid
         LEFT JOIN responses ON responses.id = (
@@ -5406,118 +5294,6 @@ def delete_evaluation_event_label(conn, scenario_uid, event_sensor, event_uid):
     return cur.rowcount > 0
 
 
-def create_evaluation_scoring_run(conn, run):
-    run_uid = run.get("run_uid") or f"eval-score-{uuid.uuid4().hex[:12]}"
-    conn.execute(
-        """
-        INSERT INTO evaluation_scoring_runs (
-          run_uid, scenario_uid, case_uid, evaluation_type, baseline_policy,
-          experimental_parameters_json, baseline_score, experimental_score,
-          baseline_classification, experimental_classification,
-          score_difference, result_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            run_uid,
-            run.get("scenario_uid"),
-            run["case_uid"],
-            run["evaluation_type"],
-            run["baseline_policy"],
-            json.dumps(run.get("experimental_parameters") or {}, sort_keys=True),
-            float(run["baseline_score"]),
-            float(run["experimental_score"]),
-            run["baseline_classification"],
-            run["experimental_classification"],
-            float(run["experimental_score"]) - float(run["baseline_score"]),
-            json.dumps(run.get("result") or {}, sort_keys=True),
-            utc_now(),
-        ),
-    )
-    conn.commit()
-    return run_uid
-
-
-def get_evaluation_scoring_run(conn, run_uid):
-    row = conn.execute(
-        "SELECT * FROM evaluation_scoring_runs WHERE run_uid = ?",
-        (run_uid,),
-    ).fetchone()
-    if not row:
-        return None
-    item = dict(row)
-    item["experimental_parameters"] = json.loads(
-        item.pop("experimental_parameters_json") or "{}"
-    )
-    item["result"] = json.loads(item.pop("result_json") or "{}")
-    return item
-
-
-def update_evaluation_scoring_run(conn, run_uid, run):
-    cur = conn.execute(
-        """
-        UPDATE evaluation_scoring_runs
-        SET scenario_uid = ?, case_uid = ?, evaluation_type = ?,
-            baseline_policy = ?, experimental_parameters_json = ?,
-            baseline_score = ?, experimental_score = ?,
-            baseline_classification = ?, experimental_classification = ?,
-            score_difference = ?, result_json = ?
-        WHERE run_uid = ?
-        """,
-        (
-            run.get("scenario_uid"),
-            run["case_uid"],
-            run["evaluation_type"],
-            run["baseline_policy"],
-            json.dumps(run.get("experimental_parameters") or {}, sort_keys=True),
-            float(run["baseline_score"]),
-            float(run["experimental_score"]),
-            run["baseline_classification"],
-            run["experimental_classification"],
-            float(run["experimental_score"]) - float(run["baseline_score"]),
-            json.dumps(run.get("result") or {}, sort_keys=True),
-            run_uid,
-        ),
-    )
-    conn.commit()
-    return get_evaluation_scoring_run(conn, run_uid) if cur.rowcount else None
-
-
-def list_evaluation_scoring_runs(conn, limit=200, scenario_uid=None):
-    where = ""
-    params = []
-    if scenario_uid:
-        where = "WHERE scenario_uid = ?"
-        params.append(scenario_uid)
-    params.append(int(limit))
-    rows = conn.execute(
-        f"""
-        SELECT * FROM evaluation_scoring_runs
-        {where}
-        ORDER BY created_at DESC, run_uid
-        LIMIT ?
-        """,
-        params,
-    ).fetchall()
-    items = []
-    for row in rows:
-        item = dict(row)
-        item["experimental_parameters"] = json.loads(
-            item.pop("experimental_parameters_json") or "{}"
-        )
-        item["result"] = json.loads(item.pop("result_json") or "{}")
-        items.append(item)
-    return items
-
-
-def delete_evaluation_scoring_run(conn, run_uid):
-    cur = conn.execute(
-        "DELETE FROM evaluation_scoring_runs WHERE run_uid = ?",
-        (run_uid,),
-    )
-    conn.commit()
-    return cur.rowcount > 0
-
-
 def upsert_evaluation_model_review(conn, review):
     review_uid = review.get("review_uid") or f"eval-model-{uuid.uuid4().hex[:12]}"
     reviewed_at = utc_now()
@@ -5610,7 +5386,7 @@ def evaluation_case_options(conn, limit=250):
                detections.first_seen, detections.last_seen,
                detections.src_ip, detections.dest_ip,
                detections.detection_type, detections.sensor_state,
-               responses.final_classification, responses.final_score
+               responses.final_classification
         FROM detections
         LEFT JOIN responses ON responses.id = (
           SELECT MAX(response_rows.id)
@@ -5632,7 +5408,6 @@ def evaluation_overview(conn):
         "scenarios": "evaluation_scenarios",
         "case_links": "evaluation_case_links",
         "event_labels": "evaluation_event_labels",
-        "scoring_runs": "evaluation_scoring_runs",
         "model_reviews": "evaluation_model_reviews",
         "comparison_runs": "ai_comparison_runs",
     }.items():
@@ -5664,11 +5439,6 @@ def evaluation_export_bundle(conn, scenario_uid=None):
             for item in list_evaluation_scenarios(conn, limit=10000)
         ]
     scenario_uids = {item["scenario_uid"] for item in scenarios if item}
-    scoring_runs = list_evaluation_scoring_runs(conn, limit=10000)
-    if scenario_uid:
-        scoring_runs = [
-            item for item in scoring_runs if item.get("scenario_uid") in scenario_uids
-        ]
     model_reviews = list_evaluation_model_reviews(conn, limit=10000)
     if scenario_uid:
         linked_cases = {
@@ -5703,6 +5473,5 @@ def evaluation_export_bundle(conn, scenario_uid=None):
         "exported_at": utc_now(),
         "scenarios": [item for item in scenarios if item],
         "correlation_metrics": correlation_metrics,
-        "scoring_runs": scoring_runs,
         "model_reviews": model_reviews,
     }

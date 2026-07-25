@@ -30,27 +30,19 @@ Detection types remain a rule-based implementation heuristic. They are not prese
 
 These values remain design choices. Experimental work should measure missed correlations and incorrect merges under alternative windows.
 
-## Scoring Auditability
+## Qualitative Classification
 
-- Versioned the original six-category score as `deterministic-score-v1`.
-- Store category maxima and an explicit statement that the score is an investigation-priority heuristic, not a probability of compromise.
-- At that review point, the six existing category weights were retained so prior cases and tests remained comparable.
-
-The report should state that the weights require sensitivity, ablation, and analyst-review validation.
-
-### Current scoring revision
-
-- `deterministic-score-v2` removes MITRE ATT&CK from every numerical scoring path.
-- The five remaining categories have a maximum of 80 points; removed points were not redistributed.
-- MITRE technique IDs and names remain visible as suggested descriptive context and remain in the AI evidence package.
-- The AI prompt explicitly prohibits using the derived MITRE mapping as independent risk evidence.
-- The historical `score_breakdowns.mitre_relevance` column remains for database compatibility and receives zero for new assessments.
-- Existing outcome thresholds are provisional and require sensitivity testing against the new reachable score range.
+- Retired deterministic alert scoring and model-provided numerical adjustments.
+- The model now returns only `Safe`, `Human Review Required`, or `Dangerous`, plus qualitative confidence, evidence-based reasoning, threat-intelligence interpretation, and investigation steps.
+- Python validates the response and maps it to `log_only`, `human_review`, or `escalate`.
+- Missing or invalid classifications and materially disputed sensor findings are forced to Human Review Required.
+- Historical score columns and tables may remain only in upgraded SQLite databases so migrations are non-destructive. New installations omit them, and compatibility values in older databases are never exposed through the API or prompt.
+- MITRE technique IDs and names remain descriptive context and do not determine classification.
 
 ## Registered IP Terminology
 
-- Updated visible dashboard labels to use **registered IP**, **assigned role**, **business importance**, and **registered IP importance**.
-- Retained historical internal names such as the SQLite `assets` table and API field `asset_score` for migration compatibility.
+- Updated visible dashboard labels to use **registered IP** and **assigned role**.
+- Retained the historical SQLite `assets` table name for migration compatibility; numerical importance is no longer collected or used.
 
 ## Legacy and Security Boundaries
 

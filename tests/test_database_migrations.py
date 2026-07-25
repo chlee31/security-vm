@@ -22,7 +22,6 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "evaluation_scenarios",
                     "evaluation_case_links",
                     "evaluation_event_labels",
-                    "evaluation_scoring_runs",
                     "evaluation_model_reviews",
                 }.issubset(tables)
             )

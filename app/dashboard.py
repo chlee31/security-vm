@@ -20,7 +20,7 @@ from app.allowlist import add_allowlist_entry, deactivate_allowlist_entry, deact
 from app.config import load_config, save_config
 from app.database import (
     ai_comparison_detail,
-    ai_comparison_scorecard,
+    ai_comparison_selection_summary,
     ai_model_comparison,
     asset_summary,
     case_workspace,
@@ -33,7 +33,6 @@ from app.database import (
     delete_evaluation_scenario,
     delete_asset,
     delete_ai_profile,
-    default_asset_score,
     default_asset_types,
     ensure_ai_profile_from_config,
     evaluation_candidate_events,
@@ -132,7 +131,6 @@ class AnalystReviewRequest(BaseModel):
     action: str
     analyst_name: str = ""
     notes: str = ""
-    score: int = None
     classification: str = None
     tuning_label: str = ""
 
@@ -142,7 +140,6 @@ class AssetRequest(BaseModel):
     name: str
     device_type: str
     network_interface: str = ""
-    asset_score: int = None
     function: str = ""
     notes: str = ""
 
@@ -642,7 +639,6 @@ def create_app(config_path):
     @app.get("/evaluation")
     @app.get("/evaluation/scenarios")
     @app.get("/evaluation/correlation")
-    @app.get("/evaluation/scoring")
     @app.get("/evaluation/models")
     def evaluation_lab():
         return static_page("evaluation.html")
@@ -1512,12 +1508,6 @@ def create_app(config_path):
         if status not in {"active", "inactive"}:
             raise HTTPException(status_code=400, detail="Asset status must be active or inactive")
 
-        score = payload.asset_score
-        if score is None:
-            score = default_asset_score(config, device_type)
-        if score < 0 or score > 10:
-            raise HTTPException(status_code=400, detail="Asset score must be between 0 and 10")
-
         conn = connect(db_path)
         try:
             try:
@@ -1530,7 +1520,6 @@ def create_app(config_path):
                         "device_type": device_type,
                         "network_interface": payload.network_interface.strip()
                         or config.get("assets", {}).get("internal_interface", "ens37"),
-                        "asset_score": score,
                         "function": payload.function.strip(),
                         "notes": payload.notes.strip(),
                         "status": status,
@@ -1610,11 +1599,11 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/ai-comparisons/scorecard")
-    def api_ai_comparison_scorecard():
+    @app.get("/api/ai-comparisons/selection-summary")
+    def api_ai_comparison_selection_summary():
         conn = connect(db_path)
         try:
-            return ai_comparison_scorecard(conn)
+            return ai_comparison_selection_summary(conn)
         finally:
             conn.close()
 
@@ -1926,7 +1915,7 @@ def create_app(config_path):
 
     @app.get("/api/decision-evidence")
     def api_decision_evidence(limit: int = 25, detection_type: str = None, outcome: str = None):
-        if outcome and outcome not in {"safe", "human_review", "high_risk", "dangerous"}:
+        if outcome and outcome not in {"safe", "human_review", "dangerous"}:
             raise HTTPException(status_code=400, detail="Unsupported outcome filter")
         conn = connect(db_path)
         try:
@@ -2049,19 +2038,10 @@ def create_app(config_path):
             assets = list_all_assets(conn, limit)
             type_rows = conn.execute(
                 """
-                SELECT device_type, status, COUNT(*) AS count, AVG(asset_score) AS avg_score
+                SELECT device_type, status, COUNT(*) AS count
                 FROM assets
                 GROUP BY device_type, status
                 ORDER BY count DESC, device_type ASC
-                """
-            ).fetchall()
-            score_rows = conn.execute(
-                """
-                SELECT asset_score, COUNT(*) AS count
-                FROM assets
-                WHERE status = 'active'
-                GROUP BY asset_score
-                ORDER BY asset_score DESC
                 """
             ).fetchall()
             match_rows = conn.execute(
@@ -2096,11 +2076,9 @@ def create_app(config_path):
                   detections.src_ip,
                   detections.dest_ip,
                   detections.detection_type,
-                  detections.python_initial_score,
                   detections.created_at,
                   alerts.signature,
-                  responses.final_classification,
-                  responses.final_score
+                  responses.final_classification
                 FROM detections
                 LEFT JOIN alerts ON alerts.id = detections.first_alert_id
                 LEFT JOIN responses ON responses.detection_id = detections.id
@@ -2133,7 +2111,6 @@ def create_app(config_path):
             summary.update(
                 {
                     "inactive": len([asset for asset in enriched_assets if asset.get("status") == "inactive"]),
-                    "high_value": len([asset for asset in active_assets if int(asset.get("asset_score") or 0) >= 8]),
                     "internal_interface_count": len(
                         [
                             asset
@@ -2144,11 +2121,13 @@ def create_app(config_path):
                 }
             )
             return {
-                "types": default_asset_types(config),
+                "types": [
+                    {"value": item["value"], "label": item["label"]}
+                    for item in default_asset_types(config)
+                ],
                 "default_interface": internal_interface,
                 "summary": summary,
                 "by_type": [dict(row) for row in type_rows],
-                "by_score": [dict(row) for row in score_rows],
                 "assets": enriched_assets,
             }
         finally:
@@ -2170,12 +2149,6 @@ def create_app(config_path):
         if device_type not in allowed_types:
             raise HTTPException(status_code=400, detail="Unsupported device type")
 
-        score = payload.asset_score
-        if score is None:
-            score = default_asset_score(config, device_type)
-        if score < 0 or score > 10:
-            raise HTTPException(status_code=400, detail="Asset score must be between 0 and 10")
-
         conn = connect(db_path)
         try:
             asset_id = upsert_asset(
@@ -2186,7 +2159,6 @@ def create_app(config_path):
                     "device_type": device_type,
                     "network_interface": payload.network_interface.strip()
                     or config.get("assets", {}).get("internal_interface", "ens37"),
-                    "asset_score": score,
                     "function": payload.function.strip(),
                     "notes": payload.notes.strip(),
                 },
@@ -2268,10 +2240,6 @@ def create_app(config_path):
         action = payload.action.strip().lower()
         if action not in {"confirm", "log_only", "human_review", "investigate", "escalate"}:
             raise HTTPException(status_code=400, detail="Unsupported review action")
-        if action != "confirm" and payload.score is None:
-            raise HTTPException(status_code=400, detail="Override score is required")
-        if payload.score is not None and (payload.score < 0 or payload.score > 100):
-            raise HTTPException(status_code=400, detail="Score must be between 0 and 100")
         tuning_label = payload.tuning_label.strip()
         if tuning_label and tuning_label not in {"true_positive", "false_positive", "authorized_test", "unknown"}:
             raise HTTPException(status_code=400, detail="Unsupported tuning label")
@@ -2284,7 +2252,6 @@ def create_app(config_path):
                 action,
                 payload.analyst_name.strip() or "analyst",
                 notes=payload.notes.strip(),
-                score=payload.score,
                 classification=payload.classification,
                 tuning_label=tuning_label or None,
             )
@@ -2373,7 +2340,6 @@ def create_app(config_path):
             outcome_counts = {
                 "safe": 0,
                 "human_review": 0,
-                "high_risk": 0,
                 "dangerous": 0,
             }
             for row in by_classification:
@@ -2382,8 +2348,6 @@ def create_app(config_path):
                 count = row["count"]
                 if classification == "dangerous":
                     outcome_counts["dangerous"] += count
-                elif "high risk" in classification:
-                    outcome_counts["high_risk"] += count
                 elif "human" in classification:
                     outcome_counts["human_review"] += count
                 else:

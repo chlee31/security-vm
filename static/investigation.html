@@ -33,11 +33,6 @@
 
       <section class="workbook-metrics">
         <article class="metric">
-          <span>Final Score</span>
-          <strong id="inv-final-score">0</strong>
-          <small>Python plus AI adjustment</small>
-        </article>
-        <article class="metric">
           <span>Decision</span>
           <strong id="inv-decision">Unknown</strong>
           <small id="inv-action">No action</small>
@@ -94,17 +89,12 @@
               <span>Analyst name</span>
               <input id="inv-review-name" type="text" placeholder="Example: analyst">
             </label>
-            <label class="field">
-              <span>Override score, 0-100</span>
-              <input id="inv-review-score" type="number" min="0" max="100" placeholder="Only needed for override">
-            </label>
             <label class="field wide-field">
               <span>Review decision</span>
               <select id="inv-review-action">
                 <option value="confirm">Confirm original</option>
                 <option value="log_only">Override: log only</option>
                 <option value="human_review">Override: keep review</option>
-                <option value="investigate">Override: investigate</option>
                 <option value="escalate">Override: escalate</option>
               </select>
             </label>
@@ -152,16 +142,6 @@
             </div>
           </div>
           <div id="inv-ai" class="workbook-list"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Evidence</p>
-              <h2>Deterministic Score Breakdown</h2>
-            </div>
-          </div>
-          <div id="inv-scoring" class="workbook-list"></div>
         </section>
 
         <section class="panel">

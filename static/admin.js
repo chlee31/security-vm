@@ -44,7 +44,6 @@ const els = {
   assetName: document.querySelector("#admin-asset-name"),
   assetType: document.querySelector("#admin-asset-type"),
   assetInterface: document.querySelector("#admin-asset-interface"),
-  assetScore: document.querySelector("#admin-asset-score"),
   assetStatus: document.querySelector("#admin-asset-status"),
   assetFunction: document.querySelector("#admin-asset-function"),
   assetNotes: document.querySelector("#admin-asset-notes"),
@@ -286,8 +285,8 @@ function renderAiProfiles() {
 function renderAssetTypes(types) {
   const current = els.assetType.value;
   els.assetType.innerHTML = types.map((type) => `
-    <option value="${type.value}" data-score="${type.default_score}">
-      ${type.label} (${type.default_score})
+    <option value="${type.value}">
+      ${type.label}
     </option>
   `).join("");
   if (current) els.assetType.value = current;
@@ -305,7 +304,7 @@ function renderAssets(payload) {
         <span class="status-pill ${asset.status === "inactive" ? "inactive" : "active"}">${asset.status}</span>
       </div>
       <p>${asset.ip_address} · ${label(asset.device_type)} · ${asset.network_interface || state.network.internal_interface || "ens37"}</p>
-      <small>Importance ${asset.asset_score} · ${asset.function || "No role details"}${asset.notes ? ` · ${asset.notes}` : ""}</small>
+      <small>${asset.function || "No role details"}${asset.notes ? ` · ${asset.notes}` : ""}</small>
       <div class="asset-admin-actions">
         <button class="text-button" type="button" data-edit-asset="${asset.id}">Edit</button>
         <button class="text-button" type="button" data-toggle-asset="${asset.id}">
@@ -379,7 +378,7 @@ function renderNotificationEvents(events) {
           <span>${event.created_at || "unknown time"}</span>
         </div>
         <p>${event.subject || "No subject"}</p>
-        <small>${event.recipient || "No recipient"}${event.final_score ? ` · score ${event.final_score}` : ""}</small>
+        <small>${event.recipient || "No recipient"}</small>
         ${event.error ? `<small>${event.error}</small>` : ""}
       </div>
     `).join("") || `<div class="empty">No notification attempts yet.</div>`}
@@ -445,13 +444,13 @@ function renderFirewallCandidates(candidates) {
         <strong>Dangerous detections awaiting enforcement</strong>
         <span>${candidates.length}</span>
       </div>
-      <p>Detection mode queues high-risk would-block decisions here so an analyst can enforce or mark safe.</p>
+      <p>Detection mode queues Dangerous decisions here so an analyst can enforce or mark safe.</p>
     </div>
     ${candidates.map((candidate) => `
       <div class="list-item firewall-candidate">
         <div class="row tight">
           <strong>${candidate.target_ip}</strong>
-          <span>score ${candidate.final_score}</span>
+          <span>${candidate.final_classification || "Dangerous"}</span>
         </div>
         <p>${label(candidate.detection_type)} · ${candidate.src_ip || "unknown"} -> ${candidate.dest_ip || "unknown"}</p>
         <small>${candidate.signature || "No signature recorded"}</small>
@@ -639,13 +638,11 @@ async function refresh() {
 }
 
 function assetPayloadFromForm() {
-  const score = els.assetScore.value;
   return {
     ip_address: els.assetIp.value,
     name: els.assetName.value,
     device_type: els.assetType.value,
     network_interface: els.assetInterface.value,
-    asset_score: score === "" ? null : Number(score),
     status: els.assetStatus.value,
     function: els.assetFunction.value,
     notes: els.assetNotes.value
@@ -656,8 +653,6 @@ function resetAssetForm() {
   els.assetForm.reset();
   els.assetId.value = "";
   els.assetSubmit.textContent = "Add IP Address";
-  const selected = els.assetType.selectedOptions[0];
-  els.assetScore.value = selected ? selected.dataset.score : "";
   els.assetInterface.placeholder = state.network.internal_interface || "ens37";
 }
 
@@ -669,7 +664,6 @@ function editAsset(assetId) {
   els.assetName.value = asset.name || "";
   els.assetType.value = asset.device_type || "unknown";
   els.assetInterface.value = asset.network_interface || "";
-  els.assetScore.value = asset.asset_score ?? "";
   els.assetStatus.value = asset.status || "active";
   els.assetFunction.value = asset.function || "";
   els.assetNotes.value = asset.notes || "";
@@ -686,7 +680,6 @@ async function toggleAssetStatus(assetId) {
     name: asset.name,
     device_type: asset.device_type,
     network_interface: asset.network_interface,
-    asset_score: asset.asset_score,
     status: nextStatus,
     function: asset.function || "",
     notes: asset.notes || ""
@@ -983,11 +976,6 @@ els.refreshThreatIntel.addEventListener("click", async () => {
   } finally {
     els.refreshThreatIntel.disabled = false;
   }
-});
-
-els.assetType.addEventListener("change", () => {
-  const selected = els.assetType.selectedOptions[0];
-  els.assetScore.value = selected ? selected.dataset.score : "";
 });
 
 document.addEventListener("click", (event) => {

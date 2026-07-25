@@ -518,12 +518,20 @@ def fetch_ipsum(_settings):
         if len(fields) < 2:
             continue
         try:
-            score = int(fields[1])
+            list_count = int(fields[1])
             ipaddress.ip_address(fields[0])
         except ValueError:
             continue
-        confidence = 85 if score >= 6 else 65 if score >= 3 else 35
-        indicators.append({"indicator": fields[0], "indicator_type": "ip", "category": f"consensus_{score}", "confidence": confidence, "raw_data": {"list_count": score}})
+        confidence = 85 if list_count >= 6 else 65 if list_count >= 3 else 35
+        indicators.append(
+            {
+                "indicator": fields[0],
+                "indicator_type": "ip",
+                "category": f"consensus_{list_count}",
+                "confidence": confidence,
+                "raw_data": {"list_count": list_count},
+            }
+        )
     return indicators
 
 

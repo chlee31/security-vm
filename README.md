@@ -2,7 +2,7 @@
 
 Security VM is an AI-assisted network security monitoring and investigation research prototype. It combines Suricata findings and Zeek network metadata into centralized cases, adds registered-IP and threat-intelligence context, and asks locally configured AI models to explain the evidence and recommend investigation steps.
 
-Python retains control of correlation, scoring, classifications, data handling, and safety boundaries. AI output is advisory and receives bounded structured evidence without API keys or raw packet captures.
+Python retains control of correlation, final action mapping, data handling, and safety boundaries. AI output is advisory and receives bounded structured evidence without API keys or raw packet captures.
 
 > [!IMPORTANT]
 > **AI input is limited by tokens, not by a 4 KB file limit.** Security VM does not upload Suricata logs, Zeek logs, databases, or packet-capture files directly to the model. Python selects relevant records, normalizes them into structured JSON text, applies documented record and field limits, and sends that bounded evidence inside the prompt.
@@ -18,7 +18,7 @@ Security VM currently provides:
 - passive network evidence collection from required Suricata and Zeek sensors;
 - deterministic case construction and evidence-preserving SQLite storage;
 - cached threat-intelligence enrichment and post-AI VirusTotal verification;
-- explainable prioritization, AI-assisted summaries, and human review controls;
+- qualitative AI-assisted classification, evidence summaries, and human review controls;
 - sequential three-model comparison using one frozen evidence package.
 
 The project is an **analysis platform**. It is not an endpoint agent, decrypted-payload inspection system, production firewall, autonomous response engine, or replacement for analyst judgment. The intended deployment uses copied traffic from a SPAN or mirror port. An optional routing wizard remains available only for isolated development labs.
@@ -41,13 +41,10 @@ Mirrored or lab-routed network traffic
  Registered IP + cached threat-intelligence enrichment
              |
              v
- Explainable Python score (0-80)
+ Bounded qualitative AI explanation and classification
              |
              v
- Bounded AI explanation and adjustment (-10 to +10)
-             |
-             v
- Python-controlled outcome + optional VirusTotal verification
+ Python safety rules + optional VirusTotal verification
              |
              v
  Centralized investigation + analyst review
@@ -97,9 +94,8 @@ This JSON is the API message envelope, not an attached JSON file. Tailscale prov
 - Conservative same-sensor grouping for scans, DNS tunneling, beaconing, brute force, and repeated identical findings
 - Bounded Zeek context from `conn`, `dns`, `http`, `ssl`, `notice`, `weird`, `files`, `ssh`, and `x509` logs
 - Zeek-derived IPs, DNS answers, domains, URLs, TLS/certificate fingerprints, JA3 values, file hashes, and SSH host keys matched against active cached threat-intelligence feeds with source-log and endpoint provenance
-- Admin-managed IP addresses, assigned roles, and business-impact scores
+- Admin-managed IP addresses and assigned roles
 - Cached threat-intelligence providers plus post-AI VirusTotal verification
-- Five-category deterministic score with a complete SQLite audit trail
 - Evidence-grounded AI explanation of who, what, when, where, why, how, and next steps
 - Exact per-request AI audit records with prompt/evidence/response hashes, source lineage, and an explicit omission manifest
 - Analyst confirmation, override, notes, and tuning labels
@@ -140,26 +136,15 @@ Three configured models receive the same frozen evidence sequentially. Their com
 
 </details>
 
-## Scoring Policy
+## Classification Policy
 
-Python calculates at most 80 points:
+The model reviews bounded Suricata, Zeek, correlation, registered-IP role, and threat-intelligence evidence and returns one of three qualitative classifications:
 
-| Category | Maximum |
-| --- | ---: |
-| Sensor finding severity | 20 |
-| Behavior and time correlation | 20 |
-| Cached threat intelligence | 20 |
-| Registered IP importance and traffic direction | 10 |
-| Suricata-Zeek corroboration | 10 |
+- `Safe`
+- `Human Review Required`
+- `Dangerous`
 
-MITRE ATT&CK remains descriptive context and does not contribute points. The AI adjustment is independently clamped to `-10..+10`, giving new cases an effective final range of `0..90`. Existing thresholds remain provisional pending sensitivity testing:
-
-- `0-29`: Safe
-- `30-69`: Human Review Required
-- `70-84`: High Risk
-- `85-90`: Dangerous
-
-Materially disputed sensor evidence forces Human Review Required. VirusTotal is post-AI verification evidence and never changes the score or lowers a classification.
+Python validates the structured response and maps those classifications to `log_only`, `human_review`, or `escalate`. Invalid or missing classifications default to Human Review Required. Materially disputed Suricata and Zeek evidence also forces Human Review Required. VirusTotal is separate post-AI verification for Dangerous results; it never supplies points and a no-detection result never lowers the classification.
 
 ## Prerequisites
 
@@ -291,7 +276,7 @@ Every case receives a UID such as `CASE-20260717-000123`. Its investigation page
 - repeated-activity and periodicity summary;
 - registered IP role and traffic-direction context;
 - provider-by-provider threat-intelligence results;
-- deterministic score breakdown;
+- qualitative classification, confidence, and evidence-based explanation;
 - AI case explanation and evidence boundaries;
 - optional side-by-side responses from three configured AI profiles;
 - VirusTotal verification records;
@@ -303,15 +288,15 @@ The **Reassess Case** button makes one explicit AI request using the latest stor
 
 Create at least three active AI profiles under `/admin`, then choose exactly three in **Comparison profiles**. From a case investigation, select **Run Three-Model Comparison**. Python freezes one evidence package and sends it to the three profiles sequentially, waiting for each response before starting the next request.
 
-All three responses appear directly on the case investigation page with model names, profile UIDs, summaries, six-part explanations, ordered investigation steps, and expandable raw responses. Open the run in `/compare` to select the most useful response, mark a tie, or reject all responses. The comparison scorecard reports which profile has been selected most often.
+All three responses appear directly on the case investigation page with model names, profile UIDs, summaries, six-part explanations, ordered investigation steps, and expandable raw responses. Open the run in `/compare` to select the most useful response, mark a tie, or reject all responses. The comparison selection summary reports which profile has been selected most often.
 
-Model comparison is an evaluation feature. Candidate adjustments do not stack, do not replace the official case assessment, and do not alter Python's recorded classification or response.
+Model comparison is an evaluation feature. Candidate classifications do not replace the official case assessment and do not alter Python's recorded action.
 
 ## Evaluation Lab
 
 Open `/evaluation` for the separate research workspace. Phase 1 supports analyst-defined scenarios, links to existing case UIDs, manual event-membership labels, correlation precision/recall/F1, and JSON/CSV export.
 
-Evaluation records use dedicated SQLite tables and never overwrite official case correlation, scores, classifications, model responses, or analyst reviews. Ground truth must come from the controlled experiment and reviewer, not from Security VM's own output.
+Evaluation records use dedicated SQLite tables and never overwrite official case correlation, classifications, model responses, or analyst reviews. Ground truth must come from the controlled experiment and reviewer, not from Security VM's own output.
 
 See [docs/evaluation-lab.md](docs/evaluation-lab.md) for routes, tables, and the evaluation procedure.
 
@@ -319,7 +304,7 @@ See [docs/evaluation-lab.md](docs/evaluation-lab.md) for routes, tables, and the
 
 Configure providers under `/admin` in the Threat Intelligence tab. Supported cached/bulk sources include ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, Feodo Tracker, and cached OTX results.
 
-For each bounded case, Python extracts IOC-like values from related Zeek records and records which Zeek log, timestamp, UID, and source/destination IPs produced them. These observables are matched locally against active cached providers before scoring and AI review. Routine case processing does not make one remote API request per observable.
+For each bounded case, Python extracts IOC-like values from related Zeek records and records which Zeek log, timestamp, UID, and source/destination IPs produced them. These observables are matched locally against active cached providers before AI review. Routine case processing does not make one remote API request per observable.
 
 VirusTotal is queried only after the AI classifies a case as Dangerous, or after a reassessment becomes Dangerous. Private, loopback, link-local, multicast, reserved, and `100.64.0.0/10` addresses are never queried. API keys are masked from API responses and must never be committed.
 
@@ -336,7 +321,7 @@ ai_model:
   num_predict: 1024
 ```
 
-Profiles are retained for repeatable model experiments. Each AI report stores provider, model, profile UID, run UID, prompt version/hash, elapsed time, classification, confidence, bounded adjustment, and the six-part explanation.
+Profiles are retained for repeatable model experiments. Each AI report stores provider, model, profile UID, run UID, prompt version/hash, elapsed time, classification, confidence, and the six-part explanation.
 
 `num_ctx` is the total token window available to the request and response; it is not a byte or file-size setting. `num_predict` reserves the maximum generated response length from that window. Increasing either value can materially increase memory use and latency. Security VM therefore keeps the operational context below the models' advertised maximum and compacts evidence before each request.
 

@@ -51,24 +51,6 @@ function ipWorkbookUrl(address) {
   return `/ip?address=${encodeURIComponent(address)}`;
 }
 
-function scoreClass(score) {
-  const value = Number(score || 0);
-  if (value >= 70) return "danger";
-  if (value >= 30) return "review";
-  return "safe";
-}
-
-function scoreBadge(score, badgeLabel = "Score") {
-  const value = Number(score || 0);
-  return `
-    <div class="score-badge ${scoreClass(value)}">
-      <span>${escapeHtml(badgeLabel)}</span>
-      <strong>${value}</strong>
-      <small>/100</small>
-    </div>
-  `;
-}
-
 function renderBars(container, rows, labelFn, valueFn, emptyText) {
   const max = Math.max(1, ...rows.map((row) => Number(valueFn(row) || 0)));
   container.innerHTML = `
@@ -135,7 +117,7 @@ function renderProfile(data) {
   const providers = data.threat_intel || [];
   els.profile.innerHTML = [
     profileRow("Local classification", `${profile.location || "unknown"} · ${profile.scope || "unknown"}`, profile.reason || ""),
-    profileRow("Registered role", asset ? `${asset.name} · ${label(asset.device_type)} · score ${asset.asset_score}` : "No registered role", asset ? `${asset.function || "No role details"} · ${asset.network_interface || "unknown interface"}` : "Register this internal IP address in Admin if it needs business-impact context."),
+    profileRow("Registered role", asset ? `${asset.name} · ${label(asset.device_type)}` : "No registered role", asset ? `${asset.function || "No role details"} · ${asset.network_interface || "unknown interface"}` : "Register this internal IP address in Admin if it needs role context."),
     ...providers.map((provider) => profileRow(
       provider.label || label(provider.name),
       provider.result === "not_active" ? "Not active" : provider.result === "matched" ? `${provider.match_count} matching indicator${provider.match_count === 1 ? "" : "s"}` : "Active · no match",
@@ -151,7 +133,6 @@ function renderDetections(rows) {
         <strong>${escapeHtml(row.final_classification || row.ai_classification || "Detection")}</strong>
         <span>${escapeHtml(row.role || "related")}</span>
       </div>
-      ${scoreBadge(row.final_score ?? row.python_initial_score ?? 0, "Final")}
       <div class="evidence-chain">
         <div>
           <span>Alert</span>

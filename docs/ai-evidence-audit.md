@@ -39,6 +39,8 @@ The investigation page displays each correlated `sensor_findings` row with:
 
 The case also displays the correlation method. A shared Community ID is shown when available. Otherwise, the page identifies the configured flow, endpoint, time-window, or same-sensor method used by Python. Community ID and Zeek UID help correlation but do not replace the original records.
 
+Operational score fields are not part of new prompts or responses. Historical SQLite columns may remain in upgraded databases for migration compatibility, but the active workflow records qualitative classification, confidence, reasoning, evidence acknowledgement, and the Python-selected action.
+
 ## Model Evidence Acknowledgement
 
 New responses include an `evidence_review` object containing:

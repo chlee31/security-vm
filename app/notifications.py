@@ -93,7 +93,6 @@ def build_dangerous_email(settings, alert, detection, response, ai_report):
         "Security VM detected a dangerous network event.",
         "",
         f"Classification: {response.get('final_classification', 'Unknown')}",
-        f"Score: {response.get('final_score', 'unknown')}/100",
         f"Action: {response.get('final_action', 'unknown')}",
         f"Target IP: {response.get('target_ip', 'unknown')}",
         "",

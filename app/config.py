@@ -62,12 +62,6 @@ DEFAULT_CONFIG = {
         "num_ctx": 8192,
         "temperature": 0.1,
     },
-    "thresholds": {
-        "safe_max": 29,
-        "human_review_min": 30,
-        "high_risk_min": 70,
-        "dangerous_min": 85,
-    },
     "threat_intel": {
         "cache_ttl_hours": 24,
         "virustotal_enabled": False,
@@ -88,17 +82,6 @@ DEFAULT_CONFIG = {
     },
     "assets": {
         "internal_interface": "ens37",
-        "default_scores": {
-            "laptop": 10,
-            "desktop": 8,
-            "server": 10,
-            "firewall_router": 10,
-            "security_appliance": 10,
-            "printer": 5,
-            "camera_iot": 6,
-            "unknown": 6,
-            "other": 6,
-        },
     },
     "safelist": ["127.0.0.1", "::1"],
 }

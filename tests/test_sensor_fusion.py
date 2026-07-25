@@ -47,7 +47,6 @@ class SensorFusionTests(unittest.TestCase):
             "time_window_seconds": 60,
             "mitre_id": None,
             "mitre_name": None,
-            "python_initial_score": 20,
             "status": "correlated",
         }
         detection.update(overrides)
@@ -129,8 +128,8 @@ class SensorFusionTests(unittest.TestCase):
 
         self.assertEqual(method, "community_id")
         self.assertEqual(fused["sensor_state"], "multi_sensor")
-        self.assertEqual(fused["python_initial_score"], 20)
-        self.assertEqual(fused_again["python_initial_score"], 20)
+        self.assertNotIn("python_initial_score", fused)
+        self.assertNotIn("python_initial_score", fused_again)
         self.assertEqual(len(sensor_findings_for_detection(self.conn, detection_id)), 2)
 
     def test_zeek_notice_can_create_standalone_detection(self):
@@ -149,7 +148,7 @@ class SensorFusionTests(unittest.TestCase):
 
         self.assertEqual(alert["sensor_state"], "zeek_only")
         self.assertEqual(detection["sensor_state"], "zeek_only")
-        self.assertGreater(detection["python_initial_score"], 0)
+        self.assertNotIn("python_initial_score", detection)
 
     def test_latest_alerts_can_filter_suricata_zeek_and_combined_cases(self):
         suricata_id = insert_detection(

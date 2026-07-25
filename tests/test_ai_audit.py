@@ -48,7 +48,6 @@ class AIAuditTests(unittest.TestCase):
             "community_id": "1:test",
             "alert_count": 2,
             "unique_dest_ports": 1,
-            "python_initial_score": 40,
         }
 
     def test_compaction_records_every_bound_and_sensitive_omission(self):
@@ -73,7 +72,6 @@ class AIAuditTests(unittest.TestCase):
         model_output = {
             "classification": "Human Review Required",
             "confidence": "Medium",
-            "risk_adjustment": 0,
             "reason": "The supplied sensor records require validation.",
             "summary": "Suricata and Zeek observed related DNS activity.",
             "who": "192.168.11.50",
@@ -177,7 +175,6 @@ class AIAuditTests(unittest.TestCase):
             report.update(
                 classification="Human Review Required",
                 confidence="Low",
-                risk_adjustment=0,
                 reason="Audit test",
                 raw_response="{}",
                 audit_status="complete",

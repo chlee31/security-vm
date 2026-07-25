@@ -8,7 +8,7 @@ const els = {
   refresh: document.querySelector("#outcome-refresh"),
   total: document.querySelector("#oc-total"),
   ips: document.querySelector("#oc-ips"),
-  maxScore: document.querySelector("#oc-max-score"),
+  typeCount: document.querySelector("#oc-type-count"),
   reviewCount: document.querySelector("#oc-review-count"),
   ipPie: document.querySelector("#oc-ip-pie"),
   detectionChart: document.querySelector("#oc-detection-chart"),
@@ -31,24 +31,6 @@ function label(value) {
   if (value === "all") return "All Outcomes";
   if (value === "human_review") return "Human Review Required";
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function scoreClass(score) {
-  const value = Number(score || 0);
-  if (value >= 70) return "danger";
-  if (value >= 30) return "review";
-  return "safe";
-}
-
-function scoreBadge(score, badgeLabel = "Score") {
-  const value = Number(score || 0);
-  return `
-    <div class="score-badge ${scoreClass(value)}">
-      <span>${badgeLabel}</span>
-      <strong>${value}</strong>
-      <small>/100</small>
-    </div>
-  `;
 }
 
 function cssVar(name) {
@@ -144,7 +126,6 @@ function renderEvidence(rows) {
         <strong>${row.final_classification || "Decision"}</strong>
         <span>${row.final_action || "none"}</span>
       </div>
-      ${scoreBadge(row.final_score ?? 0, "Final")}
       <div class="evidence-chain">
         <div>
           <span>Alert</span>
@@ -187,7 +168,7 @@ async function refresh() {
     const rows = await getJson(`/api/decision-evidence?${query.toString()}`);
     currentRows = rows;
     els.total.textContent = rows.length;
-    els.maxScore.textContent = rows.reduce((max, row) => Math.max(max, Number(row.final_score || 0)), 0);
+    els.typeCount.textContent = new Set(rows.map((row) => row.detection_type || "unknown")).size;
     els.reviewCount.textContent = rows.filter((row) => {
       const text = `${row.final_classification || ""} ${row.final_action || ""} ${row.review_status || ""}`.toLowerCase();
       return text.includes("human") || text.includes("review") || text.includes("pending");

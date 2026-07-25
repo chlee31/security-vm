@@ -63,8 +63,6 @@ const els = {
   eventOptions: document.querySelector("#scenario-event-options"),
   caseOptions: document.querySelector("#case-uid-options"),
   eventLabelList: document.querySelector("#event-label-list"),
-  scoringCases: document.querySelector("#scoring-case-list"),
-  scoringRunCount: document.querySelector("#scoring-run-count"),
   modelRunCount: document.querySelector("#model-run-count"),
   modelRunList: document.querySelector("#model-run-list")
 };
@@ -145,8 +143,7 @@ function renderOverview() {
     ["Scenarios", data.scenarios || 0, "Manual ground truth"],
     ["Linked Cases", data.case_links || 0, "Operational cases referenced"],
     ["Event Labels", data.event_labels || 0, "Membership decisions"],
-    ["Model Runs", data.comparison_runs || 0, "Existing comparisons"],
-    ["Scoring Runs", data.scoring_runs || 0, "Evaluation only"]
+    ["Model Runs", data.comparison_runs || 0, "Existing comparisons"]
   ];
   els.metrics.innerHTML = metrics.map(([name, value, note]) => `
     <article class="metric">
@@ -426,17 +423,6 @@ function updateActualCase() {
   els.eventActualCaseUid.value = candidate?.actual_case_uid || "";
 }
 
-function renderScoring() {
-  els.scoringRunCount.textContent = state.overview?.scoring_runs || 0;
-  els.scoringCases.innerHTML = state.cases.slice(0, 100).map((item) => `
-    <a class="workbook-row" href="/investigation?case=${encodeURIComponent(item.case_uid)}" target="_blank" rel="noopener">
-      <div class="row tight"><strong>${escapeHtml(item.case_uid)}</strong><span>${escapeHtml(item.final_score ?? "pending")}</span></div>
-      <p>${escapeHtml(label(item.detection_type))} · ${escapeHtml(item.final_classification || "Pending")}</p>
-      <small>${localDateTime(item.first_seen)} · ${escapeHtml(label(item.sensor_state))}</small>
-    </a>
-  `).join("") || `<div class="empty">No frozen cases are available.</div>`;
-}
-
 function renderModels() {
   els.modelRunCount.textContent = `${state.comparisons.length} stored run${state.comparisons.length === 1 ? "" : "s"}`;
   els.modelRunList.innerHTML = state.comparisons.map((run) => `
@@ -457,7 +443,6 @@ async function refreshFoundation() {
   renderOverview();
   renderScenarioList();
   renderCaseOptions();
-  renderScoring();
   if (state.view === "correlation") await renderCorrelation();
 }
 
