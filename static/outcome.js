@@ -135,7 +135,7 @@ function renderEvidence(rows) {
         <div>
           <span>Detection</span>
           <strong>${label(row.detection_type)}</strong>
-          <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
+          <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports</small>
         </div>
         <div>
           <span>AI Model</span>

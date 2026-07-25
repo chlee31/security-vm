@@ -45,8 +45,6 @@ class SensorFusionTests(unittest.TestCase):
             "unique_dest_ports": 1,
             "unique_dest_hosts": 1,
             "time_window_seconds": 60,
-            "mitre_id": None,
-            "mitre_name": None,
             "status": "correlated",
         }
         detection.update(overrides)

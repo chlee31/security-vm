@@ -1,3 +1,5 @@
+"""Load, merge, validate, and save Security VM YAML configuration."""
+
 from pathlib import Path
 from copy import deepcopy
 
@@ -88,6 +90,7 @@ DEFAULT_CONFIG = {
 
 
 def load_config(path="config.yaml"):
+    """Load YAML over safe defaults and normalize historical key names."""
     config_path = Path(path)
     if not config_path.exists():
         return deepcopy(DEFAULT_CONFIG)
@@ -98,11 +101,13 @@ def load_config(path="config.yaml"):
 
 
 def save_config(config, path="config.yaml"):
+    """Write current configuration while preserving readable YAML structure."""
     with Path(path).open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
 
 
 def deep_merge(base, override):
+    """Recursively merge dictionaries without mutating either input."""
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             base[key] = deep_merge(base[key], value)
@@ -112,6 +117,7 @@ def deep_merge(base, override):
 
 
 def normalize_legacy_config_keys(config):
+    """Map older ``ollama`` settings into the current ``ai_model`` section."""
     legacy_ai = config.pop("olla" + "ma", None)
     if legacy_ai and "ai_model" not in config:
         config["ai_model"] = legacy_ai

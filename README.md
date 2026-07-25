@@ -21,12 +21,12 @@ Security VM currently provides:
 - qualitative AI-assisted classification, evidence summaries, and human review controls;
 - sequential three-model comparison using one frozen evidence package.
 
-The project is an **analysis platform**. It is not an endpoint agent, decrypted-payload inspection system, production firewall, autonomous response engine, or replacement for analyst judgment. The intended deployment uses copied traffic from a SPAN or mirror port. An optional routing wizard remains available only for isolated development labs.
+The project is an **analysis platform**. It is not an endpoint agent, decrypted-payload inspection system, production firewall, autonomous response engine, or replacement for analyst judgment. The intended deployment uses copied traffic from a SPAN or mirror port.
 
 ## Workflow
 
 ```text
-Mirrored or lab-routed network traffic
+Mirrored network traffic
              |
              v
       Suricata + Zeek
@@ -53,7 +53,10 @@ Mirrored or lab-routed network traffic
  Optional sequential three-model comparison
 ```
 
-See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed data flow.
+See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed
+data flow and [CODE_WALKTHROUGH.md](docs/CODE_WALKTHROUGH.md) for a
+module-by-module explanation of prompt construction, context budgeting, request
+auditing, and response handling.
 
 ## AI Data Transfer: Prompt, Not File Upload
 
@@ -347,11 +350,12 @@ Then test from Security VM:
 curl http://YOUR_TAILSCALE_IP:11434/api/tags
 ```
 
-## Development Lab Routing
+## Network Placement
 
-The intended real deployment is passive monitoring from a switch SPAN/mirror port. Bootstrap retains an optional **development-only** routing wizard so isolated test VMs can send observable traffic through the Security VM. It configures netplan, IPv4 forwarding, and NAT only when explicitly selected.
-
-Do not describe this lab arrangement as the product architecture. In production, the monitoring interface should receive copied traffic and should not become the organization's gateway or firewall.
+Security VM is a passive monitoring system. Connect its monitoring interface to
+a switch SPAN or mirror destination and configure Suricata and Zeek to observe
+that interface. Bootstrap does not configure routing, NAT, packet filtering, or
+client gateways.
 
 ## Testing
 

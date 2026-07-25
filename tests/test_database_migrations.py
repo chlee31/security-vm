@@ -7,7 +7,7 @@ from app.database import init_db
 
 
 class DatabaseMigrationTests(unittest.TestCase):
-    def test_new_database_omits_retired_packet_capture_schema(self):
+    def test_new_database_omits_retired_feature_schema(self):
         conn = init_db(":memory:")
         try:
             tables = {
@@ -17,6 +17,9 @@ class DatabaseMigrationTests(unittest.TestCase):
                 ).fetchall()
             }
             self.assertNotIn("incident_evidence", tables)
+            self.assertNotIn("firewall_blocks", tables)
+            self.assertNotIn("allowlist", tables)
+            self.assertNotIn("notification_events", tables)
             self.assertTrue(
                 {
                     "evaluation_scenarios",
@@ -31,8 +34,14 @@ class DatabaseMigrationTests(unittest.TestCase):
             report_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(ai_reports)").fetchall()
             }
+            detection_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(detections)").fetchall()
+            }
             self.assertNotIn("pcap_point", alert_columns)
             self.assertFalse(any(column.startswith("pcap_") for column in report_columns))
+            self.assertNotIn("mitre_id", detection_columns)
+            self.assertNotIn("mitre_name", detection_columns)
         finally:
             conn.close()
 
@@ -55,6 +64,48 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "SELECT pcap_path FROM incident_evidence WHERE id = 1"
                 ).fetchone()
                 self.assertEqual(row["pcap_path"], "/legacy/file.pcap")
+            finally:
+                migrated.close()
+
+    def test_retired_response_history_is_preserved_but_not_recreated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "legacy-response.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "CREATE TABLE firewall_blocks (id INTEGER PRIMARY KEY, ip_address TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO firewall_blocks (id, ip_address) VALUES (1, '203.0.113.10')"
+            )
+            conn.execute(
+                "CREATE TABLE allowlist (id INTEGER PRIMARY KEY, ip_address TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO allowlist (id, ip_address) VALUES (1, '198.51.100.20')"
+            )
+            conn.execute(
+                "CREATE TABLE notification_events (id INTEGER PRIMARY KEY, status TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO notification_events (id, status) VALUES (1, 'sent')"
+            )
+            conn.commit()
+            conn.close()
+
+            migrated = init_db(db_path)
+            try:
+                row = migrated.execute(
+                    "SELECT ip_address FROM firewall_blocks WHERE id = 1"
+                ).fetchone()
+                self.assertEqual(row["ip_address"], "203.0.113.10")
+                allowlist_row = migrated.execute(
+                    "SELECT ip_address FROM allowlist WHERE id = 1"
+                ).fetchone()
+                self.assertEqual(allowlist_row["ip_address"], "198.51.100.20")
+                notification_row = migrated.execute(
+                    "SELECT status FROM notification_events WHERE id = 1"
+                ).fetchone()
+                self.assertEqual(notification_row["status"], "sent")
             finally:
                 migrated.close()
 

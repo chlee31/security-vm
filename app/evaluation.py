@@ -1,3 +1,9 @@
+"""Evaluation Lab helpers for labelled correlation and model-quality studies.
+
+Evaluation ratings measure experimental answer quality and do not influence
+live alert classification or response.
+"""
+
 import csv
 import io
 import ipaddress

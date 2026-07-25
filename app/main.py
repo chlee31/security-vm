@@ -1,3 +1,11 @@
+"""Command-line entry point and orchestration for the Security VM pipeline.
+
+The ingest path normalizes sensor records, correlates them into cases, gathers
+bounded evidence, requests an AI explanation, stores a complete audit, applies
+Python response policy, and optionally performs post-classification
+VirusTotal verification.
+"""
+
 import argparse
 import json
 import os
@@ -77,6 +85,11 @@ ERROR_MARKERS = (
 
 
 def compact_threat_intel(conn, config, ip_address):
+    """Build bounded pre-AI reputation evidence for one IP address.
+
+    Only enabled bulk/cached providers are considered. Provider-specific status
+    is included so the model can distinguish no match from a disabled source.
+    """
     if not ip_address:
         return None
     active_sources = {
@@ -97,6 +110,7 @@ def compact_threat_intel(conn, config, ip_address):
 
 
 def alert_observables(alert):
+    """Extract domains, URLs, and hashes from one stored Suricata EVE record."""
     try:
         event = json.loads(alert.get("raw_json") or "{}")
     except (TypeError, ValueError):
@@ -134,6 +148,7 @@ def alert_observables(alert):
 
 
 def compact_observable_threat_intel(conn, config, alert):
+    """Match non-IP observables against enabled local threat-intelligence data."""
     active_sources = {
         source for source in PRE_AI_PROVIDERS
         if provider_config(config, source)["enabled"]
@@ -164,6 +179,7 @@ def compact_observable_threat_intel(conn, config, alert):
 
 
 def record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_context):
+    """Record exactly which threat-intelligence matches entered the AI package."""
     threat_intel = evidence_context.get("threat_intel") or {}
     for side in ("src_ip", "dest_ip"):
         block = threat_intel.get(side) or {}
@@ -223,6 +239,14 @@ def record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_cont
 
 
 def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=None):
+    """Assemble the selected evidence that will later be embedded in the prompt.
+
+    This function joins normalized findings, bounded Zeek context, recurrence,
+    and pre-AI threat intelligence. Raw sensor rows stay in SQLite and are
+    represented here by normalized fields, IDs, hashes, and provenance.
+    """
+    # ``sensor_findings`` is the common Suricata/Zeek view for the case. The
+    # original records remain linked through source_table and sensor_event_id.
     findings = sensor_findings_for_detection(conn, detection_id) if detection_id else []
     findings = [
         {
@@ -248,12 +272,17 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
         for item in findings
     ]
     correlation_config = config.get("correlation", {})
+    # The database may find many related Zeek rows. The normal context query can
+    # inspect up to the configured limit, while only the eight most relevant
+    # normalized rows are included in the AI package.
     zeek_context = zeek_context_for_detection(
         conn,
         detection_id,
         seconds=int(correlation_config.get("zeek_context_window_seconds", 120)),
         limit=int(correlation_config.get("zeek_context_limit", 100)),
     ) if detection_id else {"items": [], "summary": {}}
+    # Domains, certificates, hashes, and IPs extracted from those selected Zeek
+    # records are matched against the same enabled pre-AI providers.
     zeek_observables = zeek_context_threat_intel(
         conn,
         config,
@@ -307,6 +336,7 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
 
 
 def ensure_ai_report_metadata(config, alert, report):
+    """Backfill model/run identity when a compatibility response omitted it."""
     metadata = model_metadata(config)
     for key, value in metadata.items():
         if not report.get(key):
@@ -317,16 +347,29 @@ def ensure_ai_report_metadata(config, alert, report):
 
 
 def apply_asset_context(detection, asset_context):
+    """Attach registered-IP role context to a detection before prompt building."""
     detection["asset_context"] = asset_context
     return detection
 
 
 def attach_asset_context(detection, asset_context):
+    """Compatibility alias for attaching registered-IP role context."""
     detection["asset_context"] = asset_context
     return detection
 
 
 def assess_detection(conn, config_path, alert, detection, alert_id, detection_id):
+    """Run the complete initial assessment for one correlated detection.
+
+    Processing order is intentional:
+
+    1. Reload runtime model settings and gather bounded evidence.
+    2. Record pre-AI threat-intelligence usage.
+    3. Ask the model, retaining a failed-request audit when unavailable.
+    4. Store the report and exact request audit before applying response policy.
+    5. Let Python choose the final qualitative action.
+    6. Use VirusTotal only as post-AI verification when policy permits.
+    """
     runtime_config = load_config(config_path)
     evidence_context = build_ai_evidence_context(
         conn,
@@ -337,6 +380,8 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
     )
     findings = sensor_findings_for_detection(conn, detection_id)
     record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_context)
+    # Model failure is converted to Human Review Required; sensor evidence is
+    # never discarded simply because the explanatory service is unavailable.
     try:
         ai_report = ask_ai_model(
             runtime_config,
@@ -399,6 +444,9 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
                 "model_run_id": ai_report.get("model_run_id"),
             },
         )
+    # Store the human-readable report and the authoritative request audit as
+    # separate records. The model's evidence acknowledgement is explanatory;
+    # Python's captured prompt, hashes, and source map are delivery proof.
     ai_report_id = insert_ai_report(conn, detection_id, ai_report)
     upsert_ai_run_audit(
         conn,
@@ -416,9 +464,12 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             "sensor_findings": [item.get("event_uid") for item in findings],
         },
     )
+    # Python retains final control and can force review for disputed sensors.
     response = decide(conn, runtime_config, alert, detection, ai_report)
     response["detection_id"] = detection_id
     try:
+        # VirusTotal is deliberately after classification and cannot add or
+        # subtract points because this workflow has no operational score.
         ai_report["virustotal_verification"] = verify_dangerous_with_virustotal(
             conn,
             runtime_config,
@@ -461,6 +512,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
 
 
 def run_ingest(config_path):
+    """Continuously ingest new Suricata alerts and assess resulting cases."""
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     correlator = Correlator(config)
@@ -943,8 +995,6 @@ def run_ai_backfill(config_path, limit):
             "unique_dest_ports": row.get("unique_dest_ports"),
             "unique_dest_hosts": row.get("unique_dest_hosts"),
             "time_window_seconds": row.get("time_window_seconds"),
-            "mitre_id": row.get("mitre_id"),
-            "mitre_name": row.get("mitre_name"),
             "status": row.get("status"),
         }
         detection = attach_asset_context(detection, asset_context_for_alert(conn, alert))

@@ -116,7 +116,7 @@ assets:
     laptop: 10
     desktop: 8
     server: 10
-    firewall_router: 10
+    network_router: 10
     security_appliance: 10
     printer: 5
     camera_iot: 6

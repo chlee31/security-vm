@@ -1,3 +1,10 @@
+"""Run sequential multi-model assessments and preserve comparison provenance.
+
+Each configured profile receives the same prepared case context one at a time.
+The resulting reports are stored separately so analysts can compare explanations
+without concurrent model loads exhausting GPU memory.
+"""
+
 from copy import deepcopy
 
 from app.ai_client import PROMPT_VERSION, ask_ai_model, build_prompt, text_sha256
@@ -13,6 +20,7 @@ from app.database import (
 
 
 def _comparison_profiles(conn, config, requested_uids=None):
+    """Select up to three active profiles in a deterministic order."""
     configured = requested_uids or config.get("ai_comparison", {}).get("profile_uids") or []
     uids = []
     for uid in configured:
@@ -32,6 +40,7 @@ def _comparison_profiles(conn, config, requested_uids=None):
 
 
 def _config_for_profile(config, profile):
+    """Clone runtime configuration and substitute one comparison profile."""
     runtime = deepcopy(config)
     ai_model = runtime.setdefault("ai_model", {})
     ai_model.update(
@@ -47,6 +56,11 @@ def _config_for_profile(config, profile):
 
 
 def run_model_comparison(conn, config, case_uid, requested_uids=None):
+    """Run identical case evidence through selected models sequentially.
+
+    A single prompt hash is recorded for the comparison so differences can be
+    attributed to model behavior rather than different evidence packages.
+    """
     profiles = _comparison_profiles(conn, config, requested_uids)
     workspace, alert, detection, evidence, _findings = prepare_case_context(
         conn,

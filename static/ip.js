@@ -142,7 +142,7 @@ function renderDetections(rows) {
         <div>
           <span>Detection</span>
           <strong>${escapeHtml(label(row.detection_type))}</strong>
-          <small>${Number(row.alert_count || 0)} alerts · ${Number(row.unique_dest_ports || 0)} ports · ${escapeHtml(row.mitre_id || "no MITRE")}</small>
+          <small>${Number(row.alert_count || 0)} alerts · ${Number(row.unique_dest_ports || 0)} ports</small>
         </div>
         <div>
           <span>AI Model</span>

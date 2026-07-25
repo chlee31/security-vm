@@ -18,26 +18,6 @@ const els = {
   comparisonProfiles: document.querySelector("#ai-comparison-profiles"),
   comparisonStatus: document.querySelector("#ai-comparison-status"),
   testAiModel: document.querySelector("#test-ai-model-admin"),
-  systemModeForm: document.querySelector("#system-mode-form"),
-  systemModeSelect: document.querySelector("#system-mode-select"),
-  systemModeDescription: document.querySelector("#system-mode-description"),
-  systemModeStatus: document.querySelector("#system-mode-status"),
-  firewallTimeout: document.querySelector("#firewall-timeout"),
-  firewallCommands: document.querySelector("#firewall-commands"),
-  firewallCandidates: document.querySelector("#firewall-candidates"),
-  firewallBlocks: document.querySelector("#firewall-blocks"),
-  firewallHistory: document.querySelector("#firewall-history"),
-  emailForm: document.querySelector("#email-notification-form"),
-  emailEnabled: document.querySelector("#email-enabled"),
-  emailSender: document.querySelector("#email-sender"),
-  emailAppPassword: document.querySelector("#email-app-password"),
-  emailPasswordStatus: document.querySelector("#email-password-status"),
-  emailRecipients: document.querySelector("#email-recipients"),
-  emailCooldown: document.querySelector("#email-cooldown"),
-  emailDashboardUrl: document.querySelector("#email-dashboard-url"),
-  emailStatus: document.querySelector("#email-notification-status"),
-  emailTest: document.querySelector("#test-email-notifications"),
-  notificationEvents: document.querySelector("#notification-events"),
   assetForm: document.querySelector("#admin-asset-form"),
   assetId: document.querySelector("#admin-asset-id"),
   assetIp: document.querySelector("#admin-asset-ip"),
@@ -61,9 +41,9 @@ const els = {
   tabPanels: Array.from(document.querySelectorAll("[data-admin-tab-panel]"))
 };
 
-let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", comparisonProfileUids: [], modes: [], threatIntelProviders: [] };
+let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", comparisonProfileUids: [], threatIntelProviders: [] };
 const initialTab = window.location.hash.replace("#", "");
-let activeAdminTab = initialTab === "incident-response" ? "incident" : initialTab === "threat-intel" ? "threat-intel" : "settings";
+let activeAdminTab = initialTab === "threat-intel" ? "threat-intel" : "settings";
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -110,7 +90,7 @@ function setStatus(element, kind, text) {
 }
 
 function setAdminTab(tabName, updateHash = true) {
-  activeAdminTab = ["settings", "incident", "threat-intel"].includes(tabName) ? tabName : "settings";
+  activeAdminTab = ["settings", "threat-intel"].includes(tabName) ? tabName : "settings";
   els.tabButtons.forEach((button) => {
     const selected = button.dataset.adminTabButton === activeAdminTab;
     button.classList.toggle("active", selected);
@@ -120,7 +100,7 @@ function setAdminTab(tabName, updateHash = true) {
     panel.hidden = panel.dataset.retired === "true" || panel.dataset.adminTabPanel !== activeAdminTab;
   });
   if (updateHash) {
-    const hash = activeAdminTab === "incident" ? "#incident-response" : activeAdminTab === "threat-intel" ? "#threat-intel" : "#settings";
+    const hash = activeAdminTab === "threat-intel" ? "#threat-intel" : "#settings";
     history.replaceState(null, "", hash);
   }
 }
@@ -316,181 +296,6 @@ function renderAssets(payload) {
   `).join("") || `<div class="empty">No IP addresses registered yet.</div>`;
 }
 
-function renderSystemControls(settings) {
-  const system = settings.system || {};
-  const firewall = settings.firewall || {};
-  state.modes = system.available_modes || [];
-  const mode = system.mode || "alert_only";
-  els.systemModeSelect.value = mode;
-  const selected = state.modes.find((item) => item.value === mode);
-  els.systemModeDescription.textContent = selected?.description || "Select how the system handles dangerous decisions.";
-  els.firewallTimeout.value = `${firewall.block_timeout_seconds || 3600} seconds`;
-  els.firewallCommands.innerHTML = `
-    ${renderFirewallRuntime(firewall.runtime || {})}
-    <div class="list-item">
-      <div class="row tight">
-        <strong>firewalld setup</strong>
-        <span>${firewall.provider || "firewalld"}</span>
-      </div>
-      <p>Run these on the Security VM before using Prevention mode.</p>
-      ${(firewall.setup_commands || []).map((command) => `
-        <code class="command-line">${command}</code>
-        <button class="text-button" type="button" data-copy-command="${encodeURIComponent(command)}">Copy Command</button>
-      `).join("")}
-    </div>
-  `;
-  renderFirewallCandidates(firewall.candidates || []);
-  renderFirewallBlocks(firewall.blocks || []);
-  renderFirewallHistory(firewall.history || []);
-}
-
-function renderNotifications(settings) {
-  const notifications = settings.notifications || {};
-  const email = notifications.email || {};
-  els.emailEnabled.checked = Boolean(email.enabled);
-  els.emailSender.value = email.sender || "";
-  els.emailAppPassword.value = "";
-  if (email.app_password_configured) {
-    const lengthText = email.app_password_length ? ` Saved length: ${email.app_password_length}/16.` : "";
-    els.emailPasswordStatus.textContent = `App password saved. Leave blank to keep it.${lengthText}`;
-  } else {
-    els.emailPasswordStatus.textContent = "No app password saved.";
-  }
-  els.emailRecipients.value = (email.recipients || []).join("\n");
-  els.emailCooldown.value = email.cooldown_minutes ?? 15;
-  els.emailDashboardUrl.value = email.dashboard_base_url || "";
-  renderNotificationEvents(notifications.events || []);
-}
-
-function renderNotificationEvents(events) {
-  els.notificationEvents.innerHTML = `
-    <div class="list-item">
-      <div class="row tight">
-        <strong>Email notification history</strong>
-        <span>${events.length}</span>
-      </div>
-      <p>Sent, failed, and skipped Gmail alert attempts.</p>
-    </div>
-    ${events.map((event) => `
-      <div class="list-item notification-event ${event.status || ""}">
-        <div class="row tight">
-          <strong>${event.status || "unknown"}</strong>
-          <span>${event.created_at || "unknown time"}</span>
-        </div>
-        <p>${event.subject || "No subject"}</p>
-        <small>${event.recipient || "No recipient"}</small>
-        ${event.error ? `<small>${event.error}</small>` : ""}
-      </div>
-    `).join("") || `<div class="empty">No notification attempts yet.</div>`}
-  `;
-}
-
-function renderFirewallRuntime(runtime) {
-  const rules = runtime.rich_rules || [];
-  const permissionNeeded = (runtime.errors || []).some((error) => String(error).includes("password is required"));
-  return `
-    <div class="list-item firewall-runtime ${runtime.running ? "active" : "inactive"}">
-      <div class="row tight">
-        <strong>firewalld status</strong>
-        <span class="status-pill ${runtime.running ? "active" : "inactive"}">${runtime.running ? "running" : "not running"}</span>
-      </div>
-      <p>Service ${runtime.service_state || "unknown"} · firewall-cmd ${runtime.firewall_state || "unknown"} · ${runtime.rule_count || 0} rich rules</p>
-      ${permissionNeeded ? `<small>Permission needed: run the one-time sudoers command below so the dashboard can use firewall-cmd without repeated password prompts.</small>` : ""}
-      ${rules.length ? `
-        <div class="mini-list dense">
-          ${rules.map((rule) => `<code class="command-line">${rule}</code>`).join("")}
-        </div>
-      ` : `<small>No active rich rules reported by firewalld.</small>`}
-      ${(runtime.errors || []).map((error) => `<small>${error}</small>`).join("")}
-    </div>
-  `;
-}
-
-function renderFirewallHistory(history) {
-  els.firewallHistory.innerHTML = `
-    <div class="list-item">
-      <div class="row tight">
-        <strong>Firewall decision history</strong>
-        <span>${history.length}</span>
-      </div>
-      <p>Released blocks, marked-safe decisions, and previous enforcement attempts.</p>
-    </div>
-    ${history.map((item) => `
-      <div class="list-item firewall-history-item ${item.history_type === "marked_safe" ? "safe" : item.status === "released" ? "released" : "active"}">
-        <div class="row tight">
-          <strong>${item.ip_address || "unknown IP"}</strong>
-          <span>${item.history_type === "marked_safe" ? "marked safe" : item.status || "history"}</span>
-        </div>
-        <p>${label(item.detection_type)} · ${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</p>
-        <small>${item.signature || item.reason || "No signature recorded"}</small>
-        <small>${item.direction || "n/a"} · created ${item.created_at || "unknown"}${item.released_at ? ` · released ${item.released_at}` : ""}</small>
-        ${item.history_type === "marked_safe" && Number(item.active_allowlist_count || 0) > 0 ? `
-          <div class="asset-admin-actions">
-            <button class="text-button danger-button" type="button" data-remove-trusted-ip="${item.ip_address}">
-              Remove Trusted Setting
-            </button>
-          </div>
-        ` : item.history_type === "marked_safe" ? `<small>Trusted setting not active.</small>` : ""}
-        ${item.release_reason ? `<small>${item.release_reason}</small>` : ""}
-      </div>
-    `).join("") || `<div class="empty">No firewall history yet.</div>`}
-  `;
-}
-
-function renderFirewallCandidates(candidates) {
-  els.firewallCandidates.innerHTML = `
-    <div class="list-item">
-      <div class="row tight">
-        <strong>Dangerous detections awaiting enforcement</strong>
-        <span>${candidates.length}</span>
-      </div>
-      <p>Detection mode queues Dangerous decisions here so an analyst can enforce or mark safe.</p>
-    </div>
-    ${candidates.map((candidate) => `
-      <div class="list-item firewall-candidate">
-        <div class="row tight">
-          <strong>${candidate.target_ip}</strong>
-          <span>${candidate.final_classification || "Dangerous"}</span>
-        </div>
-        <p>${label(candidate.detection_type)} · ${candidate.src_ip || "unknown"} -> ${candidate.dest_ip || "unknown"}</p>
-        <small>${candidate.signature || "No signature recorded"}</small>
-        <small>${candidate.final_classification} · ${candidate.final_action} · ${candidate.response_created_at || "unknown time"}</small>
-        <div class="asset-admin-actions">
-          <button class="text-button danger-button" type="button" data-enforce-firewall="${candidate.response_id}">Enforce Block</button>
-          <button class="text-button" type="button" data-safe-candidate="${candidate.response_id}">Mark Safe</button>
-        </div>
-      </div>
-    `).join("") || `<div class="empty">No dangerous detections are waiting for manual enforcement.</div>`}
-  `;
-}
-
-function renderFirewallBlocks(blocks) {
-  els.firewallBlocks.innerHTML = `
-    <div class="list-item">
-      <div class="row tight">
-        <strong>Active firewall blocks</strong>
-        <span>${blocks.length}</span>
-      </div>
-      <p>Use unblock for a one-time release, or mark safe to release and add an allowlist entry.</p>
-    </div>
-    ${blocks.map((block) => `
-      <div class="list-item firewall-block">
-        <div class="row tight">
-          <strong>${block.ip_address}</strong>
-          <span>${block.status}</span>
-        </div>
-        <p>${label(block.detection_type)} · ${block.src_ip || "unknown"} -> ${block.dest_ip || "unknown"}</p>
-        <small>${block.signature || block.reason || "No signature recorded"}</small>
-        <small>${block.direction || "source"} · expires ${block.expires_at || "when firewalld timeout ends"}</small>
-        <div class="asset-admin-actions">
-          <button class="text-button" type="button" data-unblock-firewall="${block.id}">Unblock</button>
-          <button class="text-button" type="button" data-safe-firewall="${block.id}">Mark Safe</button>
-        </div>
-      </div>
-    `).join("") || `<div class="empty">No active firewalld blocks.</div>`}
-  `;
-}
-
 function renderTools(tools) {
   els.tools.innerHTML = tools.map((tool) => `
     <div class="list-item tool-item ${tool.status || (tool.installed ? "ready" : "missing")}">
@@ -623,8 +428,6 @@ async function refresh() {
     const settings = await getJson("/api/admin/settings");
     state.network = settings.network || {};
     renderAiModel(settings);
-    renderSystemControls(settings);
-    renderNotifications(settings);
     renderAssets(settings.assets || {});
     renderThreatIntel(settings.threat_intel || {});
     renderTools(settings.tools || []);
@@ -694,92 +497,6 @@ async function deleteAsset(assetId) {
   if (!confirmed) return;
   await sendJson(`/api/admin/assets/${assetId}`, "DELETE");
   if (els.assetId.value === String(assetId)) resetAssetForm();
-  await refresh();
-}
-
-async function saveSystemMode() {
-  const mode = els.systemModeSelect.value;
-  await sendJson("/api/admin/system-mode", "POST", { mode });
-  setStatus(els.systemModeStatus, mode === "prevention" ? "warn" : "ok", `System mode saved as ${mode}. The ingest loop reloads config before each decision.`);
-  await refresh();
-}
-
-async function unblockFirewall(blockId) {
-  const analyst = window.prompt("Analyst name for unblock:", "admin") || "admin";
-  const reason = window.prompt("Reason for unblock:", "Manual unblock from admin console") || "Manual unblock from admin console";
-  const result = await sendJson(`/api/admin/firewall-blocks/${blockId}/unblock`, "POST", { analyst_name: analyst, reason });
-  window.alert(`Unblock result: ${result.status}`);
-  await refresh();
-}
-
-async function markFirewallSafe(blockId) {
-  const analyst = window.prompt("Analyst name for safe decision:", "admin") || "admin";
-  const reason = window.prompt("Why is this IP safe?", "Trusted device or approved traffic") || "Trusted device or approved traffic";
-  const result = await sendJson(`/api/admin/firewall-blocks/${blockId}/mark-safe`, "POST", {
-    analyst_name: analyst,
-    reason,
-    safe_duration_hours: 24 * 365
-  });
-  window.alert(`Marked safe. Unblock result: ${result.unblock_status}`);
-  await refresh();
-}
-
-async function enforceFirewallCandidate(responseId) {
-  const analyst = window.prompt("Analyst name for enforcement:", "admin") || "admin";
-  const reason = window.prompt("Reason for enforcing this block:", "Manual enforcement from detection queue") || "Manual enforcement from detection queue";
-  const result = await sendJson(`/api/admin/firewall-candidates/${responseId}/enforce`, "POST", { analyst_name: analyst, reason });
-  window.alert(`Enforcement result: ${result.status}`);
-  await refresh();
-}
-
-async function markFirewallCandidateSafe(responseId) {
-  const analyst = window.prompt("Analyst name for safe decision:", "admin") || "admin";
-  const reason = window.prompt("Why should this traffic be allowed?", "Trusted device or approved traffic") || "Trusted device or approved traffic";
-  const result = await sendJson(`/api/admin/firewall-candidates/${responseId}/mark-safe`, "POST", {
-    analyst_name: analyst,
-    reason,
-    safe_duration_hours: 24 * 365
-  });
-  window.alert(`Candidate marked ${result.status}.`);
-  await refresh();
-}
-
-async function removeTrustedIp(ipAddress) {
-  const analyst = window.prompt("Analyst name for removing trust:", "admin") || "admin";
-  const reason = window.prompt("Why remove this trusted setting?", "No longer approved or created by mistake") || "No longer approved or created by mistake";
-  const confirmed = window.confirm(`Remove active trusted/allowlist setting for ${ipAddress}? Firewall history will remain for audit.`);
-  if (!confirmed) return;
-  const result = await sendJson(`/api/admin/trusted-ip/${encodeURIComponent(ipAddress)}`, "DELETE", {
-    analyst_name: analyst,
-    reason
-  });
-  window.alert(`Removed ${result.removed_entries || 0} trusted setting(s) for ${ipAddress}.`);
-  await refresh();
-}
-
-function emailNotificationPayloadFromForm() {
-  return {
-    enabled: els.emailEnabled.checked,
-    sender: els.emailSender.value,
-    app_password: els.emailAppPassword.value,
-    recipients: els.emailRecipients.value,
-    cooldown_minutes: Number(els.emailCooldown.value || 15),
-    dashboard_base_url: els.emailDashboardUrl.value
-  };
-}
-
-async function saveEmailNotifications() {
-  const payload = emailNotificationPayloadFromForm();
-  const result = await sendJson("/api/admin/notifications/email", "POST", payload);
-  setStatus(els.emailStatus, "ok", `Gmail alerts ${result.email.enabled ? "enabled" : "disabled"}.`);
-  await refresh();
-}
-
-async function testEmailNotifications() {
-  const payload = emailNotificationPayloadFromForm();
-  await sendJson("/api/admin/notifications/email", "POST", payload);
-  const result = await sendJson("/api/admin/notifications/email/test", "POST", payload);
-  setStatus(els.emailStatus, "ok", `Test email sent to ${(result.recipients || []).join(", ")}.`);
   await refresh();
 }
 
@@ -895,38 +612,6 @@ els.newProfile.addEventListener("click", async () => {
 
 els.comparisonForm.addEventListener("submit", saveComparisonProfiles);
 
-els.systemModeForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    await saveSystemMode();
-  } catch (error) {
-    setStatus(els.systemModeStatus, "error", error.message);
-  }
-});
-
-els.emailForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    await saveEmailNotifications();
-  } catch (error) {
-    setStatus(els.emailStatus, "error", error.message);
-  }
-});
-
-els.emailTest.addEventListener("click", async () => {
-  try {
-    await testEmailNotifications();
-  } catch (error) {
-    setStatus(els.emailStatus, "error", error.message);
-    await refresh().catch(() => {});
-  }
-});
-
-els.systemModeSelect.addEventListener("change", () => {
-  const selected = state.modes.find((item) => item.value === els.systemModeSelect.value);
-  els.systemModeDescription.textContent = selected?.description || "Select how the system handles dangerous decisions.";
-});
-
 els.assetForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const assetId = els.assetId.value;
@@ -1035,26 +720,6 @@ document.addEventListener("click", (event) => {
   const deleteId = event.target.dataset.deleteAsset;
   if (deleteId) {
     deleteAsset(deleteId).catch((error) => window.alert(error.message));
-  }
-  const unblockId = event.target.dataset.unblockFirewall;
-  if (unblockId) {
-    unblockFirewall(unblockId).catch((error) => window.alert(error.message));
-  }
-  const safeId = event.target.dataset.safeFirewall;
-  if (safeId) {
-    markFirewallSafe(safeId).catch((error) => window.alert(error.message));
-  }
-  const enforceId = event.target.dataset.enforceFirewall;
-  if (enforceId) {
-    enforceFirewallCandidate(enforceId).catch((error) => window.alert(error.message));
-  }
-  const safeCandidateId = event.target.dataset.safeCandidate;
-  if (safeCandidateId) {
-    markFirewallCandidateSafe(safeCandidateId).catch((error) => window.alert(error.message));
-  }
-  const trustedIp = event.target.dataset.removeTrustedIp;
-  if (trustedIp) {
-    removeTrustedIp(trustedIp).catch((error) => window.alert(error.message));
   }
   const editProfileUid = event.target.dataset.editAiProfile;
   if (editProfileUid) {

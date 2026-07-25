@@ -92,7 +92,7 @@ class ZeekTelemetryTests(unittest.TestCase):
         self.assertEqual(summary["dns"]["top_queries"][0]["query"], "example.test")
         self.assertEqual(summary["http"]["top_hosts"][0]["host"], "example.test")
 
-    def test_case_context_exposes_allowlisted_log_details(self):
+    def test_case_context_exposes_bounded_log_details(self):
         self.conn.execute(
             """
             INSERT INTO detections (

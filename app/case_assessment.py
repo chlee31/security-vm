@@ -1,3 +1,10 @@
+"""Rebuild stored case evidence for analyst-requested AI reassessment.
+
+Unlike initial ingestion, reassessment reads an existing case workspace from
+SQLite, includes prior analyst and VirusTotal evidence when available, records
+a new independent AI audit, and never overwrites the historical assessment.
+"""
+
 import json
 
 from app.ai_client import ask_ai_model
@@ -27,6 +34,7 @@ from app.zeek_normalizer import compact_zeek_context_events
 
 
 def _active_sources(config):
+    """Return enabled pre-AI providers, explicitly excluding VirusTotal."""
     return {
         source
         for source in PRE_AI_PROVIDERS
@@ -35,6 +43,7 @@ def _active_sources(config):
 
 
 def _ip_intel(conn, config, ip_address):
+    """Rebuild current cached provider evidence for one reassessed IP."""
     if not ip_address:
         return None
     active = _active_sources(config)
@@ -54,6 +63,7 @@ def _ip_intel(conn, config, ip_address):
 
 
 def _stored_observable_intel(conn, config, workspace, active_sources):
+    """Recover observable-level intelligence used by the stored case."""
     items = []
     for usage in workspace.get("threat_intel_usage") or []:
         if usage.get("source") == "virustotal" or usage.get("source") not in active_sources:
@@ -79,6 +89,7 @@ def _stored_observable_intel(conn, config, workspace, active_sources):
 
 
 def _primary_alert(workspace):
+    """Choose a Suricata alert or synthesize an alert-shaped Zeek case anchor."""
     alerts = workspace.get("suricata_alerts") or []
     if alerts:
         return dict(alerts[0])
@@ -111,6 +122,7 @@ def _primary_alert(workspace):
 
 
 def build_reassessment_evidence(conn, config, workspace, alert, detection, assessment_type="reassessment"):
+    """Build a fresh package while preserving historical evidence and feedback."""
     zeek_context = workspace.get("zeek_context") or {"items": []}
     active_sources = _active_sources(config)
     return {
@@ -166,6 +178,7 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
 
 
 def prepare_case_context(conn, config, case_uid, assessment_type="reassessment"):
+    """Load one case and return the normalized inputs required by the AI client."""
     workspace = case_workspace(conn, case_uid)
     if not workspace:
         raise ValueError("Case not found")
@@ -194,8 +207,6 @@ def prepare_case_context(conn, config, case_uid, assessment_type="reassessment")
             "unique_dest_ports",
             "unique_dest_hosts",
             "time_window_seconds",
-            "mitre_id",
-            "mitre_name",
             "status",
         }
     }
@@ -213,6 +224,7 @@ def prepare_case_context(conn, config, case_uid, assessment_type="reassessment")
 
 
 def reassess_case(conn, config, case_uid):
+    """Create a new immutable assessment and response for an existing case."""
     workspace, alert, detection, evidence, findings = prepare_case_context(
         conn, config, case_uid
     )
@@ -275,6 +287,7 @@ def reassess_case(conn, config, case_uid):
 
 
 def refresh_case_virustotal(conn, config, case_uid):
+    """Perform an analyst-requested VT refresh without an automatic third AI call."""
     workspace = case_workspace(conn, case_uid)
     if not workspace:
         raise ValueError("Case not found")

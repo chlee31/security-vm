@@ -1,3 +1,5 @@
+"""Follow required Zeek JSON logs and persist normalized network evidence."""
+
 from pathlib import Path
 import time
 
@@ -12,11 +14,13 @@ from app.zeek_normalizer import load_zeek_json_line, normalize_zeek_record
 
 
 def zeek_log_path(config, log_type):
+    """Resolve one configured Zeek current-log path."""
     directory = Path(config.get("zeek", {}).get("log_directory", "/opt/zeek/logs/current"))
     return directory / f"{log_type}.log"
 
 
 def enabled_log_types(config):
+    """Return the required protocol logs this deployment will follow."""
     zeek_config = config.get("zeek", {})
     logs = zeek_config.get("context_logs") or ["notice", "weird"]
     if not zeek_config.get("ingest_notice", True):
@@ -27,6 +31,7 @@ def enabled_log_types(config):
 
 
 class ZeekLogFollower:
+    """Tail one rotating Zeek JSON log with a persistent SQLite checkpoint."""
     def __init__(self, conn, config, log_type, on_event=None):
         self.conn = conn
         self.config = config
@@ -43,6 +48,7 @@ class ZeekLogFollower:
             self.handle = None
 
     def open_if_ready(self):
+        """Open/reopen a log and seek to its stored inode/offset checkpoint."""
         try:
             stat = self.path.stat()
         except FileNotFoundError:
@@ -89,6 +95,7 @@ class ZeekLogFollower:
         return True
 
     def poll(self):
+        """Read all currently available lines, storing and acknowledging each."""
         if not self.open_if_ready():
             return 0
         inserted = 0
@@ -133,6 +140,7 @@ class ZeekLogFollower:
 
 
 def run_zeek_ingest_loop(conn, config, poll_seconds=1, on_event=None):
+    """Continuously poll every configured Zeek log until the worker stops."""
     followers = [ZeekLogFollower(conn, config, log_type, on_event=on_event) for log_type in enabled_log_types(config)]
     insert_app_event(
         conn,

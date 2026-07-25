@@ -1,3 +1,10 @@
+"""Apply Python-controlled qualitative classification and response policy.
+
+The AI model recommends a classification, but Python normalizes it and can
+force analyst review when sensor findings are materially disputed. No numerical
+risk score is calculated here.
+"""
+
 CLASSIFICATION_ACTIONS = {
     "Safe": "log_only",
     "Human Review Required": "human_review",
@@ -6,6 +13,7 @@ CLASSIFICATION_ACTIONS = {
 
 
 def normalize_classification(value):
+    """Accept known labels and conservatively default unknown values to review."""
     normalized = str(value or "").strip().lower().replace("_", " ")
     if normalized == "safe":
         return "Safe"
@@ -17,10 +25,17 @@ def normalize_classification(value):
 
 
 def materially_disputed(detection):
+    """Return whether sensor-fusion logic recorded an unresolved disagreement."""
     return str(detection.get("agreement_state") or "").strip().lower() == "disputed"
 
 
 def decide(conn, config, alert, detection, ai_report=None):
+    """Map qualitative evidence to the final Python-controlled response.
+
+    ``conn``, ``config``, and ``alert`` are retained in the signature for
+    compatibility with existing callers. The current policy depends only on
+    model classification plus sensor-dispute state.
+    """
     classification = normalize_classification((ai_report or {}).get("classification"))
     forced_review = bool(detection.get("forced_review")) or materially_disputed(detection)
     if forced_review:

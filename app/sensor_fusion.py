@@ -1,6 +1,11 @@
+"""Convert Suricata alerts and Zeek notices into common sensor findings.
+
+The common shape allows both sensors to initiate or support a case while
+retaining sensor-specific IDs, severity, Community ID, and original evidence.
+"""
+
 import json
 
-from app.mitre_mapper import map_detection
 from app.normalizer import detection_type_from_alert
 
 
@@ -17,11 +22,13 @@ HIGH_CONFIDENCE_TERMS = (
 
 
 def zeek_notice_priority(event):
+    """Translate Zeek notice text into a simple Suricata-like priority."""
     text = f"{event.get('event_name', '')} {event.get('message', '')}".lower()
     return 2 if any(term in text for term in HIGH_CONFIDENCE_TERMS) else 3
 
 
 def zeek_notice_to_alert(event):
+    """Adapt a Zeek notice to the shared alert fields used by case creation."""
     priority = zeek_notice_priority(event)
     return {
         "suricata_event_id": "",
@@ -43,9 +50,9 @@ def zeek_notice_to_alert(event):
 
 
 def zeek_detection(event, single_sensor_strength=0.5):
+    """Create a new Zeek-only case when no existing case can accept the notice."""
     alert = zeek_notice_to_alert(event)
     detection_type = detection_type_from_alert(alert)
-    mitre = map_detection(detection_type)
     try:
         rule_strength = float(single_sensor_strength)
     except (TypeError, ValueError):
@@ -69,13 +76,12 @@ def zeek_detection(event, single_sensor_strength=0.5):
         "unique_dest_ports": 1 if alert.get("dest_port") else 0,
         "unique_dest_hosts": 1 if alert.get("dest_ip") else 0,
         "time_window_seconds": 0,
-        "mitre_id": mitre.get("id"),
-        "mitre_name": mitre.get("name"),
         "status": "correlated",
     }
 
 
 def suricata_finding(alert_id, alert):
+    """Represent a Suricata signature as a source-linked common finding."""
     try:
         priority = int(alert.get("priority") or 3)
     except (TypeError, ValueError):
@@ -93,6 +99,7 @@ def suricata_finding(alert_id, alert):
 
 
 def zeek_finding(zeek_event_id, event):
+    """Represent a Zeek notice as a source-linked common finding."""
     priority = zeek_notice_priority(event)
     return {
         "sensor": "zeek",

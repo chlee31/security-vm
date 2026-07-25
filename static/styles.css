@@ -1045,18 +1045,6 @@ textarea {
   color: var(--red);
 }
 
-.notification-event.sent {
-  border-left: 4px solid var(--green);
-}
-
-.notification-event.failed {
-  border-left: 4px solid var(--red);
-}
-
-.notification-event.skipped {
-  border-left: 4px solid var(--amber);
-}
-
 .wide-button,
 .text-button {
   width: 100%;
@@ -1555,7 +1543,6 @@ time,
 }
 
 .review-list,
-.allowlist-list,
 .asset-list,
 .enrichment-list {
   max-height: 460px;
@@ -1617,7 +1604,6 @@ time,
 }
 
 .review,
-.allow-item,
 .asset-item,
 .ai-profile {
   border-left: 4px solid var(--amber);
@@ -1627,40 +1613,8 @@ time,
   border-left-color: var(--muted);
 }
 
-.allow-item {
-  border-left-color: var(--green);
-}
-
 .asset-item {
   border-left-color: var(--cyan);
-}
-
-.firewall-block {
-  border-left: 4px solid var(--red);
-}
-
-.firewall-candidate {
-  border-left: 4px solid var(--amber);
-}
-
-.firewall-runtime.active {
-  border-left: 4px solid var(--green);
-}
-
-.firewall-runtime.inactive {
-  border-left: 4px solid var(--muted);
-}
-
-.firewall-history-item.active {
-  border-left: 4px solid var(--red);
-}
-
-.firewall-history-item.released {
-  border-left: 4px solid var(--muted);
-}
-
-.firewall-history-item.safe {
-  border-left: 4px solid var(--green);
 }
 
 .admin-asset.active {
@@ -1790,7 +1744,6 @@ time,
 }
 
 .review p,
-.allow-item p,
 .asset-item p {
   margin: 6px 0 0;
   color: var(--text);
@@ -1805,7 +1758,6 @@ time,
 }
 
 .review small,
-.allow-item small,
 .asset-item small,
 .enrichment-source small {
   display: block;

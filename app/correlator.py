@@ -1,4 +1,5 @@
-from app.mitre_mapper import map_detection
+"""Create the initial normalized detection record for a Suricata alert."""
+
 from app.normalizer import detection_type_from_alert
 
 
@@ -9,8 +10,8 @@ class Correlator:
         self.config = config
 
     def correlate(self, alert, alert_id):
+        """Create the initial case fields for an ungrouped Suricata alert."""
         detection_type = detection_type_from_alert(alert)
-        mitre = map_detection(detection_type)
         strengths = self.config.get("correlation", {}).get("strengths", {})
         try:
             single_sensor_strength = float(strengths.get("single_sensor", 0.5))
@@ -35,7 +36,5 @@ class Correlator:
             "unique_dest_ports": 1 if alert.get("dest_port") is not None else 0,
             "unique_dest_hosts": 1 if alert.get("dest_ip") else 0,
             "time_window_seconds": 0,
-            "mitre_id": mitre.get("id"),
-            "mitre_name": mitre.get("name"),
             "status": "developing",
         }

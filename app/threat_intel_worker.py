@@ -1,3 +1,5 @@
+"""Periodically refresh enabled bulk threat-intelligence feeds."""
+
 import time
 from datetime import datetime, timezone
 
@@ -20,6 +22,7 @@ def parse_time(value):
 
 
 def refresh_due_providers(conn, config):
+    """Refresh enabled bulk feeds whose configured interval has elapsed."""
     states = threat_intel_source_rows(conn)
     now = datetime.now(timezone.utc)
     results = []
@@ -42,6 +45,7 @@ def refresh_due_providers(conn, config):
 
 
 def run_threat_intel_worker(config_path, poll_seconds=300):
+    """Reload configuration and refresh due feeds on a background schedule."""
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     insert_app_event(conn, "info", "threat_intel", "Threat-intelligence feed worker started")

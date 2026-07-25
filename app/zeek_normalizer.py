@@ -1,7 +1,11 @@
+"""Normalize Zeek JSON logs while preserving log-specific fields and lineage."""
+
 from datetime import datetime, timezone
 import json
 
 
+# Only policy notices initiate detections. Protocol logs remain rich supporting
+# context and may later corroborate a Suricata or Zeek-initiated case.
 ALERT_LIKE_LOGS = {"notice"}
 
 ZEEK_EVIDENCE_FIELDS = {
@@ -41,6 +45,7 @@ ZEEK_EVIDENCE_FIELDS = {
 
 
 def parse_zeek_timestamp(value):
+    """Convert epoch or ISO Zeek time into a timezone-aware ISO string."""
     if value in (None, ""):
         return datetime.now(timezone.utc).isoformat()
     if isinstance(value, (int, float)):
@@ -82,7 +87,11 @@ def normalize_actions(value):
 
 
 def zeek_evidence_details(raw, log_type):
-    """Return an allowlisted protocol summary suitable for dashboards and AI prompts."""
+    """Return a bounded protocol summary suitable for UI and AI prompts.
+
+    Only approved evidence fields are retained, with bounded collections and
+    strings. The complete original JSON remains in SQLite for investigation.
+    """
     if not isinstance(raw, dict):
         return {}
     result = {}
@@ -102,7 +111,12 @@ def zeek_evidence_details(raw, log_type):
 
 
 def compact_zeek_context_events(events, limit=8):
-    """Select a log-diverse, allowlisted Zeek sample for an AI context window."""
+    """Select a log-diverse, bounded Zeek sample for an AI context window.
+
+    One row from each available log type is selected before filling remaining
+    slots chronologically. This prevents a high-volume log such as ``conn`` from
+    crowding DNS, TLS, file, or notice evidence out of a small context package.
+    """
     events = list(events or [])
     selected = []
     selected_ids = set()
@@ -156,6 +170,7 @@ def compact_zeek_context_events(events, limit=8):
 
 
 def load_zeek_json_line(line):
+    """Decode one JSON-log line and reject non-object records."""
     try:
         value = json.loads(line)
     except json.JSONDecodeError as exc:
@@ -166,6 +181,7 @@ def load_zeek_json_line(line):
 
 
 def normalize_zeek_record(raw, log_type):
+    """Map log-specific Zeek fields into the common stored event shape."""
     log_type = str(log_type or "unknown")
     if log_type.endswith(".log"):
         log_type = log_type[:-4]

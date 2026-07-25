@@ -1,3 +1,5 @@
+"""Redact configured credentials before errors or status reach logs and APIs."""
+
 import re
 
 
@@ -8,6 +10,7 @@ SECRET_PATTERN = re.compile(
 
 
 def configured_secrets(config):
+    """Collect credential values that must be removed from displayed text."""
     secrets = set()
     threat_intel = (config or {}).get("threat_intel", {})
     for key, value in threat_intel.items():
@@ -17,13 +20,11 @@ def configured_secrets(config):
         value = (provider or {}).get("api_key")
         if isinstance(value, str) and value.strip():
             secrets.add(value.strip())
-    email_password = ((config or {}).get("notifications", {}).get("email", {}).get("app_password"))
-    if isinstance(email_password, str) and email_password.strip():
-        secrets.add(email_password.strip())
     return secrets
 
 
 def redact_secrets(value, config=None):
+    """Mask known credential patterns and configured secret values."""
     text = str(value or "")
     for secret in configured_secrets(config):
         text = text.replace(secret, "***")

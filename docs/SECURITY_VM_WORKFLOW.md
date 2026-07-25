@@ -34,13 +34,11 @@ flowchart TB
     subgraph ENRICH[Python Evidence Preparation]
         ASSET[(Admin-managed IP roles)]
         TI[(Cached threat intelligence)]
-        MITRE[(Suggested MITRE context<br/>descriptive only)]
         PACKAGE[Structured case evidence package]
         CASE --> PACKAGE
         CONTEXT --> PACKAGE
         ASSET --> PACKAGE
         TI --> PACKAGE
-        CASE --> MITRE --> PACKAGE
     end
 
     subgraph AI[Bounded Local AI Explanation]

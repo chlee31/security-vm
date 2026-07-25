@@ -1,3 +1,23 @@
+"""Build, send, validate, and audit requests to an Ollama-compatible AI service.
+
+This module is the boundary between Security VM's trusted Python pipeline and an
+external language model. Python, not the model, decides which evidence is
+included, removes sensitive/raw fields, enforces size limits, records hashes,
+and validates the returned structure.
+
+High-level request path:
+
+1. ``_build_prompt_components`` creates a normalized evidence package.
+2. ``build_prompt_audit`` records the exact prompt, package, lineage, and hashes.
+3. ``ask_ai_model`` sends that prompt to ``POST /api/generate`` with an explicit
+   context window and JSON Schema.
+4. ``parse_model_response`` and ``normalize_report`` convert imperfect model
+   output into the application's stable qualitative report format.
+
+No files are uploaded to the model. Sensor rows and enrichment records are read
+locally, converted to bounded JSON text, and embedded in a single prompt.
+"""
+
 import json
 import hashlib
 import re
@@ -6,6 +26,8 @@ import time
 import requests
 
 
+# Stored with every request so a report can identify the exact instruction set
+# under which it was produced.
 PROMPT_VERSION = "security-vm-case-explanation-v11-qualitative-evidence"
 
 THREAT_INTEL_PROVIDER_NAMES = (
@@ -24,6 +46,8 @@ THREAT_INTEL_PROVIDER_SCHEMA = {
     name: {"type": "string"} for name in THREAT_INTEL_PROVIDER_NAMES
 }
 
+# Ollama accepts a JSON Schema in the ``format`` request field. This schema
+# narrows the model's output to fields the dashboard and audit trail understand.
 AI_RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -123,6 +147,9 @@ AI_RESPONSE_SCHEMA = {
     ],
 }
 
+# These keys are never copied into the model prompt. Raw records remain in
+# SQLite for analyst review, credentials remain local, and retired score fields
+# are excluded from the qualitative workflow.
 OMITTED_AI_EVIDENCE_KEYS = {
     "raw_event",
     "raw_json",
@@ -147,6 +174,17 @@ OMITTED_AI_EVIDENCE_KEYS = {
 
 
 def _compact_ai_evidence(value, key="", path="$", depth=0, omissions=None):
+    """Recursively produce a bounded, prompt-safe copy of evidence.
+
+    The function applies three independent controls:
+
+    * sensitive/raw keys are omitted;
+    * nesting is capped at eight levels;
+    * lists and strings are capped at 25 items and 2,000 characters.
+
+    Every exclusion is added to ``omissions`` so truncation is visible in the
+    audit record instead of silently changing what the model receives.
+    """
     omissions = omissions if omissions is not None else []
     if depth > 8:
         omissions.append({"path": path, "reason": "maximum_nesting_depth", "limit": 8})
@@ -193,17 +231,19 @@ def _compact_ai_evidence(value, key="", path="$", depth=0, omissions=None):
 
 
 def compact_ai_evidence(value, key="", depth=0):
-    """Compatibility wrapper for callers that only need bounded evidence."""
+    """Return bounded evidence when the caller does not need an audit manifest."""
     return _compact_ai_evidence(value, key=key, depth=depth, omissions=[])
 
 
 def compact_ai_evidence_with_manifest(value, key="", path="$", depth=0):
+    """Return both bounded evidence and a list describing every omission."""
     omissions = []
     compacted = _compact_ai_evidence(value, key, path, depth, omissions)
     return compacted, omissions
 
 
 def infer_model_provider(host, model):
+    """Derive a display/provider label from the configured endpoint and model."""
     text = f"{host or ''} {model or ''}".lower()
     if "nvidia" in text or "nim" in text:
         return "nvidia"
@@ -215,6 +255,7 @@ def infer_model_provider(host, model):
 
 
 def model_metadata(config):
+    """Return stable identity fields stamped into every AI report and audit."""
     ai_model = config.get("ai_model", {})
     host = (ai_model.get("host") or "").rstrip("/")
     model = ai_model.get("model", "llama3.1:8b")
@@ -232,11 +273,17 @@ def model_metadata(config):
 
 
 def legacy_profile_uid(provider, host, model):
+    """Create a deterministic profile ID for configurations predating profiles."""
     seed = f"{provider}|{host}|{model}"
     return f"legacy-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:12]}"
 
 
 def model_run_id(metadata, alert):
+    """Create a unique ID for one model invocation.
+
+    Time is included so repeated assessments of the same case remain separate,
+    while model/profile/event fields preserve useful provenance.
+    """
     seed = "|".join(
         [
             metadata.get("model_identity", ""),
@@ -254,10 +301,16 @@ def model_run_id(metadata, alert):
 
 
 def text_sha256(value):
+    """Hash text exactly as Python saw it for later integrity comparison."""
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
 
 
 def _evidence_source_map(package):
+    """Map normalized prompt sections back to their SQLite source records.
+
+    This lineage is stored locally for auditability; it is not an instruction
+    for the model and does not replace the original sensor records.
+    """
     evidence = package.get("evidence_context") or {}
     findings = (evidence.get("sensor_fusion") or {}).get("findings") or []
     zeek_items = (evidence.get("zeek_context") or {}).get("items") or []
@@ -324,6 +377,17 @@ def _evidence_source_map(package):
 
 
 def _build_prompt_components(alert, detection, evidence_context=None):
+    """Construct the exact prompt and its independently auditable components.
+
+    The prompt has three parts:
+
+    1. fixed analytical and safety instructions;
+    2. a normalized JSON evidence package built from the current case; and
+    3. a JSON Schema reminder defining the only accepted response shape.
+
+    Returns the final text plus the package, omission manifest, and source map
+    so the database can prove what was sent and where each value originated.
+    """
     asset_context = detection.get("asset_context") or {}
     role_fields = ("ip_address", "name", "device_type", "network_interface", "function", "notes")
 
@@ -332,6 +396,8 @@ def _build_prompt_components(alert, detection, evidence_context=None):
             return None
         return {key: value.get(key) for key in role_fields if value.get(key) not in (None, "")}
 
+    # Encryption is inferred only to set visibility expectations. It never
+    # claims that payload decryption occurred.
     encrypted_ports = {22, 443, 853, 8443, 1194, 500, 4500, 51820}
     signature_text = " ".join(
         str(value or "")
@@ -345,6 +411,8 @@ def _build_prompt_components(alert, detection, evidence_context=None):
         port_values = set()
     encrypted_keywords = ["tls", "ssl", "https", "quic", "vpn", "wireguard", "openvpn", "ipsec", "ssh"]
     likely_encrypted = bool(port_values & encrypted_ports) or any(word in signature_text for word in encrypted_keywords)
+    # This is the normalized case package embedded verbatim as JSON in the
+    # prompt. It contains selected fields, not raw database or sensor files.
     package = {
         "event_context": {
             "case_uid": detection.get("case_uid"),
@@ -369,11 +437,6 @@ def _build_prompt_components(alert, detection, evidence_context=None):
             "correlation_rule_strength": detection.get("correlation_confidence", 0.5),
             "community_id": detection.get("community_id"),
             "repeated_activity": (evidence_context or {}).get("repeated_activity", {}),
-        },
-        "mitre_mapping": {
-            "technique_id": detection.get("mitre_id"),
-            "technique_name": detection.get("mitre_name"),
-            "role": "descriptive_context_only",
         },
         "registered_ip_role_context": {
             "match": asset_context.get("asset_match", "none"),
@@ -406,10 +469,13 @@ def _build_prompt_components(alert, detection, evidence_context=None):
         },
         "evidence_context": None,
     }
+    # Evidence collected by main.py is filtered at the final trust boundary.
     package["evidence_context"], omissions = compact_ai_evidence_with_manifest(
         evidence_context or {}, key="evidence_context", path="$.evidence_context"
     )
 
+    # The instruction block explains how each evidence type may and may not be
+    # interpreted. Keeping it versioned makes model comparisons reproducible.
     instructions = """
 You are assisting a cybersecurity lab system that reviews unified network detections from Suricata and Zeek.
 Analyze the supplied evidence qualitatively. Do not calculate, infer, or return a numerical risk score, point value, probability, or score adjustment.
@@ -444,7 +510,7 @@ Evidence rules:
 - Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
 - Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
 - If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Human Review Required and describe the disputed evidence.
-- Treat observed DNS tunneling, port scans, repeated connections, or many destination ports according to the supplied sensor evidence. MITRE mapping is derived descriptive context only and must not independently determine classification or confidence.
+- Treat observed DNS tunneling, port scans, repeated connections, or many destination ports according to the supplied sensor evidence.
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
 - Use threat_intel in evidence_context when present. provider_status describes whether each source was active and refreshed; each observable's providers list describes matched, no_match, not_active, or unavailable results. Treat matches from independent sources as corroborating evidence and consider confidence, category, and freshness.
 - In threat_intel_analysis.providers, discuss every provider separately. State "Not active", "No match", or "Unavailable" when that is the supplied state. For matches, name the observable, category, confidence when supplied, and what the match means. Do not turn a no-match result into proof that traffic is benign.
@@ -463,11 +529,15 @@ Evidence rules:
 
 Analyze this event package:
 """
+    # Repeating the schema after the evidence reduces the chance that a model
+    # returns prose, copies a sensor row, or invents fields.
     output_reminder = (
         "Return only one JSON object that validates against this exact schema. "
         "Do not copy an input sensor record and do not invent another schema:\n"
         + json.dumps(AI_RESPONSE_SCHEMA, separators=(",", ":"))
     )
+    # The HTTP request contains this string as ``prompt``. There is no uploaded
+    # JSON file; the serialized package is text inside this one request.
     prompt = (
         instructions.strip()
         + "\n\n"
@@ -479,6 +549,7 @@ Analyze this event package:
 
 
 def build_prompt(alert, detection, evidence_context=None):
+    """Build only the final prompt text for callers that do not need auditing."""
     prompt, _package, _omissions, _source_map = _build_prompt_components(
         alert, detection, evidence_context
     )
@@ -486,6 +557,12 @@ def build_prompt(alert, detection, evidence_context=None):
 
 
 def build_prompt_audit(config, alert, detection, evidence_context=None):
+    """Build the prompt and the local proof record prepared before transmission.
+
+    Character/byte counts and SHA-256 hashes prove the exact payload. They are
+    not token counts. The model server's ``prompt_eval_count``, when returned,
+    is the authoritative count of tokens actually evaluated.
+    """
     metadata = model_metadata(config)
     prompt, package, omissions, source_map = _build_prompt_components(
         alert, detection, evidence_context
@@ -519,6 +596,7 @@ def build_prompt_audit(config, alert, detection, evidence_context=None):
 
 
 def normalize_text(value, fallback=""):
+    """Convert optional or structured values into stable displayable text."""
     if value is None:
         return fallback
     if isinstance(value, (dict, list)):
@@ -527,7 +605,12 @@ def normalize_text(value, fallback=""):
 
 
 def parse_model_response(raw_text):
-    """Parse direct, fenced, or prefaced JSON without evaluating model text."""
+    """Parse direct, fenced, or prefaced JSON without executing model text.
+
+    Strict JSON is attempted first. A bounded recovery pass handles models that
+    add Markdown fences or a short preface. If only several scalar fields can be
+    recovered, the response is marked partial and later forced to human review.
+    """
     text = str(raw_text or "").strip()
     attempts = [text]
     if text.startswith("```"):
@@ -588,6 +671,7 @@ def parse_model_response(raw_text):
 
 
 def normalize_confidence(value):
+    """Normalize legacy numeric or current text confidence to Low/Medium/High."""
     if isinstance(value, (int, float)):
         if 0 <= value <= 1:
             value *= 100
@@ -606,6 +690,12 @@ def normalize_confidence(value):
 
 
 def normalize_report(parsed):
+    """Convert supported model response variants into one qualitative contract.
+
+    Compatibility branches accept older model formats, but operational scoring
+    fields are discarded. Missing sections receive explicit fallback text so
+    downstream code never treats absent model output as verified evidence.
+    """
     for wrapper in ("response", "result", "assessment"):
         if isinstance(parsed.get(wrapper), dict):
             parsed = {**parsed, **parsed[wrapper]}
@@ -752,16 +842,31 @@ class AIModelRequestError(requests.RequestException):
 
 
 def ask_ai_model(config, alert, detection, evidence_context=None):
+    """Send one audited request and return a normalized qualitative report.
+
+    ``num_ctx`` is the total token window allocated by Ollama for this request.
+    ``num_predict`` is the maximum generated output within that same window.
+    Their difference is therefore the approximate input budget. Security VM
+    supplies both values explicitly, so they apply even when the remote Ollama
+    app has a different default context-length slider.
+    """
     ai_model = config.get("ai_model", {})
     prompt, audit = build_prompt_audit(config, alert, detection, evidence_context)
     host = audit["model_endpoint"]
     model = audit["model_name"]
     timeout = ai_model.get("timeout_seconds", 90)
+    # These per-request options are sent to Ollama and take precedence over its
+    # server/app defaults for this invocation.
     options = {
         "num_predict": int(ai_model.get("num_predict", 1024)),
         "num_ctx": int(ai_model.get("num_ctx", 8192)),
         "temperature": float(ai_model.get("temperature", 0.1)),
     }
+    # Four characters per token is only a planning estimate. Tokenization is
+    # model-specific, so prompt_eval_count from Ollama is saved after completion
+    # as the measured input count.
+    estimated_prompt_tokens = (len(prompt) + 3) // 4
+    estimated_input_budget = max(0, options["num_ctx"] - options["num_predict"])
     audit["audit_request_options"] = {
         "transport": "POST /api/generate",
         "stream": False,
@@ -771,15 +876,15 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
         ),
         "options": options,
         "timeout_seconds": timeout,
-        "estimated_prompt_tokens": (len(prompt) + 3) // 4,
-        "estimated_available_input_tokens": max(0, options["num_ctx"] - options["num_predict"]),
-        "estimated_fits_configured_context": (
-            (len(prompt) + 3) // 4 <= max(0, options["num_ctx"] - options["num_predict"])
-        ),
+        "estimated_prompt_tokens": estimated_prompt_tokens,
+        "estimated_available_input_tokens": estimated_input_budget,
+        "estimated_fits_configured_context": estimated_prompt_tokens <= estimated_input_budget,
         "token_estimate_note": "Character-based estimate only; prompt_eval_count is the model-server measurement when returned.",
     }
     start = time.monotonic()
     try:
+        # Tailscale, when used, only transports this ordinary HTTP request to the
+        # configured host. It does not alter the prompt, schema, or token limits.
         response = requests.post(
             f"{host}/api/generate",
             json={
@@ -804,6 +909,8 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
     elapsed_ms = int((time.monotonic() - start) * 1000)
     raw_text = response_payload.get("response", "") or "{}"
 
+    # A malformed model response cannot silently become Safe or Dangerous.
+    # Parsing failure produces a conservative human-review report.
     parse_error = None
     try:
         parsed = parse_model_response(raw_text)
@@ -841,6 +948,8 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
     parsed["audit_response_bytes"] = len(raw_text.encode("utf-8"))
     parsed["audit_parse_status"] = parse_status
     parsed["audit_parse_error"] = parse_error
+    # Ollama's counters provide measured model-server usage. In particular,
+    # prompt_eval_count is stronger evidence than Python's character estimate.
     parsed["audit_response_metrics"] = {
         key: response_payload.get(key)
         for key in (
@@ -860,6 +969,7 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
 
 
 def check_ai_model(config):
+    """Test endpoint reachability and list models without sending case evidence."""
     ai_model = config.get("ai_model", {})
     metadata = model_metadata(config)
     host = metadata["model_endpoint"]

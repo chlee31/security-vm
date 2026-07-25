@@ -128,7 +128,7 @@ function renderRecent(recent) {
       <div>
         <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
         <p>${item.signature || "Detection"}</p>
-        <small>${item.ai_classification || "no AI opinion"} · ${item.ai_model_identity || "unknown model"}${item.ai_profile_uid ? ` · profile ${item.ai_profile_uid}` : ""}${item.mitre_id ? ` · ${item.mitre_id}` : ""}</small>
+        <small>${item.ai_classification || "no AI opinion"} · ${item.ai_model_identity || "unknown model"}${item.ai_profile_uid ? ` · profile ${item.ai_profile_uid}` : ""}</small>
         <a class="inline-link" href="${investigationUrl(item.detection_id, item.case_uid)}" target="_blank" rel="noopener">Open Investigation</a>
       </div>
     </div>
@@ -151,7 +151,7 @@ function renderEvidence(rows) {
         <div>
           <span>Correlation</span>
           <strong>${label(row.detection_type)}</strong>
-          <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
+          <small>${row.alert_count || 0} alerts · ${row.unique_dest_ports || 0} ports</small>
         </div>
         <div>
           <span>AI Model</span>

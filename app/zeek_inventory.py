@@ -1,3 +1,5 @@
+"""Locate Zeek tools, inspect runtime state, and report configured log access."""
+
 from pathlib import Path
 import os
 import shutil

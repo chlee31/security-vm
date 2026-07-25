@@ -1,3 +1,5 @@
+"""Normalize Suricata EVE records and assign broad behavior labels."""
+
 import json
 import re
 
@@ -52,6 +54,7 @@ DETECTION_TYPE_PATTERNS = (
 
 
 def normalize_suricata_event(event):
+    """Extract the alert fields used by persistence and sensor fusion."""
     if event.get("event_type") != "alert":
         return None
 
@@ -76,6 +79,7 @@ def normalize_suricata_event(event):
 
 
 def detection_type_from_alert(alert):
+    """Apply the small documented keyword map and default to ``unknown``."""
     text = f"{alert.get('signature', '')} {alert.get('category', '')}".lower()
     for detection_type, patterns in DETECTION_TYPE_PATTERNS:
         if any(re.search(pattern, text) for pattern in patterns):

@@ -48,8 +48,6 @@ CREATE TABLE IF NOT EXISTS detections (
   unique_dest_ports INTEGER,
   unique_dest_hosts INTEGER,
   time_window_seconds INTEGER,
-  mitre_id TEXT,
-  mitre_name TEXT,
   status TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -74,19 +72,6 @@ CREATE INDEX IF NOT EXISTS idx_sensor_findings_detection
   ON sensor_findings(detection_id);
 CREATE INDEX IF NOT EXISTS idx_sensor_findings_event
   ON sensor_findings(sensor, sensor_event_id);
-CREATE TABLE IF NOT EXISTS allowlist (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ip_address TEXT NOT NULL,
-  name TEXT,
-  reason TEXT,
-  added_by TEXT,
-  start_time TEXT,
-  expiry_time TEXT,
-  status TEXT DEFAULT 'active',
-  notes TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS threat_intel_lookups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   alert_id INTEGER,
@@ -462,39 +447,6 @@ CREATE TABLE IF NOT EXISTS responses (
   response_status TEXT,
   response_time_ms INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS firewall_blocks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  detection_id INTEGER,
-  ip_address TEXT NOT NULL,
-  direction TEXT,
-  zone TEXT,
-  reason TEXT,
-  firewall_rule TEXT,
-  timeout_seconds INTEGER,
-  status TEXT DEFAULT 'active',
-  response_status TEXT,
-  response_time_ms INTEGER,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  expires_at TEXT,
-  released_at TEXT,
-  released_by TEXT,
-  release_reason TEXT
-);
-
-CREATE TABLE IF NOT EXISTS notification_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  detection_id INTEGER,
-  response_id INTEGER,
-  channel TEXT NOT NULL,
-  recipient TEXT,
-  subject TEXT,
-  status TEXT NOT NULL,
-  error TEXT,
-  cooldown_key TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  sent_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tuning_labels (

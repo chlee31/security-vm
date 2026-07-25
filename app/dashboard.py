@@ -1,3 +1,10 @@
+"""FastAPI application exposing dashboard pages and JSON management endpoints.
+
+Routes in this module translate HTTP requests into database/service operations.
+Sensor ingestion and AI processing remain in worker modules, which keeps the
+dashboard from becoming the source of security evidence.
+"""
+
 from pathlib import Path
 import importlib.util
 import ipaddress
@@ -16,7 +23,6 @@ from fastapi.staticfiles import StaticFiles
 import requests
 from pydantic import BaseModel
 
-from app.allowlist import add_allowlist_entry, deactivate_allowlist_entry, deactivate_allowlist_for_ip, list_allowlist_entries
 from app.config import load_config, save_config
 from app.database import (
     ai_comparison_detail,
@@ -46,8 +52,6 @@ from app.database import (
     insert_app_event,
     detection_type_detail,
     enrichment_status,
-    get_firewall_candidate,
-    get_firewall_block,
     ip_detail,
     investigation_detail,
     latest_alerts,
@@ -56,23 +60,15 @@ from app.database import (
     latest_decision_evidence,
     latest_ai_opinions,
     latest_zeek_events,
-    insert_firewall_block,
-    insert_notification_event,
     list_ai_profiles,
     list_ai_comparison_runs,
     list_all_assets,
     list_evaluation_scenarios,
-    list_firewall_candidates,
-    list_firewall_history,
-    list_firewall_blocks,
-    list_notification_events,
     list_review_queue,
     mark_ai_profile_selected,
     public_ips_for_enrichment,
-    release_firewall_block,
     reset_dashboard_logs,
     submit_analyst_review,
-    update_response_manual_action,
     upsert_threat_intel_lookup,
     upsert_asset,
     update_asset,
@@ -102,11 +98,9 @@ from app.threat_intel import (
     sanitized_provider_status,
     zeek_context_threat_intel,
 )
-from app.firewall import firewalld_runtime_status, firewalld_setup_commands, remove_firewalld_block, temporary_block_firewalld
 from app.ai_client import check_ai_model, model_metadata
 from app.ai_comparison import run_model_comparison
 from app.case_assessment import reassess_case, refresh_case_virustotal
-from app.notifications import normalize_recipients, sanitized_email_settings, send_email
 from app.security import redact_secrets
 from app.zeek_inventory import zeek_status
 
@@ -117,14 +111,6 @@ NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 
 def static_page(filename):
     return FileResponse(STATIC_DIR / filename, headers=NO_CACHE_HEADERS)
-
-
-class AllowlistRequest(BaseModel):
-    ip_address: str
-    name: str = ""
-    duration_hours: int
-    reason: str
-    added_by: str = "dashboard"
 
 
 class AnalystReviewRequest(BaseModel):
@@ -191,16 +177,6 @@ class ThreatIntelAdminRequest(BaseModel):
     providers: Dict[str, ThreatIntelProviderRequest]
 
 
-class SystemModeRequest(BaseModel):
-    mode: str
-
-
-class FirewallBlockActionRequest(BaseModel):
-    analyst_name: str = "admin"
-    reason: str = ""
-    safe_duration_hours: int = 24 * 365
-
-
 class OtxLookupRequest(BaseModel):
     limit: int = 5
     scope: str = "top5"
@@ -209,15 +185,6 @@ class OtxLookupRequest(BaseModel):
 
 class OtxStatusRequest(BaseModel):
     otx_api_key: str = ""
-
-
-class EmailNotificationRequest(BaseModel):
-    enabled: bool = False
-    sender: str = ""
-    app_password: str = ""
-    recipients: str = ""
-    cooldown_minutes: int = 15
-    dashboard_base_url: str = ""
 
 
 class EvaluationScenarioRequest(BaseModel):
@@ -525,46 +492,12 @@ def apply_ai_profile_to_config(config, profile):
     config["ai_model"]["timeout_seconds"] = int(profile.get("timeout_seconds") or 90)
 
 
-def validate_email_notifications(payload, existing=None, require_credentials=False):
-    existing = existing or {}
-    sender = payload.sender.strip()
-    recipients = normalize_recipients(payload.recipients)
-    app_password = payload.app_password.replace(" ", "").strip() or existing.get("app_password", "")
-    credentials_required = payload.enabled or require_credentials
-    if credentials_required:
-        if "@" not in sender:
-            raise HTTPException(status_code=400, detail="Gmail sender address is required")
-        if not recipients:
-            raise HTTPException(status_code=400, detail="Add at least one recipient email address")
-        if not app_password:
-            raise HTTPException(status_code=400, detail="Gmail app password is required when email alerts are enabled")
-        if len(app_password) != 16:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Gmail app password should be 16 characters after removing spaces. "
-                    f"The saved/provided value is {len(app_password)} characters."
-                ),
-            )
-    if payload.cooldown_minutes < 0 or payload.cooldown_minutes > 1440:
-        raise HTTPException(status_code=400, detail="Cooldown must be between 0 and 1440 minutes")
-    return {
-        "enabled": bool(payload.enabled),
-        "provider": "gmail",
-        "smtp_host": "smtp.gmail.com",
-        "smtp_port": 587,
-        "use_starttls": True,
-        "sender": sender,
-        "username": sender,
-        "app_password": app_password,
-        "recipients": recipients,
-        "cooldown_minutes": payload.cooldown_minutes,
-        "dangerous_only": True,
-        "dashboard_base_url": payload.dashboard_base_url.strip(),
-    }
-
-
 def create_app(config_path):
+    """Create the FastAPI application bound to one YAML/SQLite configuration.
+
+    Endpoints open short-lived database connections per request. Secrets are
+    masked before settings or errors are serialized to dashboard clients.
+    """
     config = load_config(config_path)
     db_path = config.get("database", {}).get("path", "security_vm.db")
     init_db(db_path).close()
@@ -574,15 +507,9 @@ def create_app(config_path):
     @app.middleware("http")
     async def add_no_cache_headers(request, call_next):
         retired_paths = {
-            "/api/admin/system-mode",
             "/api/asset-inventory",
         }
-        retired_prefixes = (
-            "/api/admin/notifications/",
-            "/api/admin/firewall-",
-            "/api/assets",
-            "/api/allowlist",
-        )
+        retired_prefixes = ("/api/assets",)
         path = request.url.path
         if path in retired_paths or path.startswith(retired_prefixes):
             return JSONResponse(
@@ -917,23 +844,6 @@ def create_app(config_path):
                     "candidate_count": 3,
                     "sequential": True,
                 },
-                "system": {
-                    "mode": "analysis",
-                    "available_modes": [],
-                },
-                "firewall": {
-                    "provider": "retired",
-                    "block_timeout_seconds": 0,
-                    "runtime": {},
-                    "setup_commands": [],
-                    "blocks": [],
-                    "candidates": [],
-                    "history": [],
-                },
-                "notifications": {
-                    "email": {"enabled": False, "recipients": []},
-                    "events": [],
-                },
                 "network": {
                     "internal_interface": config.get("assets", {}).get("internal_interface", "ens37"),
                     "suricata_eve_json_path": config.get("suricata", {}).get("eve_json_path", ""),
@@ -1039,280 +949,6 @@ def create_app(config_path):
                 except Exception as exc:
                     results.append({"source": source, "status": "failed", "error": redact_secrets(exc, config)})
             return {"status": "complete", "results": results}
-        finally:
-            conn.close()
-
-    @app.post("/api/admin/system-mode")
-    def api_admin_system_mode(payload: SystemModeRequest):
-        mode = payload.mode.strip().lower()
-        if mode == "auto_response":
-            mode = "prevention"
-        if mode not in {"alert_only", "detection", "prevention"}:
-            raise HTTPException(status_code=400, detail="Mode must be alert_only, detection, or prevention")
-        config.setdefault("system", {})
-        config["system"]["mode"] = mode
-        save_config(config, config_path)
-        conn = connect(db_path)
-        try:
-            insert_app_event(conn, "warning" if mode == "prevention" else "info", "admin", f"System mode changed to {mode}")
-        finally:
-            conn.close()
-        return {"status": "saved", "mode": mode}
-
-    @app.post("/api/admin/notifications/email")
-    def api_admin_email_notifications(payload: EmailNotificationRequest):
-        config.setdefault("notifications", {})
-        existing = config["notifications"].get("email", {})
-        settings = validate_email_notifications(payload, existing)
-        config["notifications"]["email"] = settings
-        save_config(config, config_path)
-        conn = connect(db_path)
-        try:
-            insert_app_event(
-                conn,
-                "info",
-                "notifications",
-                f"Gmail alerts {'enabled' if settings['enabled'] else 'disabled'}",
-                {
-                    "sender": settings["sender"],
-                    "recipient_count": len(settings["recipients"]),
-                    "cooldown_minutes": settings["cooldown_minutes"],
-                },
-            )
-        finally:
-            conn.close()
-        return {"status": "saved", "email": sanitized_email_settings(config)}
-
-    @app.post("/api/admin/notifications/email/test")
-    def api_admin_test_email_notifications(payload: EmailNotificationRequest):
-        config.setdefault("notifications", {})
-        existing = config["notifications"].get("email", {})
-        settings = validate_email_notifications(payload, existing, require_credentials=True)
-        subject = "[Security VM] Test Gmail alert"
-        body = (
-            "This is a test email from the Security VM dashboard.\n\n"
-            "If you received this, Gmail notifications are configured correctly."
-        )
-        conn = connect(db_path)
-        try:
-            try:
-                send_email(settings, subject, body)
-                insert_notification_event(
-                    conn,
-                    {
-                        "channel": "email",
-                        "recipient": ",".join(settings["recipients"]),
-                        "subject": subject,
-                        "status": "sent",
-                        "cooldown_key": "admin-test-email",
-                    },
-                )
-                insert_app_event(conn, "info", "notifications", "Test Gmail notification sent")
-                return {"status": "sent", "recipients": settings["recipients"]}
-            except Exception as exc:
-                insert_notification_event(
-                    conn,
-                    {
-                        "channel": "email",
-                        "recipient": ",".join(settings["recipients"]),
-                        "subject": subject,
-                        "status": "failed",
-                        "error": str(exc),
-                        "cooldown_key": "admin-test-email",
-                    },
-                )
-                insert_app_event(conn, "error", "notifications", f"Test Gmail notification failed: {exc}")
-                raise HTTPException(status_code=400, detail=f"Test email failed: {exc}")
-        finally:
-            conn.close()
-
-    @app.post("/api/admin/firewall-blocks/{block_id}/unblock")
-    def api_admin_unblock_firewall(block_id: int, payload: FirewallBlockActionRequest):
-        conn = connect(db_path)
-        try:
-            block = get_firewall_block(conn, block_id)
-            if not block:
-                raise HTTPException(status_code=404, detail="Firewall block not found")
-            status, elapsed_ms, rule, zone = remove_firewalld_block(
-                block["ip_address"],
-                block.get("direction") or "source",
-                zone=block.get("zone"),
-                external_zone=config.get("firewall", {}).get("external_zone", "external"),
-                internal_zone=config.get("firewall", {}).get("internal_zone", "internal"),
-            )
-            release_firewall_block(conn, block_id, payload.analyst_name.strip() or "admin", payload.reason.strip() or status)
-            insert_app_event(
-                conn,
-                "warning" if status.startswith("failed") else "info",
-                "firewall",
-                f"Unblock {block['ip_address']}: {status}",
-                {"block_id": block_id, "elapsed_ms": elapsed_ms, "rule": rule, "zone": zone},
-            )
-            return {"status": status, "elapsed_ms": elapsed_ms}
-        finally:
-            conn.close()
-
-    @app.post("/api/admin/firewall-candidates/{response_id}/enforce")
-    def api_admin_enforce_firewall_candidate(response_id: int, payload: FirewallBlockActionRequest):
-        conn = connect(db_path)
-        try:
-            candidate = get_firewall_candidate(conn, response_id)
-            if not candidate:
-                raise HTTPException(status_code=404, detail="Enforcement candidate not found")
-            timeout = config.get("firewall", {}).get("block_timeout_seconds", 3600)
-            status, elapsed_ms, rule, zone = temporary_block_firewalld(
-                candidate["target_ip"],
-                timeout,
-                candidate.get("target_direction") or "source",
-                external_zone=config.get("firewall", {}).get("external_zone", "external"),
-                internal_zone=config.get("firewall", {}).get("internal_zone", "internal"),
-            )
-            if status == "blocked":
-                insert_firewall_block(
-                    conn,
-                    {
-                        "detection_id": candidate["detection_id"],
-                        "ip_address": candidate["target_ip"],
-                        "direction": candidate.get("target_direction") or "source",
-                        "zone": zone,
-                        "reason": payload.reason.strip() or f"Manual enforcement from response #{response_id}",
-                        "firewall_rule": rule,
-                        "timeout_seconds": timeout,
-                        "status": "active",
-                        "response_status": status,
-                        "response_time_ms": elapsed_ms,
-                    },
-                )
-            if status == "blocked":
-                update_response_manual_action(
-                    conn,
-                    response_id,
-                    "Dangerous",
-                    "temporary_block",
-                    "firewalld",
-                    status,
-                    elapsed_ms,
-                )
-            else:
-                update_response_manual_action(
-                    conn,
-                    response_id,
-                    "Dangerous",
-                    "would_block",
-                    "firewalld",
-                    status,
-                    elapsed_ms,
-                )
-            insert_app_event(
-                conn,
-                "warning" if status.startswith("failed") else "info",
-                "firewall",
-                f"Manual enforcement for {candidate['target_ip']}: {status}",
-                {"response_id": response_id, "detection_id": candidate["detection_id"], "elapsed_ms": elapsed_ms, "rule": rule},
-            )
-            return {"status": status, "elapsed_ms": elapsed_ms}
-        finally:
-            conn.close()
-
-    @app.post("/api/admin/firewall-candidates/{response_id}/mark-safe")
-    def api_admin_mark_firewall_candidate_safe(response_id: int, payload: FirewallBlockActionRequest):
-        duration_hours = payload.safe_duration_hours
-        if duration_hours < 1 or duration_hours > 24 * 365:
-            raise HTTPException(status_code=400, detail="Safe duration must be between 1 hour and 365 days")
-        conn = connect(db_path)
-        try:
-            candidate = get_firewall_candidate(conn, response_id)
-            if not candidate:
-                raise HTTPException(status_code=404, detail="Enforcement candidate not found")
-            add_allowlist_entry(
-                conn,
-                candidate["target_ip"],
-                duration_hours * 60,
-                name=f"Trusted after response #{response_id}",
-                reason=payload.reason.strip() or "Marked safe from admin enforcement queue",
-                added_by=payload.analyst_name.strip() or "admin",
-            )
-            update_response_manual_action(
-                conn,
-                response_id,
-                "Authorized Activity",
-                "authorized_activity",
-                "none",
-                "marked_safe",
-                0,
-            )
-            insert_app_event(
-                conn,
-                "info",
-                "firewall",
-                f"Marked enforcement candidate {candidate['target_ip']} safe",
-                {"response_id": response_id, "detection_id": candidate["detection_id"]},
-            )
-            return {"status": "safe"}
-        finally:
-            conn.close()
-
-    @app.post("/api/admin/firewall-blocks/{block_id}/mark-safe")
-    def api_admin_mark_firewall_block_safe(block_id: int, payload: FirewallBlockActionRequest):
-        duration_hours = payload.safe_duration_hours
-        if duration_hours < 1 or duration_hours > 24 * 365:
-            raise HTTPException(status_code=400, detail="Safe duration must be between 1 hour and 365 days")
-        conn = connect(db_path)
-        try:
-            block = get_firewall_block(conn, block_id)
-            if not block:
-                raise HTTPException(status_code=404, detail="Firewall block not found")
-            status, elapsed_ms, rule, zone = remove_firewalld_block(
-                block["ip_address"],
-                block.get("direction") or "source",
-                zone=block.get("zone"),
-                external_zone=config.get("firewall", {}).get("external_zone", "external"),
-                internal_zone=config.get("firewall", {}).get("internal_zone", "internal"),
-            )
-            add_allowlist_entry(
-                conn,
-                block["ip_address"],
-                duration_hours * 60,
-                name=f"Trusted after block #{block_id}",
-                reason=payload.reason.strip() or "Marked safe from admin firewall controls",
-                added_by=payload.analyst_name.strip() or "admin",
-            )
-            release_firewall_block(conn, block_id, payload.analyst_name.strip() or "admin", payload.reason.strip() or "marked safe")
-            insert_app_event(
-                conn,
-                "warning" if status.startswith("failed") else "info",
-                "firewall",
-                f"Marked {block['ip_address']} safe after firewall block",
-                {"block_id": block_id, "elapsed_ms": elapsed_ms, "rule": rule},
-            )
-            return {"status": "safe", "unblock_status": status, "elapsed_ms": elapsed_ms}
-        finally:
-            conn.close()
-
-    @app.delete("/api/admin/trusted-ip/{ip_address}")
-    def api_admin_remove_trusted_ip(ip_address: str, payload: FirewallBlockActionRequest):
-        try:
-            ipaddress.ip_address(ip_address)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid IP address")
-        conn = connect(db_path)
-        try:
-            removed = deactivate_allowlist_for_ip(conn, ip_address)
-            if not removed:
-                raise HTTPException(status_code=404, detail="No active trusted setting found for this IP")
-            insert_app_event(
-                conn,
-                "info",
-                "firewall",
-                f"Removed trusted setting for {ip_address}",
-                {
-                    "ip_address": ip_address,
-                    "removed_entries": removed,
-                    "analyst_name": payload.analyst_name.strip() or "admin",
-                    "reason": payload.reason.strip() or "Removed from admin incident response history",
-                },
-            )
-            return {"status": "removed", "removed_entries": removed}
         finally:
             conn.close()
 
@@ -2175,54 +1811,6 @@ def create_app(config_path):
             if not deactivate_asset(conn, asset_id):
                 raise HTTPException(status_code=404, detail="Asset not found")
             insert_app_event(conn, "info", "assets", f"Deactivated asset {asset_id}")
-            return {"status": "inactive"}
-        finally:
-            conn.close()
-
-    @app.get("/api/allowlist")
-    def api_allowlist(limit: int = 50):
-        conn = connect(db_path)
-        try:
-            return list_allowlist_entries(conn, limit)
-        finally:
-            conn.close()
-
-    @app.post("/api/allowlist")
-    def api_add_allowlist_entry(payload: AllowlistRequest):
-        try:
-            ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Enter a valid IPv4 or IPv6 address")
-
-        if payload.duration_hours < 1:
-            raise HTTPException(status_code=400, detail="Duration must be at least 1 hour")
-        if payload.duration_hours > 24 * 365:
-            raise HTTPException(status_code=400, detail="Duration cannot exceed 365 days")
-        if not payload.reason.strip():
-            raise HTTPException(status_code=400, detail="Reason is required")
-
-        conn = connect(db_path)
-        try:
-            entry_id = add_allowlist_entry(
-                conn,
-                ip_address,
-                payload.duration_hours * 60,
-                name=payload.name.strip() or None,
-                reason=payload.reason.strip(),
-                added_by=payload.added_by.strip() or "dashboard",
-            )
-            insert_app_event(conn, "info", "allowlist", f"Allowlisted {ip_address}", {"entry_id": entry_id})
-            return {"id": entry_id, "status": "active"}
-        finally:
-            conn.close()
-
-    @app.delete("/api/allowlist/{entry_id}")
-    def api_deactivate_allowlist_entry(entry_id: int):
-        conn = connect(db_path)
-        try:
-            if not deactivate_allowlist_entry(conn, entry_id):
-                raise HTTPException(status_code=404, detail="Allowlist entry not found")
-            insert_app_event(conn, "info", "allowlist", f"Deactivated allowlist entry {entry_id}")
             return {"status": "inactive"}
         finally:
             conn.close()

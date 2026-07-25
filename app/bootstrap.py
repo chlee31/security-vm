@@ -1,4 +1,10 @@
-import ipaddress
+"""Interactive host setup for sensors, permissions, and configuration.
+
+Bootstrap discovers interfaces and installed tools, prepares sensor settings,
+and writes application configuration. Privileged sensor changes are kept here
+rather than mixed into the normal ingestion path.
+"""
+
 import json
 import shutil
 import subprocess
@@ -7,8 +13,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import requests
-import yaml
-
 from app.config import DEFAULT_CONFIG, load_config, save_config
 from app.database import init_db
 
@@ -34,7 +38,6 @@ TOOL_PATH_CANDIDATES = {
     "zkg": ["zkg", "/usr/bin/zkg", "/usr/local/bin/zkg", "/opt/zeek/bin/zkg"],
 }
 
-ROUTER_FIREWALL_POLICY = "security-vm-route"
 COMMUNITY_ID_SEED = 0
 
 
@@ -132,18 +135,6 @@ def detected_interfaces():
     return interfaces
 
 
-def default_route():
-    routes = run_json(["ip", "-j", "route", "show", "default"])
-    if not routes:
-        return {}
-    route = routes[0]
-    return {
-        "interface": route.get("dev", ""),
-        "gateway": route.get("gateway", ""),
-        "raw": route,
-    }
-
-
 def prompt_choice(prompt, choices, default=None):
     if not choices:
         return ""
@@ -158,194 +149,11 @@ def prompt_choice(prompt, choices, default=None):
         print("Please enter one of the listed values.")
 
 
-def default_client_ip(network):
-    candidate = network.network_address + 50
-    if candidate in network and candidate not in {network.network_address, network.broadcast_address}:
-        return str(candidate)
-    candidate = network.network_address + 2
-    if candidate in network and candidate not in {network.network_address, network.broadcast_address}:
-        return str(candidate)
-    return ""
-
-
-def router_netplan(external_interface, internal_interface, internal_cidr):
-    return {
-        "network": {
-            "version": 2,
-            "renderer": "networkd",
-            "ethernets": {
-                external_interface: {
-                    "dhcp4": True,
-                    "optional": True,
-                },
-                internal_interface: {
-                    "dhcp4": False,
-                    "addresses": [internal_cidr],
-                    "optional": True,
-                },
-            },
-        }
-    }
-
-
-def ensure_router_firewall_policy(
-    policy_name=ROUTER_FIREWALL_POLICY,
-    internal_zone="internal",
-    external_zone="external",
-):
-    """Persist the explicit cross-zone policy required by modern firewalld."""
-    base = ["sudo", "firewall-cmd", "--permanent"]
-    result = subprocess.run(
-        [*base, "--get-policies"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    if policy_name not in result.stdout.split():
-        subprocess.run([*base, f"--new-policy={policy_name}"], check=True)
-
-    bindings = (
-        ("ingress", internal_zone),
-        ("egress", external_zone),
-    )
-    for direction, zone in bindings:
-        query = subprocess.run(
-            [*base, f"--policy={policy_name}", f"--query-{direction}-zone={zone}"],
-            capture_output=True,
-            text=True,
-        )
-        if query.returncode != 0:
-            subprocess.run(
-                [*base, f"--policy={policy_name}", f"--add-{direction}-zone={zone}"],
-                check=True,
-            )
-    subprocess.run(
-        [*base, f"--policy={policy_name}", "--set-target=ACCEPT"],
-        check=True,
-    )
-
-
-def write_temp_yaml(data):
-    handle = tempfile.NamedTemporaryFile("w", delete=False, suffix=".yaml", encoding="utf-8")
-    with handle:
-        yaml.safe_dump(data, handle, sort_keys=False)
-    return handle.name
-
-
 def write_temp_text(text):
     handle = tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf", encoding="utf-8")
     with handle:
         handle.write(text)
     return handle.name
-
-
-def router_setup_wizard():
-    print("\nDevelopment lab routing:")
-    print("This optional step routes isolated lab traffic through the sensor VM.")
-    print("It is not the intended production architecture; production monitoring should use mirrored/SPAN traffic.")
-    if not yes_no("Configure development lab routing now?", default=False):
-        print("[+] Skipping development lab routing.")
-        return
-    missing = [
-        name for name, binary in {"netplan": "netplan", "firewalld": "firewall-cmd"}.items()
-        if not resolve_tool_path(name, binary)
-    ]
-    if missing:
-        print(f"[!] Development lab routing requires: {', '.join(missing)}")
-        print("    Install netplan.io and firewalld, then rerun bootstrap.")
-        return
-
-    interfaces = detected_interfaces()
-    route = default_route()
-    if len(interfaces) < 2:
-        print("[!] Fewer than two non-loopback interfaces were detected.")
-        print("    Development lab routing needs one external interface and one internal interface.")
-        return
-
-    print("\nDetected interfaces:")
-    for item in interfaces:
-        address_text = ", ".join(item["addresses"]) if item["addresses"] else "no IPv4 address"
-        marker = " default route" if item["name"] == route.get("interface") else ""
-        print(f"  {item['name']:12} {item['state']:8} {address_text}{marker}")
-
-    default_external = route.get("interface") or interfaces[0]["name"]
-    if route.get("gateway"):
-        print(f"\nDefault external route: {default_external} via {route['gateway']}")
-    else:
-        print("\nNo default route was detected. Choose the internet-facing interface manually.")
-
-    names = [item["name"] for item in interfaces]
-    external_interface = prompt_choice("External/internet interface", names, default_external)
-    internal_choices = [name for name in names if name != external_interface]
-    internal_interface = prompt_choice("Internal/lab interface", internal_choices, internal_choices[0])
-
-    default_internal_cidr = "192.168.11.1/24"
-    if yes_no(f"Use default internal router IP {default_internal_cidr}?", default=True):
-        internal_cidr = default_internal_cidr
-    else:
-        internal_cidr = input("Internal router IP with prefix, e.g. 192.168.11.1/24: ").strip() or default_internal_cidr
-
-    try:
-        interface = ipaddress.ip_interface(internal_cidr)
-    except ValueError:
-        print("[!] Invalid internal CIDR. Router setup skipped.")
-        return
-
-    network = interface.network
-    client_ip = default_client_ip(network)
-    netplan_data = router_netplan(external_interface, internal_interface, internal_cidr)
-    netplan_temp = write_temp_yaml(netplan_data)
-    sysctl_temp = write_temp_text("net.ipv4.ip_forward=1\n")
-    netplan_target = "/etc/netplan/99-security-vm-router.yaml"
-    sysctl_target = "/etc/sysctl.d/99-security-vm-router.conf"
-
-    print("\nGenerated netplan:")
-    print(yaml.safe_dump(netplan_data, sort_keys=False))
-    print("Client device manual IPv4 settings:")
-    print(f"  IP address: {client_ip or 'choose any free host IP in the internal subnet'}")
-    print(f"  Prefix/mask: /{network.prefixlen}")
-    print(f"  Gateway:    {interface.ip}")
-    print("  DNS:        1.1.1.1, 8.8.8.8")
-
-    print("\nCommands that will be used:")
-    commands = [
-        ["sudo", "cp", netplan_temp, netplan_target],
-        ["sudo", "cp", sysctl_temp, sysctl_target],
-        ["sudo", "sysctl", "--system"],
-        ["sudo", "netplan", "generate"],
-        ["sudo", "netplan", "apply"],
-        ["sudo", "systemctl", "enable", "--now", "firewalld"],
-        ["sudo", "firewall-cmd", "--permanent", "--zone=external", f"--add-interface={external_interface}"],
-        ["sudo", "firewall-cmd", "--permanent", "--zone=internal", f"--add-interface={internal_interface}"],
-        ["sudo", "firewall-cmd", "--permanent", "--zone=external", "--add-masquerade"],
-    ]
-    for command in commands:
-        print("  " + " ".join(command))
-    print(f"  sudo firewall-cmd --permanent --new-policy={ROUTER_FIREWALL_POLICY}  # if missing")
-    print(
-        f"  sudo firewall-cmd --permanent --policy={ROUTER_FIREWALL_POLICY} "
-        "--add-ingress-zone=internal"
-    )
-    print(
-        f"  sudo firewall-cmd --permanent --policy={ROUTER_FIREWALL_POLICY} "
-        "--add-egress-zone=external"
-    )
-    print(
-        f"  sudo firewall-cmd --permanent --policy={ROUTER_FIREWALL_POLICY} "
-        "--set-target=ACCEPT"
-    )
-    print("  sudo firewall-cmd --reload")
-
-    if not yes_no("Apply router configuration now?", default=False):
-        print(f"[+] Router files left for review: {netplan_temp}, {sysctl_temp}")
-        return
-
-    for command in commands:
-        subprocess.run(command, check=True)
-    ensure_router_firewall_policy()
-    subprocess.run(["sudo", "firewall-cmd", "--reload"], check=True)
-    print("[+] Router configuration applied.")
-    print("[!] If your SSH/browser connection drops, reconnect using the interface address that still reaches this VM.")
 
 
 def install_official_zeek(os_release):
@@ -584,8 +392,6 @@ def main():
     Path("evidence/sample_alerts").mkdir(parents=True, exist_ok=True)
 
     test_ai_model(ai_model_host, ai_model_name, config["ai_model"]["timeout_seconds"])
-    router_setup_wizard()
-
     print("\nNext steps:")
     print("  1. Confirm Suricata is writing /var/log/suricata/eve.json")
     print("  2. Run: python -m app.main run-all --config config.yaml")

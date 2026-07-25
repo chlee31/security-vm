@@ -45,20 +45,17 @@ The current bootstrap:
 - requires Zeek and asks for its monitoring interface;
 - can configure Zeek JSON logging and matching Community ID policies;
 - initializes or migrates SQLite;
-- collects AI service settings; and
-- offers an explicitly optional, lab-only router setup helper.
+- collects AI service settings.
 
 The report should not claim that bootstrap currently asks for internal network ranges, configures the Suricata capture interface, creates the managed-switch mirror session, or collects every threat-intelligence key. Suricata interface/rule configuration and SPAN setup remain administrator tasks. Threat-intelligence providers and credentials are managed through Admin controls.
 
 Replace **Configure the Ollama endpoint** with **Configure the AI model service endpoint and model profile**. Ollama is one compatible runtime, but the application intentionally uses provider-neutral AI terminology.
 
-### 3. Separate Passive Deployment from the Lab Router Helper
-
-The evaluated architecture is passive and should remain the report's primary deployment model. An optional bootstrap helper can configure a laboratory host as a router by changing netplan, IP forwarding, and firewalld NAT settings. That helper is not part of the evaluated passive monitoring workflow.
+### 3. Describe the Passive Deployment Boundary
 
 Suggested boundary wording:
 
-> The analysis pipeline does not enforce firewall actions or alter production traffic. An optional router-configuration helper exists for isolated laboratory testing, but it is excluded from the evaluated passive deployment and should not be enabled on the monitored business network.
+> The analysis pipeline does not enforce packet-filtering actions, alter production traffic, or configure the host as a router. Its monitoring interface receives copied traffic from a managed-switch SPAN or mirror port.
 
 ### 4. Describe Ingestion Recovery Precisely
 

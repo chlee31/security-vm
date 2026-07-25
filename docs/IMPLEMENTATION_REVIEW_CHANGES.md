@@ -37,7 +37,7 @@ These values remain design choices. Experimental work should measure missed corr
 - Python validates the response and maps it to `log_only`, `human_review`, or `escalate`.
 - Missing or invalid classifications and materially disputed sensor findings are forced to Human Review Required.
 - Historical score columns and tables may remain only in upgraded SQLite databases so migrations are non-destructive. New installations omit them, and compatibility values in older databases are never exposed through the API or prompt.
-- MITRE technique IDs and names remain descriptive context and do not determine classification.
+- Removed heuristic MITRE ATT&CK mapping. Investigation context now comes from observed Suricata and Zeek records, registered-IP roles, and threat-intelligence evidence.
 
 ## Registered IP Terminology
 
@@ -48,7 +48,8 @@ These values remain design choices. Experimental work should measure missed corr
 
 - Packet-capture and tshark processing code has been removed from the application, APIs, schema for new databases, and documentation.
 - Historical packet-capture columns in existing SQLite databases are left untouched rather than destructively dropped.
-- Active firewall response and notification paths remain retired from the evaluated analysis runtime.
+- Packet-filtering response code, temporary allowlisting, Gmail notifications, controls, routes, and router bootstrap helpers have been removed.
+- Historical response-era tables in an upgraded SQLite database are preserved rather than destructively dropped, but new installations do not create them.
 - The dashboard continues to bind to `127.0.0.1` by default and warns when `0.0.0.0` is selected.
 - The prototype still has no built-in authentication and must use localhost or a restricted management network.
 

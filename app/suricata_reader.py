@@ -1,3 +1,5 @@
+"""Reliably follow Suricata EVE JSON with persistent inode/offset checkpoints."""
+
 import json
 import os
 import time
@@ -19,6 +21,7 @@ def permission_help(path):
 
 @dataclass
 class SuricataRecord:
+    """One parsed event whose checkpoint advances only after acknowledgement."""
     event: dict
     path: Path
     inode: int
@@ -28,6 +31,7 @@ class SuricataRecord:
     acknowledged: bool = False
 
     def acknowledge(self):
+        """Persist the offset after downstream processing has completed."""
         if self.acknowledged:
             return
         if self.conn is not None:
@@ -42,6 +46,7 @@ class SuricataRecord:
 
 
 class SuricataEveFollower:
+    """Tail EVE safely across restarts, truncation, and log rotation."""
     def __init__(self, path, conn=None, source="eve", start_position="end", poll_seconds=0.5):
         self.path = Path(path)
         self.conn = conn
@@ -63,6 +68,7 @@ class SuricataEveFollower:
         return get_suricata_checkpoint(self.conn, self.source)
 
     def open_if_ready(self):
+        """Open EVE and seek to a valid checkpoint or configured start position."""
         try:
             stat = self.path.stat()
         except FileNotFoundError:
@@ -111,6 +117,7 @@ class SuricataEveFollower:
         return True
 
     def rotated_or_truncated(self):
+        """Detect inode replacement or a file shorter than the current offset."""
         if not self.handle:
             return False
         try:
@@ -122,6 +129,7 @@ class SuricataEveFollower:
         return stat.st_ino != self.inode or stat.st_size < self.handle.tell()
 
     def records(self):
+        """Yield parsed records indefinitely and skip malformed JSON lines."""
         announced_wait = False
         announced_read = False
         try:
@@ -172,6 +180,7 @@ class SuricataEveFollower:
 
 
 def follow_file(path, conn=None, source="eve", start_position="end", poll_seconds=0.5):
+    """Compatibility generator around :class:`SuricataEveFollower`."""
     follower = SuricataEveFollower(
         path,
         conn=conn,

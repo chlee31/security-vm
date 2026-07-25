@@ -1,3 +1,10 @@
+"""Fetch, cache, match, and summarize supported threat-intelligence providers.
+
+Bulk/cached providers are qualitative pre-AI evidence. VirusTotal lookup code
+is available here but orchestration deliberately reserves it for post-AI
+verification of Dangerous classifications.
+"""
+
 import csv
 import io
 import ipaddress
@@ -18,6 +25,8 @@ from app.database import (
 )
 
 
+# Provider metadata drives both the Admin UI and evidence status. Credentials
+# live only in configuration and are never copied into these status records.
 PROVIDERS = {
     "otx": {
         "label": "AlienVault OTX",
@@ -79,6 +88,7 @@ PRE_AI_PROVIDERS = frozenset(name for name in PROVIDERS if name != "virustotal")
 
 
 def provider_config(config, source):
+    """Resolve current and legacy YAML settings for one provider."""
     threat_intel = config.get("threat_intel", {})
     configured = threat_intel.get("providers", {}).get(source, {})
     legacy_enabled = threat_intel.get(f"{source}_enabled", False)
@@ -91,6 +101,7 @@ def provider_config(config, source):
 
 
 def sanitized_provider_status(config, conn=None):
+    """Return operational provider state without exposing API-key values."""
     source_rows = threat_intel_source_rows(conn) if conn else {}
     usage_rows = threat_intel_usage_summary(conn) if conn else {}
     items = []
@@ -143,6 +154,7 @@ def ai_provider_status(config, conn):
 
 
 def provider_evidence_for_indicator(conn, config, indicator, indicator_type="ip"):
+    """Explain match/no-match/not-active state for every configured provider."""
     providers = ai_provider_status(config, conn)
     if not indicator:
         return [
@@ -286,7 +298,13 @@ def zeek_event_observables(event):
 
 
 def zeek_context_threat_intel(conn, config, events, limit=50, provenance_limit=8):
-    """Match unique Zeek observables against active cached pre-AI providers."""
+    """Match unique Zeek observables against active cached pre-AI providers.
+
+    Observable provenance retains the Zeek row, log type, field, timestamp, and
+    associated endpoints so an analyst can trace every match to sensor evidence.
+    Matched observables sort before unmatched ones, then the result is bounded
+    before it enters the model context.
+    """
     active_sources = sorted(
         source
         for source in PRE_AI_PROVIDERS

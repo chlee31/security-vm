@@ -1,3 +1,9 @@
+"""Perform optional post-AI VirusTotal verification for Dangerous cases.
+
+VirusTotal is stored as separate corroboration evidence. A clean, unavailable,
+or failed result never lowers the AI/Python classification.
+"""
+
 import ipaddress
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +29,7 @@ def _lookup_time(value):
 
 
 def eligible_ip(value):
+    """Allow only global IPs; private, reserved, and Tailscale CGNAT are excluded."""
     try:
         address = ipaddress.ip_address(str(value or "").strip())
     except ValueError:
@@ -31,6 +38,7 @@ def eligible_ip(value):
 
 
 def verdict(result):
+    """Translate VT counters into non-numerical verification evidence."""
     if int(result.get("malicious_count") or 0):
         return "malicious", "corroborated"
     if int(result.get("suspicious_count") or 0):
@@ -54,6 +62,13 @@ def verify_dangerous(
     stage="initial",
     force_refresh=False,
 ):
+    """Verify eligible IPs only after an AI classification of Dangerous.
+
+    Fresh cached results are reused unless an analyst requests a refresh. Every
+    attempted, skipped, cached, failed, or unavailable result is stored so the
+    absence of a lookup is explainable. This function never changes the case
+    classification.
+    """
     if str(ai_report.get("classification") or "").strip().lower() != "dangerous":
         return [
             _store(

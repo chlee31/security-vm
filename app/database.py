@@ -1,3 +1,11 @@
+"""SQLite persistence, migrations, correlation queries, and dashboard read models.
+
+This is the authoritative local evidence store. Sensor records are retained
+with stable IDs and raw-record hashes; normalized findings, AI audits, analyst
+actions, and enrichment results reference those source rows rather than
+replacing them.
+"""
+
 import sqlite3
 import json
 import ipaddress
@@ -13,7 +21,14 @@ from app.zeek_normalizer import zeek_evidence_details
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
 
 
+# ---------------------------------------------------------------------------
+# Connection and forward-only schema migration
+# ---------------------------------------------------------------------------
+
 def connect(db_path):
+    """Open a row-addressable SQLite connection tolerant of worker contention."""
+    # WAL permits dashboard readers while ingestion writes. busy_timeout makes a
+    # caller wait briefly instead of immediately raising "database is locked".
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
@@ -21,6 +36,7 @@ def connect(db_path):
 
 
 def init_db(db_path):
+    """Open the database, apply the base schema, and migrate legacy databases."""
     conn = connect(db_path)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
@@ -56,13 +72,7 @@ def ensure_pre_schema_columns(conn):
 
 
 def ensure_migrations(conn):
-    columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(allowlist)").fetchall()
-    }
-    if "name" not in columns:
-        conn.execute("ALTER TABLE allowlist ADD COLUMN name TEXT")
-
+    """Apply idempotent additions without deleting historical SQLite evidence."""
     asset_columns = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(assets)").fetchall()
@@ -74,6 +84,10 @@ def ensure_migrations(conn):
             conn.execute("ALTER TABLE assets ADD COLUMN status TEXT DEFAULT 'active'")
         if "updated_at" not in asset_columns:
             conn.execute("ALTER TABLE assets ADD COLUMN updated_at TEXT")
+        # Preserve registered-IP records while replacing the retired response-era role name.
+        conn.execute(
+            "UPDATE assets SET device_type = 'network_router' WHERE device_type = 'firewall_router'"
+        )
 
     ensure_ai_report_columns(conn, "ai_reports")
     ensure_ai_run_audit_table(conn)
@@ -106,51 +120,6 @@ def ensure_migrations(conn):
         )
         """
     )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS firewall_blocks (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          detection_id INTEGER,
-          ip_address TEXT NOT NULL,
-          direction TEXT,
-          zone TEXT,
-          reason TEXT,
-          firewall_rule TEXT,
-          timeout_seconds INTEGER,
-          status TEXT DEFAULT 'active',
-          response_status TEXT,
-          response_time_ms INTEGER,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          expires_at TEXT,
-          released_at TEXT,
-          released_by TEXT,
-          release_reason TEXT
-        )
-        """
-    )
-    firewall_columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(firewall_blocks)").fetchall()
-    }
-    if "zone" not in firewall_columns:
-        conn.execute("ALTER TABLE firewall_blocks ADD COLUMN zone TEXT")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS notification_events (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          detection_id INTEGER,
-          response_id INTEGER,
-          channel TEXT NOT NULL,
-          recipient TEXT,
-          subject TEXT,
-          status TEXT NOT NULL,
-          error TEXT,
-          cooldown_key TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          sent_at TEXT
-        )
-        """
-    )
-
 
 def ensure_ai_comparison_tables(conn):
     conn.executescript(
@@ -407,10 +376,12 @@ def _uid_date(value):
 
 
 def stable_record_uid(prefix, record_id, timestamp):
+    """Create readable, stable record IDs such as SUR-, ZEK-, and CASE- IDs."""
     return f"{prefix}-{_uid_date(timestamp)}-{int(record_id):06d}"
 
 
 def ensure_case_identity_columns(conn):
+    """Backfill stable UIDs for databases created before case identities existed."""
     definitions = {
         "alerts": ("event_uid", "SUR", "timestamp"),
         "detections": ("case_uid", "CASE", "first_seen"),
@@ -501,6 +472,7 @@ def ensure_ai_report_columns(conn, table_name):
 
 
 def ensure_ai_run_audit_table(conn):
+    """Create the proof table containing exact AI requests and responses."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS ai_run_audits (
@@ -776,6 +748,7 @@ LEGACY_OPERATIONAL_SCORE_FIELDS = {
 
 
 def without_operational_scores(value):
+    """Remove retired score keys from API read models while preserving old rows."""
     item = dict(value)
     for key in LEGACY_OPERATIONAL_SCORE_FIELDS:
         item.pop(key, None)
@@ -791,7 +764,7 @@ def default_asset_types(config):
         "laptop": "Laptop",
         "desktop": "Desktop",
         "server": "Server",
-        "firewall_router": "Firewall / Router",
+        "network_router": "Network Router",
         "security_appliance": "Security Appliance",
         "printer": "Printer",
         "camera_iot": "Camera / IoT",
@@ -1415,6 +1388,7 @@ def asset_summary(conn):
 
 
 def alert_content_fingerprint(alert):
+    """Hash stable alert content so an EVE restart cannot duplicate the record."""
     supplied = str(alert.get("event_fingerprint") or "").strip()
     if supplied:
         return supplied
@@ -1444,6 +1418,7 @@ def alert_content_fingerprint(alert):
 
 
 def insert_alert(conn, alert):
+    """Persist one normalized Suricata alert and assign its stable event UID."""
     fingerprint = alert_content_fingerprint(alert)
     cur = conn.cursor()
     cur.execute(
@@ -1494,6 +1469,7 @@ def insert_alert(conn, alert):
 
 
 def insert_detection(conn, detection):
+    """Persist a new unified case and assign its stable CASE UID."""
     cur = conn.cursor()
     cur.execute(
         """
@@ -1502,9 +1478,9 @@ def insert_detection(conn, detection):
           protocol, community_id, sensor_state, agreement_state, correlation_method,
           correlation_confidence, detection_type,
           alert_count, unique_dest_ports, unique_dest_hosts, time_window_seconds,
-          mitre_id, mitre_name, status
+          status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection.get("first_alert_id"),
@@ -1525,8 +1501,6 @@ def insert_detection(conn, detection):
             detection.get("unique_dest_ports"),
             detection.get("unique_dest_hosts"),
             detection.get("time_window_seconds"),
-            detection.get("mitre_id"),
-            detection.get("mitre_name"),
             detection.get("status"),
         ),
     )
@@ -1541,6 +1515,7 @@ def insert_detection(conn, detection):
 
 
 def insert_ai_report(conn, detection_id, report):
+    """Store the normalized human-readable model explanation for a case."""
     def sqlite_value(value):
         if isinstance(value, (dict, list)):
             return json.dumps(value, sort_keys=True)
@@ -1598,6 +1573,12 @@ def insert_ai_report(conn, detection_id, report):
 
 
 def upsert_ai_run_audit(conn, detection_id, report, ai_report_id=None, assessment_type="initial"):
+    """Persist authoritative request/response proof captured by Python.
+
+    The exact prompt, normalized package, hashes, source map, omissions, safe
+    request options, measured model metrics, and raw response are stored here.
+    Credentials are removed before these values reach this function.
+    """
     """Persist the authoritative local record of an AI request and response."""
 
     def encoded(value, fallback):
@@ -1710,6 +1691,7 @@ def ai_run_audits_for_detection(conn, detection_id):
 
 
 def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", evidence_sources=None):
+    """Append a historical assessment without replacing earlier model opinions."""
     cur = conn.execute(
         """
         INSERT INTO ai_assessments (
@@ -1784,6 +1766,7 @@ def virustotal_verifications_for_detection(conn, detection_id):
 
 
 def insert_zeek_event(conn, event):
+    """Persist one normalized Zeek row while retaining its original JSON text."""
     cur = conn.execute(
         """
         INSERT OR IGNORE INTO zeek_events (
@@ -1859,6 +1842,7 @@ def zeek_flow_for_uid(conn, zeek_uid):
 
 
 def insert_sensor_finding(conn, detection_id, finding):
+    """Link a source sensor record to a unified detection exactly once."""
     raw_event = finding.get("raw_event")
     if isinstance(raw_event, (dict, list)):
         raw_event = json.dumps(raw_event, sort_keys=True)
@@ -2115,6 +2099,12 @@ def find_correlated_detection(
     same_sensor_window_seconds=300,
     strengths=None,
 ):
+    """Find the strongest existing case compatible with an incoming finding.
+
+    Matching is attempted from strongest to weakest: Community ID, Zeek UID,
+    endpoint/time flow, shared observables, then repeated same-sensor behavior.
+    The returned strength is a configured rule value, not a probability.
+    """
     community_id = str(event.get("community_id") or "").strip()
     if community_id:
         row = conn.execute(
@@ -2246,6 +2236,7 @@ def find_correlated_detection(
 
 
 def fuse_detection(conn, detection_id, event, correlation_method, correlation_confidence):
+    """Recalculate case bounds and sensor state after adding a new finding."""
     detection = detection_by_id(conn, detection_id)
     if not detection:
         return None
@@ -2600,6 +2591,13 @@ def zeek_telemetry_summary(conn, limit=50):
 
 
 def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
+    """Select and summarize Zeek rows related to a unified detection.
+
+    Community ID and directly linked Zeek UIDs are preferred. Endpoint/time
+    matches and repeated-source context provide fallbacks. The returned summary
+    exposes bytes, duration, DNS/TLS/HTTP metadata, and timing regularity without
+    claiming access to encrypted payload contents.
+    """
     detection = conn.execute(
         """
         SELECT id, first_seen, last_seen, src_ip, dest_ip, community_id,
@@ -2774,328 +2772,6 @@ def insert_response(conn, response):
     return cur.lastrowid
 
 
-def insert_notification_event(conn, event):
-    now = utc_now()
-    cur = conn.execute(
-        """
-        INSERT INTO notification_events (
-          detection_id, response_id, channel, recipient, subject, status,
-          error, cooldown_key, created_at, sent_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            event.get("detection_id"),
-            event.get("response_id"),
-            event.get("channel", "email"),
-            event.get("recipient"),
-            event.get("subject"),
-            event.get("status"),
-            event.get("error"),
-            event.get("cooldown_key"),
-            now,
-            now if event.get("status") == "sent" else None,
-        ),
-    )
-    conn.commit()
-    return cur.lastrowid
-
-
-def list_notification_events(conn, limit=50):
-    rows = conn.execute(
-        """
-        SELECT notification_events.*, detections.src_ip, detections.dest_ip,
-               detections.detection_type, responses.final_classification
-        FROM notification_events
-        LEFT JOIN detections ON detections.id = notification_events.detection_id
-        LEFT JOIN responses ON responses.id = notification_events.response_id
-        ORDER BY notification_events.id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def latest_sent_notification(conn, cooldown_key):
-    row = conn.execute(
-        """
-        SELECT *
-        FROM notification_events
-        WHERE cooldown_key = ?
-          AND status = 'sent'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (cooldown_key,),
-    ).fetchone()
-    return dict(row) if row else None
-
-
-def insert_firewall_block(conn, block):
-    now = datetime.now(timezone.utc)
-    timeout_seconds = int(block.get("timeout_seconds") or 0)
-    expires_at = now + timedelta(seconds=timeout_seconds) if timeout_seconds else None
-    cur = conn.execute(
-        """
-        INSERT INTO firewall_blocks (
-          detection_id, ip_address, direction, zone, reason, firewall_rule, timeout_seconds,
-          status, response_status, response_time_ms, created_at, expires_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            block.get("detection_id"),
-            normalize_ip(block.get("ip_address")),
-            block.get("direction"),
-            block.get("zone"),
-            block.get("reason"),
-            block.get("firewall_rule"),
-            timeout_seconds,
-            block.get("status") or "active",
-            block.get("response_status"),
-            block.get("response_time_ms"),
-            now.isoformat(),
-            expires_at.isoformat() if expires_at else None,
-        ),
-    )
-    conn.commit()
-    return cur.lastrowid
-
-
-def list_firewall_blocks(conn, limit=100, status="active"):
-    if status == "all":
-        rows = conn.execute(
-            """
-            SELECT firewall_blocks.*, detections.src_ip, detections.dest_ip, detections.detection_type,
-                   alerts.signature
-            FROM firewall_blocks
-            LEFT JOIN detections ON detections.id = firewall_blocks.detection_id
-            LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-            ORDER BY firewall_blocks.id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT firewall_blocks.*, detections.src_ip, detections.dest_ip, detections.detection_type,
-                   alerts.signature
-            FROM firewall_blocks
-            LEFT JOIN detections ON detections.id = firewall_blocks.detection_id
-            LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-            WHERE firewall_blocks.status = ?
-            ORDER BY firewall_blocks.id DESC
-            LIMIT ?
-            """,
-            (status, limit),
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def firewall_candidate_target(row):
-    item = dict(row)
-    src_ip = item.get("src_ip")
-    dest_ip = item.get("dest_ip")
-    target_ip = item.get("target_ip")
-    direction = "source"
-    try:
-        src = ipaddress.ip_address(src_ip) if src_ip else None
-        dest = ipaddress.ip_address(dest_ip) if dest_ip else None
-        if src and dest and src.is_private and not dest.is_private:
-            target_ip = dest_ip
-            direction = "outbound_destination"
-    except ValueError:
-        pass
-    item["target_ip"] = target_ip
-    item["target_direction"] = direction
-    return item
-
-
-def list_firewall_candidates(conn, limit=50):
-    rows = conn.execute(
-        """
-        SELECT
-          responses.id AS response_id,
-          responses.detection_id,
-          responses.final_classification,
-          responses.final_action,
-          responses.target_ip,
-          responses.response_status,
-          responses.created_at AS response_created_at,
-          detections.src_ip,
-          detections.dest_ip,
-          detections.detection_type,
-          alerts.signature
-        FROM responses
-        LEFT JOIN detections ON detections.id = responses.detection_id
-        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        WHERE responses.final_action = 'would_block'
-          AND responses.target_ip IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1
-            FROM firewall_blocks
-            WHERE firewall_blocks.detection_id = responses.detection_id
-              AND firewall_blocks.ip_address = responses.target_ip
-              AND firewall_blocks.status = 'active'
-          )
-        ORDER BY responses.id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    return [firewall_candidate_target(row) for row in rows]
-
-
-def list_firewall_history(conn, limit=100):
-    block_rows = conn.execute(
-        """
-        SELECT
-          'block' AS history_type,
-          firewall_blocks.id AS item_id,
-          firewall_blocks.detection_id,
-          firewall_blocks.ip_address,
-          firewall_blocks.direction,
-          firewall_blocks.reason,
-          firewall_blocks.status,
-          firewall_blocks.response_status,
-          firewall_blocks.created_at,
-          firewall_blocks.released_at,
-          firewall_blocks.released_by,
-          firewall_blocks.release_reason,
-          detections.src_ip,
-          detections.dest_ip,
-          detections.detection_type,
-          alerts.signature
-        FROM firewall_blocks
-        LEFT JOIN detections ON detections.id = firewall_blocks.detection_id
-        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        ORDER BY firewall_blocks.id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    safe_rows = conn.execute(
-        """
-        SELECT
-          'marked_safe' AS history_type,
-          responses.id AS item_id,
-          responses.detection_id,
-          responses.target_ip AS ip_address,
-          NULL AS direction,
-          responses.final_classification AS reason,
-          responses.final_action AS status,
-          responses.response_status,
-          responses.created_at,
-          NULL AS released_at,
-          NULL AS released_by,
-          NULL AS release_reason,
-          (
-            SELECT COUNT(*)
-            FROM allowlist
-            WHERE allowlist.ip_address = responses.target_ip
-              AND allowlist.status = 'active'
-          ) AS active_allowlist_count,
-          detections.src_ip,
-          detections.dest_ip,
-          detections.detection_type,
-          alerts.signature
-        FROM responses
-        LEFT JOIN detections ON detections.id = responses.detection_id
-        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        WHERE responses.response_status = 'marked_safe'
-           OR responses.final_action = 'authorized_activity'
-        ORDER BY responses.id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    rows = [dict(row) for row in block_rows] + [dict(row) for row in safe_rows]
-    rows.sort(key=lambda item: item.get("released_at") or item.get("created_at") or "", reverse=True)
-    return rows[:limit]
-
-
-def get_firewall_candidate(conn, response_id):
-    row = conn.execute(
-        """
-        SELECT
-          responses.id AS response_id,
-          responses.detection_id,
-          responses.final_classification,
-          responses.final_action,
-          responses.target_ip,
-          responses.response_status,
-          responses.created_at AS response_created_at,
-          detections.src_ip,
-          detections.dest_ip,
-          detections.detection_type,
-          alerts.signature
-        FROM responses
-        LEFT JOIN detections ON detections.id = responses.detection_id
-        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        WHERE responses.id = ?
-          AND responses.final_action = 'would_block'
-          AND responses.target_ip IS NOT NULL
-        LIMIT 1
-        """,
-        (response_id,),
-    ).fetchone()
-    return firewall_candidate_target(row) if row else None
-
-
-def update_response_manual_action(conn, response_id, final_classification, final_action, response_method, response_status, response_time_ms=0):
-    cur = conn.execute(
-        """
-        UPDATE responses
-        SET final_classification = ?,
-            final_action = ?,
-            response_method = ?,
-            response_status = ?,
-            response_time_ms = ?
-        WHERE id = ?
-        """,
-        (
-            final_classification,
-            final_action,
-            response_method,
-            response_status,
-            response_time_ms,
-            response_id,
-        ),
-    )
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def get_firewall_block(conn, block_id):
-    row = conn.execute(
-        """
-        SELECT *
-        FROM firewall_blocks
-        WHERE id = ?
-        """,
-        (block_id,),
-    ).fetchone()
-    return dict(row) if row else None
-
-
-def release_firewall_block(conn, block_id, released_by="admin", reason="manual unblock"):
-    cur = conn.execute(
-        """
-        UPDATE firewall_blocks
-        SET status = 'released',
-            released_at = ?,
-            released_by = ?,
-            release_reason = ?
-        WHERE id = ?
-        """,
-        (datetime.now(timezone.utc).isoformat(), released_by, reason, block_id),
-    )
-    conn.commit()
-    return cur.rowcount > 0
-
-
 def upsert_pending_review(conn, response, review_days=3):
     if response.get("final_action") != "human_review":
         return
@@ -3162,7 +2838,6 @@ def reset_dashboard_logs(conn):
         "app_events",
         "threat_intel_lookups",
         "threat_intel_usage",
-        "notification_events",
         "zeek_events",
         "zeek_ingest_checkpoints",
         "ai_assessments",
@@ -3798,8 +3473,6 @@ def detection_type_detail(conn, detection_type=None, limit=50):
           detections.first_seen,
           detections.src_ip,
           detections.dest_ip,
-          detections.mitre_id,
-          detections.mitre_name,
           COALESCE(alerts.signature, (
             SELECT finding_name FROM sensor_findings
             WHERE detection_id = detections.id ORDER BY id LIMIT 1
@@ -3942,8 +3615,6 @@ def ip_detail(conn, ip_address, limit=100):
           detections.unique_dest_ports,
           detections.unique_dest_hosts,
           detections.time_window_seconds,
-          detections.mitre_id,
-          detections.mitre_name,
           alerts.timestamp,
           alerts.src_port,
           alerts.dest_port,
@@ -4116,8 +3787,6 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
           detections.unique_dest_ports,
           detections.unique_dest_hosts,
           detections.time_window_seconds,
-          detections.mitre_id,
-          detections.mitre_name,
           detections.sensor_state,
           detections.agreement_state,
           detections.correlation_method,
@@ -4198,8 +3867,6 @@ def investigation_detail(conn, detection_id):
           detections.unique_dest_ports,
           detections.unique_dest_hosts,
           detections.time_window_seconds,
-          detections.mitre_id,
-          detections.mitre_name,
           detections.sensor_state,
           detections.agreement_state,
           detections.correlation_method,
@@ -4740,8 +4407,6 @@ def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profil
           detections.unique_dest_ports,
           detections.unique_dest_hosts,
           detections.time_window_seconds,
-          detections.mitre_id,
-          detections.mitre_name,
           detections.src_port AS detection_src_port,
           detections.dest_port AS detection_dest_port,
           detections.protocol AS detection_protocol,
