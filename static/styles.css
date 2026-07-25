@@ -1084,12 +1084,15 @@ textarea {
   padding: 14px;
 }
 
-.decision-evidence-panel {
-  margin: 0 0 14px;
+.event-stream-panel {
+  margin-bottom: 14px;
 }
 
-.decision-evidence-panel .evidence-list {
-  max-height: 720px;
+.event-stream-list {
+  min-height: 520px;
+  max-height: 760px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
 }
 
 .evidence-timestamp {
@@ -2683,5 +2686,138 @@ time,
   .evaluation-form-actions,
   .evaluation-row-actions {
     flex-direction: column;
+  }
+}
+
+.sensor-provenance-grid,
+.audit-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.sensor-provenance-grid div,
+.audit-metrics div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.sensor-provenance-grid dt,
+.audit-metrics dt {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.sensor-provenance-grid dd,
+.audit-metrics dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.hash-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.sensor-raw-record,
+.ai-audit-record details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.sensor-raw-record summary,
+.ai-audit-record details summary {
+  color: var(--cyan);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.sensor-raw-record h4 {
+  margin: 14px 0 6px;
+}
+
+.ai-audit-record {
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.ai-audit-record + .ai-audit-record {
+  margin-top: 12px;
+}
+
+.ai-audit-record > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.ai-audit-record > header div {
+  display: grid;
+  gap: 4px;
+}
+
+.audit-document {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.model-evidence-acknowledgement {
+  margin-top: 14px;
+  padding: 14px;
+  border-left: 3px solid var(--cyan);
+  background: var(--bg);
+}
+
+.model-evidence-acknowledgement h3,
+.model-evidence-acknowledgement p {
+  margin: 0 0 8px;
+}
+
+.bounded-history {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.bounded-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bounded-history-head span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.bounded-history-list {
+  max-height: 420px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 0 12px;
+}
+
+.bounded-history-list .workbook-row:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 800px) {
+  .sensor-provenance-grid,
+  .audit-metrics {
+    grid-template-columns: 1fr;
   }
 }

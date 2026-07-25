@@ -21,6 +21,7 @@ const els = {
   scoring: document.querySelector("#inv-scoring"),
   intel: document.querySelector("#inv-intel"),
   zeek: document.querySelector("#inv-zeek"),
+  audit: document.querySelector("#inv-audit"),
   reassess: document.querySelector("#inv-reassess"),
   compare: document.querySelector("#inv-compare"),
   comparison: document.querySelector("#inv-comparison"),
@@ -365,6 +366,21 @@ function findingRow(group, showEventUid) {
       </header>
       <p>${escapeHtml(finding.source_ip || "unknown")}:${finding.source_port || ""} -&gt; ${escapeHtml(finding.destination_ip || "unknown")}:${finding.destination_port || ""} ${escapeHtml(finding.protocol || "")}</p>
       <small>${escapeHtml(timeRange)} · severity ${finding.severity ?? "unknown"} · confidence ${finding.confidence ?? "unknown"}${showEventUid ? ` · ${escapeHtml(finding.event_uid || label(finding.finding_type))}` : ""}</small>
+      <dl class="sensor-provenance-grid">
+        <div><dt>Source record</dt><dd>${escapeHtml(finding.source_table || "unknown")}[${finding.source_record_id ?? finding.sensor_event_id ?? "?"}]</dd></div>
+        <div><dt>Event UID</dt><dd>${escapeHtml(finding.event_uid || "not recorded")}</dd></div>
+        <div><dt>Source endpoint</dt><dd>${escapeHtml(finding.source_ip || "unknown")}:${finding.source_port ?? "?"}</dd></div>
+        <div><dt>Destination endpoint</dt><dd>${escapeHtml(finding.destination_ip || "unknown")}:${finding.destination_port ?? "?"}</dd></div>
+        <div><dt>Protocol</dt><dd>${escapeHtml(finding.protocol || "unknown")}</dd></div>
+        <div><dt>Raw SHA-256</dt><dd class="hash-value">${escapeHtml(finding.raw_record_sha256 || "not recorded")}</dd></div>
+      </dl>
+      <details class="sensor-raw-record">
+        <summary>View raw ${escapeHtml(label(finding.sensor || "sensor"))} record and field lineage</summary>
+        <h4>Field lineage</h4>
+        <pre class="raw-json">${escapeHtml(JSON.stringify(finding.field_provenance || {}, null, 2))}</pre>
+        <h4>Raw sensor JSON</h4>
+        <pre class="raw-json">${escapeHtml(JSON.stringify(finding.raw_record || {}, null, 2))}</pre>
+      </details>
     </article>
   `;
 }
@@ -388,12 +404,88 @@ function renderSensorFindings(data) {
         `${label(data.sensor_state || "unknown")} · ${label(data.agreement_state || "unknown")}`,
         `${label(data.correlation_method || "none")} · rule strength ${data.correlation_confidence ?? "unknown"}${data.community_id ? ` · Community ID ${escapeHtml(data.community_id)}` : ""}`
       )}
+      ${row(
+        "Correlation Proof",
+        `${findings.length} stored sensor record${findings.length === 1 ? "" : "s"} connected to ${escapeHtml(data.case_uid || `detection ${data.detection_id}`)}`,
+        data.community_id
+          ? `Python joined compatible records using Community ID ${escapeHtml(data.community_id)} and validated flow/time context.`
+          : `Python used ${escapeHtml(label(data.correlation_method || "single_sensor"))}; no shared Community ID was stored for this case.`
+      )}
       ${row("Traffic", `${escapeHtml(data.src_ip || "unknown")}:${data.src_port || ""} -&gt; ${escapeHtml(data.dest_ip || "unknown")}:${data.dest_port || ""}`, escapeHtml(data.protocol || ""))}
     </div>
     <div class="finding-scroll-list">
       ${visible.map((group) => findingRow(group, findingView === "all")).join("") || row("Primary Finding", escapeHtml(data.signature || "No finding stored"), `${escapeHtml(data.category || "unknown category")} · priority ${data.priority || "unknown"}`)}
     </div>
   `;
+}
+
+function renderAiAudit(data) {
+  const audits = data.ai_run_audits || [];
+  if (!audits.length) {
+    els.audit.innerHTML = `<div class="empty">No full request audit exists for this legacy case. New model requests are recorded automatically.</div>`;
+    return;
+  }
+  els.audit.innerHTML = audits.map((audit, index) => {
+    const manifest = audit.evidence_manifest || {};
+    const omissions = audit.omission_manifest || [];
+    const request = audit.request_options || {};
+    const responseMetrics = audit.response_metrics || {};
+    const review = audit.model_evidence_review || (index === 0 ? (data.ai_evidence_review || {}) : {});
+    return `
+      <article class="ai-audit-record">
+        <header>
+          <div>
+            <strong>${escapeHtml(label(audit.assessment_type || "model request"))}</strong>
+            <small>${escapeHtml(audit.model_provider || "unknown")}:${escapeHtml(audit.model_name || "unknown")} · ${escapeHtml(audit.model_run_id || "no run ID")}</small>
+          </div>
+          <span class="status-pill ${audit.status === "complete" ? "active" : ""}">${escapeHtml(label(audit.status || "unknown"))}</span>
+        </header>
+        <dl class="audit-metrics">
+          <div><dt>Prompt</dt><dd>${audit.prompt_chars ?? 0} chars · ${audit.prompt_bytes ?? 0} bytes</dd></div>
+          <div><dt>Evidence JSON</dt><dd>${audit.evidence_chars ?? 0} chars · ${audit.evidence_bytes ?? 0} bytes</dd></div>
+          <div><dt>Context fit</dt><dd>${request.estimated_prompt_tokens ?? "?"} estimated tokens · ${request.estimated_fits_configured_context === false ? "OVER CONFIGURED INPUT BUDGET" : "within estimate"}</dd></div>
+          <div><dt>Model measured input</dt><dd>${responseMetrics.prompt_eval_count ?? "not returned"} tokens</dd></div>
+          <div><dt>Included records</dt><dd>${manifest.sensor_finding_count ?? 0} findings · ${manifest.zeek_context_count ?? 0} Zeek rows</dd></div>
+          <div><dt>Omissions</dt><dd>${omissions.length} recorded</dd></div>
+          <div><dt>Parse result</dt><dd>${escapeHtml(label(audit.parse_status || "not returned"))}</dd></div>
+          <div><dt>Prompt SHA-256</dt><dd class="hash-value">${escapeHtml(audit.prompt_sha256 || "not recorded")}</dd></div>
+          <div><dt>Evidence SHA-256</dt><dd class="hash-value">${escapeHtml(audit.evidence_sha256 || "not recorded")}</dd></div>
+          <div><dt>Response SHA-256</dt><dd class="hash-value">${escapeHtml(audit.response_sha256 || "not returned")}</dd></div>
+        </dl>
+        ${audit.parse_error ? `<div class="connection-status error">${escapeHtml(audit.parse_error)}</div>` : ""}
+        <details>
+          <summary>Exact prompt sent to the model</summary>
+          <pre class="raw-json audit-document">${escapeHtml(audit.prompt_text || "No prompt stored.")}</pre>
+        </details>
+        <details>
+          <summary>Exact normalized evidence package</summary>
+          <pre class="raw-json audit-document">${escapeHtml(JSON.stringify(audit.evidence_package || {}, null, 2))}</pre>
+        </details>
+        <details>
+          <summary>Source map and correlation lineage</summary>
+          <pre class="raw-json audit-document">${escapeHtml(JSON.stringify(audit.source_map || {}, null, 2))}</pre>
+        </details>
+        <details>
+          <summary>Python omission and truncation manifest (${omissions.length})</summary>
+          <pre class="raw-json audit-document">${escapeHtml(JSON.stringify(omissions, null, 2))}</pre>
+        </details>
+        <details>
+          <summary>Request settings and structured-output contract</summary>
+          <pre class="raw-json audit-document">${escapeHtml(JSON.stringify(audit.request_options || {}, null, 2))}</pre>
+        </details>
+        ${Object.keys(review).length ? `
+          <section class="model-evidence-acknowledgement">
+            <h3>Model Evidence Acknowledgement</h3>
+            <p><strong>Review method:</strong> ${escapeHtml(review.review_method || "Legacy response did not acknowledge its evidence review.")}</p>
+            <p><strong>Sections received:</strong> ${escapeHtml((review.received_sections || []).join(" · ") || "Not reported")}</p>
+            <p><strong>Evidence cited:</strong> ${escapeHtml((review.evidence_used || []).join(" · ") || "Not reported")}</p>
+            <p><strong>Missing or ambiguous:</strong> ${escapeHtml((review.missing_or_ambiguous || []).join(" · ") || "None reported")}</p>
+            <small>This acknowledgement is explanatory. The Python-captured prompt, package, and hashes above are the authoritative proof.</small>
+          </section>
+        ` : ""}
+      </article>
+    `;
+  }).join("");
 }
 
 function renderZeekContext(data) {
@@ -461,6 +553,11 @@ function render(data) {
 
   const assessments = data.ai_assessments || [];
   const selectedIntelAnalysis = data.ai_threat_intel_analysis || {};
+  const assessmentHistory = assessments.map((item) => row(
+    `${label(item.assessment_type)} · ${item.model_name || "unknown model"}`,
+    `${item.classification || "Unknown"} · adjustment ${item.risk_adjustment ?? 0}`,
+    `${item.confidence || "Unknown"} confidence · ${displayTimestamp(item.created_at)}`
+  )).join("");
   els.ai.innerHTML = [
     row("Classification", data.ai_classification || "No AI opinion", `${data.ai_confidence || "No"} confidence`),
     row("AI Profile UID", data.ai_profile_uid || "legacy-profile", "Selected Admin profile stamped into this report"),
@@ -474,11 +571,15 @@ function render(data) {
     ),
     row("Evidence Boundaries", "Network metadata only", "No raw packet capture, decrypted payload, endpoint telemetry, or user identity was supplied to the model."),
     row("Recommended Action", data.ai_recommended_action || "none", `Risk adjustment ${data.ai_risk_adjustment ?? 0}`),
-    ...assessments.map((item) => row(
-      `${label(item.assessment_type)} · ${item.model_name || "unknown model"}`,
-      `${item.classification || "Unknown"} · adjustment ${item.risk_adjustment ?? 0}`,
-      `${item.confidence || "Unknown"} confidence · ${displayTimestamp(item.created_at)}`
-    )),
+    assessments.length ? `
+      <section class="bounded-history">
+        <div class="bounded-history-head">
+          <strong>Assessment History</strong>
+          <span>${assessments.length}</span>
+        </div>
+        <div class="bounded-history-list">${assessmentHistory}</div>
+      </section>
+    ` : "",
   ].join("");
 
   const breakdowns = data.score_breakdowns || [];
@@ -511,6 +612,11 @@ function render(data) {
   ].filter(Boolean).join("");
 
   const vtRows = data.virustotal_verifications || [];
+  const virustotalHistory = vtRows.map((item) => row(
+    `${item.ip_address || "No eligible public IP"} · ${label(item.request_state)}`,
+    `${label(item.verdict)} · ${label(item.interpretation)}`,
+    `malicious ${item.malicious_count || 0} · suspicious ${item.suspicious_count || 0} · ${displayTimestamp(item.checked_at)}`
+  )).join("");
   els.intel.innerHTML = [
     intelEndpointRow("Source IP", data.src_ip_profile, data.src_asset),
     intelEndpointRow("Destination IP", data.dest_ip_profile, data.dest_asset),
@@ -521,11 +627,15 @@ function render(data) {
       vtRows.length ? `${vtRows.length} stored verification record${vtRows.length === 1 ? "" : "s"}` : "Not requested",
       "Post-AI evidence only. VirusTotal never changes the numerical score."
     ),
-    ...vtRows.map((item) => row(
-      `${item.ip_address || "No eligible public IP"} · ${label(item.request_state)}`,
-      `${label(item.verdict)} · ${label(item.interpretation)}`,
-      `malicious ${item.malicious_count || 0} · suspicious ${item.suspicious_count || 0} · ${displayTimestamp(item.checked_at)}`
-    )),
+    vtRows.length ? `
+      <section class="bounded-history">
+        <div class="bounded-history-head">
+          <strong>VirusTotal History</strong>
+          <span>${vtRows.length}</span>
+        </div>
+        <div class="bounded-history-list">${virustotalHistory}</div>
+      </section>
+    ` : "",
   ].join("");
 
   els.review.innerHTML = [
@@ -546,6 +656,7 @@ function render(data) {
   `;
 
   renderZeekContext(data);
+  renderAiAudit(data);
   els.updated.textContent = new Date().toLocaleTimeString();
 }
 

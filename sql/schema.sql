@@ -219,12 +219,54 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   how_summary TEXT,
   next_steps_json TEXT,
   threat_intel_analysis_json TEXT,
+  evidence_review_json TEXT,
   raw_response TEXT,
   elapsed_ms INTEGER,
   prompt_sha256 TEXT,
   prompt_chars INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS ai_run_audits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER NOT NULL,
+  ai_report_id INTEGER,
+  assessment_type TEXT NOT NULL DEFAULT 'initial',
+  model_run_id TEXT NOT NULL,
+  ai_profile_uid TEXT,
+  model_provider TEXT,
+  model_name TEXT,
+  model_endpoint TEXT,
+  prompt_version TEXT,
+  prompt_text TEXT NOT NULL,
+  prompt_sha256 TEXT NOT NULL,
+  prompt_chars INTEGER NOT NULL,
+  prompt_bytes INTEGER NOT NULL,
+  evidence_package_json TEXT NOT NULL,
+  evidence_sha256 TEXT NOT NULL,
+  evidence_chars INTEGER NOT NULL,
+  evidence_bytes INTEGER NOT NULL,
+  evidence_manifest_json TEXT NOT NULL,
+  omission_manifest_json TEXT NOT NULL,
+  source_map_json TEXT NOT NULL,
+  request_options_json TEXT NOT NULL,
+  response_metrics_json TEXT NOT NULL DEFAULT '{}',
+  response_text TEXT,
+  response_sha256 TEXT,
+  response_chars INTEGER,
+  response_bytes INTEGER,
+  parse_status TEXT,
+  parse_error TEXT,
+  status TEXT NOT NULL DEFAULT 'prepared',
+  prepared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  responded_at TEXT,
+  UNIQUE(detection_id, model_run_id),
+  FOREIGN KEY (detection_id) REFERENCES detections(id),
+  FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_run_audits_detection
+  ON ai_run_audits(detection_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS evaluation_scenarios (
   scenario_uid TEXT PRIMARY KEY,

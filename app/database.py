@@ -77,6 +77,7 @@ def ensure_migrations(conn):
             conn.execute("ALTER TABLE assets ADD COLUMN updated_at TEXT")
 
     ensure_ai_report_columns(conn, "ai_reports")
+    ensure_ai_run_audit_table(conn)
     ensure_suricata_ingest_tables(conn)
     ensure_zeek_tables(conn)
     ensure_ai_assessments_table(conn)
@@ -535,10 +536,64 @@ def ensure_ai_report_columns(conn, table_name):
         "how_summary": f"ALTER TABLE {table_name} ADD COLUMN how_summary TEXT",
         "next_steps_json": f"ALTER TABLE {table_name} ADD COLUMN next_steps_json TEXT",
         "threat_intel_analysis_json": f"ALTER TABLE {table_name} ADD COLUMN threat_intel_analysis_json TEXT",
+        "evidence_review_json": f"ALTER TABLE {table_name} ADD COLUMN evidence_review_json TEXT",
     }
     for column, statement in report_migrations.items():
         if column not in report_columns:
             conn.execute(statement)
+
+
+def ensure_ai_run_audit_table(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS ai_run_audits (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          detection_id INTEGER NOT NULL,
+          ai_report_id INTEGER,
+          assessment_type TEXT NOT NULL DEFAULT 'initial',
+          model_run_id TEXT NOT NULL,
+          ai_profile_uid TEXT,
+          model_provider TEXT,
+          model_name TEXT,
+          model_endpoint TEXT,
+          prompt_version TEXT,
+          prompt_text TEXT NOT NULL,
+          prompt_sha256 TEXT NOT NULL,
+          prompt_chars INTEGER NOT NULL,
+          prompt_bytes INTEGER NOT NULL,
+          evidence_package_json TEXT NOT NULL,
+          evidence_sha256 TEXT NOT NULL,
+          evidence_chars INTEGER NOT NULL,
+          evidence_bytes INTEGER NOT NULL,
+          evidence_manifest_json TEXT NOT NULL,
+          omission_manifest_json TEXT NOT NULL,
+          source_map_json TEXT NOT NULL,
+          request_options_json TEXT NOT NULL,
+          response_metrics_json TEXT NOT NULL DEFAULT '{}',
+          response_text TEXT,
+          response_sha256 TEXT,
+          response_chars INTEGER,
+          response_bytes INTEGER,
+          parse_status TEXT,
+          parse_error TEXT,
+          status TEXT NOT NULL DEFAULT 'prepared',
+          prepared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          responded_at TEXT,
+          UNIQUE(detection_id, model_run_id),
+          FOREIGN KEY (detection_id) REFERENCES detections(id),
+          FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_run_audits_detection
+          ON ai_run_audits(detection_id, id DESC);
+        """
+    )
+    audit_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(ai_run_audits)").fetchall()
+    }
+    if "response_metrics_json" not in audit_columns:
+        conn.execute(
+            "ALTER TABLE ai_run_audits ADD COLUMN response_metrics_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def ensure_zeek_tables(conn):
@@ -1517,9 +1572,9 @@ def insert_ai_report(conn, detection_id, report):
           risk_adjustment, reason, recommended_action, summary,
           who_summary, what_summary, when_summary, where_summary,
           why_summary, how_summary, next_steps_json, threat_intel_analysis_json,
-          raw_response, elapsed_ms, prompt_sha256, prompt_chars
+          evidence_review_json, raw_response, elapsed_ms, prompt_sha256, prompt_chars
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             detection_id,
@@ -1544,6 +1599,7 @@ def insert_ai_report(conn, detection_id, report):
             sqlite_value(report.get("how")),
             sqlite_value(report.get("next_steps") or []),
             sqlite_value(report.get("threat_intel_analysis") or {}),
+            sqlite_value(report.get("evidence_review") or {}),
             sqlite_value(report.get("raw_response")),
             sqlite_int(report.get("elapsed_ms", 0)),
             sqlite_value(report.get("prompt_sha256")),
@@ -1552,6 +1608,118 @@ def insert_ai_report(conn, detection_id, report):
     )
     conn.commit()
     return cur.lastrowid
+
+
+def upsert_ai_run_audit(conn, detection_id, report, ai_report_id=None, assessment_type="initial"):
+    """Persist the authoritative local record of an AI request and response."""
+
+    def encoded(value, fallback):
+        return json.dumps(value if value is not None else fallback, sort_keys=True)
+
+    prompt = str(report.get("audit_prompt_text") or "")
+    evidence = report.get("audit_evidence_package") or {}
+    evidence_text = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+    model_run = report.get("model_run_id")
+    if not model_run or not prompt:
+        return None
+    status = report.get("audit_status") or "prepared"
+    responded_at = utc_now() if status == "complete" else None
+    conn.execute(
+        """
+        INSERT INTO ai_run_audits (
+          detection_id, ai_report_id, assessment_type, model_run_id,
+          ai_profile_uid, model_provider, model_name, model_endpoint, prompt_version,
+          prompt_text, prompt_sha256, prompt_chars, prompt_bytes,
+          evidence_package_json, evidence_sha256, evidence_chars, evidence_bytes,
+          evidence_manifest_json, omission_manifest_json, source_map_json,
+          request_options_json, response_metrics_json, response_text, response_sha256, response_chars,
+          response_bytes, parse_status, parse_error, status, responded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(detection_id, model_run_id) DO UPDATE SET
+          ai_report_id = excluded.ai_report_id,
+          assessment_type = excluded.assessment_type,
+          response_text = excluded.response_text,
+          response_sha256 = excluded.response_sha256,
+          response_chars = excluded.response_chars,
+          response_bytes = excluded.response_bytes,
+          parse_status = excluded.parse_status,
+          parse_error = excluded.parse_error,
+          status = excluded.status,
+          responded_at = excluded.responded_at
+        """,
+        (
+            detection_id,
+            ai_report_id,
+            assessment_type,
+            model_run,
+            report.get("ai_profile_uid"),
+            report.get("model_provider"),
+            report.get("model_name"),
+            report.get("model_endpoint"),
+            report.get("prompt_version"),
+            prompt,
+            report.get("prompt_sha256") or hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            int(report.get("prompt_chars") or len(prompt)),
+            int(report.get("audit_prompt_bytes") or len(prompt.encode("utf-8"))),
+            evidence_text,
+            report.get("audit_evidence_sha256") or hashlib.sha256(evidence_text.encode("utf-8")).hexdigest(),
+            int(report.get("audit_evidence_chars") or len(evidence_text)),
+            int(report.get("audit_evidence_bytes") or len(evidence_text.encode("utf-8"))),
+            encoded(report.get("audit_evidence_manifest"), {}),
+            encoded(report.get("audit_omissions"), []),
+            encoded(report.get("audit_source_map"), {}),
+            encoded(report.get("audit_request_options"), {}),
+            encoded(report.get("audit_response_metrics"), {}),
+            report.get("raw_response"),
+            report.get("audit_response_sha256"),
+            report.get("audit_response_chars"),
+            report.get("audit_response_bytes"),
+            report.get("audit_parse_status"),
+            report.get("audit_parse_error"),
+            status,
+            responded_at,
+        ),
+    )
+    conn.commit()
+    return conn.execute(
+        "SELECT id FROM ai_run_audits WHERE detection_id = ? AND model_run_id = ?",
+        (detection_id, model_run),
+    ).fetchone()["id"]
+
+
+def ai_run_audits_for_detection(conn, detection_id):
+    rows = conn.execute(
+        "SELECT * FROM ai_run_audits WHERE detection_id = ? ORDER BY id DESC",
+        (detection_id,),
+    ).fetchall()
+    results = []
+    json_fields = {
+        "evidence_package_json": "evidence_package",
+        "evidence_manifest_json": "evidence_manifest",
+        "omission_manifest_json": "omission_manifest",
+        "source_map_json": "source_map",
+        "request_options_json": "request_options",
+        "response_metrics_json": "response_metrics",
+    }
+    for row in rows:
+        item = dict(row)
+        for source, target in json_fields.items():
+            raw = item.pop(source, None)
+            try:
+                item[target] = json.loads(raw or ("[]" if target == "omission_manifest" else "{}"))
+            except (TypeError, json.JSONDecodeError):
+                item[target] = [] if target == "omission_manifest" else {}
+        item["model_evidence_review"] = {}
+        if item.get("response_text"):
+            try:
+                from app.ai_client import normalize_report, parse_model_response
+
+                normalized = normalize_report(parse_model_response(item["response_text"]))
+                item["model_evidence_review"] = normalized.get("evidence_review") or {}
+            except (TypeError, ValueError):
+                pass
+        results.append(item)
+    return results
 
 
 def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", evidence_sources=None):
@@ -1823,7 +1991,11 @@ def sensor_findings_for_detection(conn, detection_id):
           COALESCE(alerts.dest_ip, zeek_events.destination_ip) AS destination_ip,
           COALESCE(alerts.dest_port, zeek_events.destination_port) AS destination_port,
           COALESCE(alerts.protocol, zeek_events.protocol) AS protocol
-          ,COALESCE(alerts.event_uid, zeek_events.event_uid) AS event_uid
+          ,COALESCE(alerts.event_uid, zeek_events.event_uid) AS event_uid,
+          alerts.raw_json AS alert_raw_json,
+          zeek_events.raw_json AS zeek_raw_json,
+          zeek_events.zeek_uid AS zeek_uid,
+          zeek_events.log_type AS zeek_log_type
         FROM sensor_findings
         LEFT JOIN alerts
           ON sensor_findings.sensor = 'suricata'
@@ -1836,7 +2008,42 @@ def sensor_findings_for_detection(conn, detection_id):
         """,
         (detection_id,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    findings = []
+    for row in rows:
+        item = dict(row)
+        sensor = str(item.get("sensor") or "unknown").lower()
+        source_table = "alerts" if sensor == "suricata" else "zeek_events"
+        raw_text = item.pop("alert_raw_json", None) if sensor == "suricata" else item.pop("zeek_raw_json", None)
+        item.pop("zeek_raw_json", None)
+        item.pop("alert_raw_json", None)
+        if raw_text is None:
+            raw_text = item.get("raw_event")
+        if isinstance(raw_text, (dict, list)):
+            raw_record = raw_text
+            canonical_raw = json.dumps(raw_text, sort_keys=True, separators=(",", ":"))
+        else:
+            canonical_raw = str(raw_text or "")
+            try:
+                raw_record = json.loads(canonical_raw) if canonical_raw else {}
+            except (TypeError, json.JSONDecodeError):
+                raw_record = {"unparsed": canonical_raw}
+        item["source_table"] = source_table
+        item["source_record_id"] = item.get("sensor_event_id")
+        item["raw_record"] = raw_record
+        item["raw_record_sha256"] = hashlib.sha256(canonical_raw.encode("utf-8")).hexdigest()
+        item["raw_record_bytes"] = len(canonical_raw.encode("utf-8"))
+        item["field_provenance"] = {
+            "finding_name": f"sensor_findings.finding_name derived from {source_table}",
+            "timestamp": f"{source_table}.timestamp",
+            "source_ip": f"{source_table}.{'src_ip' if sensor == 'suricata' else 'source_ip'}",
+            "source_port": f"{source_table}.{'src_port' if sensor == 'suricata' else 'source_port'}",
+            "destination_ip": f"{source_table}.{'dest_ip' if sensor == 'suricata' else 'destination_ip'}",
+            "destination_port": f"{source_table}.{'dest_port' if sensor == 'suricata' else 'destination_port'}",
+            "protocol": f"{source_table}.protocol",
+            "community_id": "sensor_findings.community_id with sensor record fallback",
+        }
+        findings.append(item)
+    return findings
 
 
 def sensor_finding_detection_id(conn, sensor, sensor_event_id):
@@ -3035,6 +3242,7 @@ def reset_dashboard_logs(conn):
         "ai_comparison_votes",
         "ai_comparison_candidates",
         "ai_comparison_runs",
+        "ai_run_audits",
         "alerts",
         "detections",
         "ai_reports",
@@ -3497,7 +3705,7 @@ def threat_intel_matches(conn, indicator, indicator_type="ip"):
         return []
     rows = conn.execute(
         """
-        SELECT indicator, indicator_type, source, category, malware_family,
+        SELECT id AS source_record_id, indicator, indicator_type, source, category, malware_family,
                confidence, first_seen, last_seen, expires_at, source_reference,
                imported_at
         FROM threat_intel_indicators
@@ -3506,7 +3714,7 @@ def threat_intel_matches(conn, indicator, indicator_type="ip"):
         """,
         (value,),
     ).fetchall()
-    matches = [dict(row) for row in rows]
+    matches = [{**dict(row), "source_table": "threat_intel_indicators"} for row in rows]
     if indicator_type == "ip":
         try:
             address = ipaddress.ip_address(value)
@@ -3515,7 +3723,7 @@ def threat_intel_matches(conn, indicator, indicator_type="ip"):
         if address:
             cidr_rows = conn.execute(
                 """
-                SELECT indicator, indicator_type, source, category, malware_family,
+                SELECT id AS source_record_id, indicator, indicator_type, source, category, malware_family,
                        confidence, first_seen, last_seen, expires_at, source_reference,
                        imported_at
                 FROM threat_intel_indicators
@@ -3525,7 +3733,7 @@ def threat_intel_matches(conn, indicator, indicator_type="ip"):
             for row in cidr_rows:
                 try:
                     if address in ipaddress.ip_network(row["indicator"], strict=False):
-                        matches.append(dict(row))
+                        matches.append({**dict(row), "source_table": "threat_intel_indicators"})
                 except ValueError:
                     continue
     return matches
@@ -4131,6 +4339,7 @@ def investigation_detail(conn, detection_id):
           ai_reports.how_summary AS ai_how,
           ai_reports.next_steps_json AS ai_next_steps_json,
           ai_reports.threat_intel_analysis_json AS ai_threat_intel_analysis_json,
+          ai_reports.evidence_review_json AS ai_evidence_review_json,
           ai_reports.raw_response AS ai_raw_response,
           ai_reports.ai_profile_uid AS ai_profile_uid,
           ai_reports.model_provider AS ai_model_provider,
@@ -4213,6 +4422,11 @@ def investigation_detail(conn, detection_id):
             item["ai_threat_intel_analysis"] = {}
     else:
         item.setdefault("ai_threat_intel_analysis", {})
+    raw_evidence_review = item.pop("ai_evidence_review_json", None)
+    try:
+        item["ai_evidence_review"] = json.loads(raw_evidence_review or "{}")
+    except (TypeError, json.JSONDecodeError):
+        item["ai_evidence_review"] = {}
     item["src_asset"] = lookup_asset(conn, item.get("src_ip"))
     item["dest_asset"] = lookup_asset(conn, item.get("dest_ip"))
     item["src_ip_profile"] = ip_enrichment_profile(item.get("src_ip"))
@@ -4220,6 +4434,7 @@ def investigation_detail(conn, detection_id):
     item["src_otx"] = latest_threat_intel_for_ip(conn, item.get("src_ip"), "otx")
     item["dest_otx"] = latest_threat_intel_for_ip(conn, item.get("dest_ip"), "otx")
     item["sensor_findings"] = sensor_findings_for_detection(conn, detection_id)
+    item["ai_run_audits"] = ai_run_audits_for_detection(conn, detection_id)
     item["score_breakdowns"] = score_breakdowns_for_detection(conn, detection_id)
     item["virustotal_verifications"] = virustotal_verifications_for_detection(conn, detection_id)
     item["ai_assessments"] = [

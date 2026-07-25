@@ -8,6 +8,7 @@ from app.database import (
     get_ai_profile,
     insert_ai_comparison_candidate,
     insert_app_event,
+    upsert_ai_run_audit,
 )
 
 
@@ -81,6 +82,12 @@ def run_model_comparison(conn, config, case_uid, requested_uids=None):
                 profile["uid"],
                 report=report,
             )
+            upsert_ai_run_audit(
+                conn,
+                workspace["detection_id"],
+                report,
+                assessment_type=f"model_comparison_{slot.lower()}",
+            )
             complete += 1
         except Exception as exc:
             error = f"{type(exc).__name__}: model request failed"
@@ -92,6 +99,14 @@ def run_model_comparison(conn, config, case_uid, requested_uids=None):
                 profile["uid"],
                 error=error,
             )
+            failed_audit = getattr(exc, "audit", None)
+            if failed_audit:
+                upsert_ai_run_audit(
+                    conn,
+                    workspace["detection_id"],
+                    failed_audit,
+                    assessment_type=f"model_comparison_{slot.lower()}",
+                )
 
     status = "complete" if complete == 3 else "partial" if complete else "failed"
     finish_ai_comparison_run(

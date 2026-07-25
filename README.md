@@ -4,6 +4,13 @@ Security VM is an AI-assisted network security monitoring and investigation rese
 
 Python retains control of correlation, scoring, classifications, data handling, and safety boundaries. AI output is advisory and receives bounded structured evidence without API keys or raw packet captures.
 
+> [!IMPORTANT]
+> **AI input is limited by tokens, not by a 4 KB file limit.** Security VM does not upload Suricata logs, Zeek logs, databases, or packet-capture files directly to the model. Python selects relevant records, normalizes them into structured JSON text, applies documented record and field limits, and sends that bounded evidence inside the prompt.
+>
+> The installed Llama 3.1 and Llama 3.2 models advertise context windows of approximately 131,072 tokens, while the current NVIDIA Nemotron model metadata advertises 1,048,576 tokens. Security VM intentionally configures a much smaller `num_ctx: 8192` operational window to control VRAM/RAM use, latency, and request size. The 8,192-token window includes both input and generated output; with `num_predict: 1024`, Python reserves up to 1,024 tokens for the response and budgets approximately 7,168 for the prompt. Model-advertised limits are capabilities, not the limits selected for this deployment.
+>
+> Every new request records the exact prompt, normalized evidence, omissions, configured context, and Ollama's measured `prompt_eval_count` in SQLite so an analyst can verify what was actually submitted and processed.
+
 ## Current Scope
 
 Security VM currently provides:
@@ -51,6 +58,36 @@ Mirrored or lab-routed network traffic
 
 See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed data flow.
 
+## AI Data Transfer: Prompt, Not File Upload
+
+Security VM does **not** upload Suricata files, Zeek files, SQLite databases, packet captures, or threat-intelligence datasets to the AI service. Those records remain on the Security VM.
+
+For each assessment, Python:
+
+1. reads the locally stored case and sensor records;
+2. selects and bounds the relevant evidence;
+3. normalizes that evidence into a structured JSON object;
+4. embeds the object with the review instructions in one complete text prompt;
+5. sends the prompt to the Ollama-compatible `/api/generate` endpoint; and
+6. requires the model to return a response matching a JSON schema.
+
+The HTTP request is conceptually:
+
+```json
+{
+  "model": "llama3.1:8b",
+  "prompt": "Review instructions followed by the normalized evidence JSON",
+  "stream": false,
+  "format": "Security VM structured-response JSON schema",
+  "options": {
+    "num_ctx": 8192,
+    "num_predict": 1024
+  }
+}
+```
+
+This JSON is the API message envelope, not an attached JSON file. Tailscale provides the encrypted network route to a remote model host but does not change what is sent. The model receives only the bounded prompt and output contract. Python then validates and stores the returned JSON response. The investigation audit exposes the exact prompt, normalized package, omissions, request settings, measured input-token count, and returned response.
+
 ## Core Features
 
 - Required live Suricata and Zeek sensors
@@ -64,6 +101,7 @@ See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed dat
 - Cached threat-intelligence providers plus post-AI VirusTotal verification
 - Five-category deterministic score with a complete SQLite audit trail
 - Evidence-grounded AI explanation of who, what, when, where, why, how, and next steps
+- Exact per-request AI audit records with prompt/evidence/response hashes, source lineage, and an explicit omission manifest
 - Analyst confirmation, override, notes, and tuning labels
 - Manual dashboard refresh so the page does not jump while an analyst is reading
 
@@ -79,7 +117,7 @@ The dashboard summarizes sensor findings, centralized cases, outcome queues, enc
 
 ![Centralized case investigation](docs/images/case-investigation.png?raw=1)
 
-Each case has a stable UID and brings together timestamps, sensor findings, network endpoints, registered-IP context, threat intelligence, AI explanations, reassessment, and analyst feedback.
+Each case has a stable UID and brings together timestamps, sensor findings, network endpoints, registered-IP context, threat intelligence, AI explanations, reassessment, and analyst feedback. Expandable sensor records show the original Suricata or Zeek JSON, parsed endpoints and ports, source table/row, event UID, field lineage, and raw-record hash.
 
 ### Zeek Telemetry
 
@@ -294,9 +332,15 @@ ai_model:
   host: http://127.0.0.1:11434
   model: llama3.1:8b
   provider: ollama
+  num_ctx: 8192
+  num_predict: 1024
 ```
 
 Profiles are retained for repeatable model experiments. Each AI report stores provider, model, profile UID, run UID, prompt version/hash, elapsed time, classification, confidence, bounded adjustment, and the six-part explanation.
+
+`num_ctx` is the total token window available to the request and response; it is not a byte or file-size setting. `num_predict` reserves the maximum generated response length from that window. Increasing either value can materially increase memory use and latency. Security VM therefore keeps the operational context below the models' advertised maximum and compacts evidence before each request.
+
+Every new model request also creates an `ai_run_audits` row containing the exact prompt, exact normalized evidence package, full response, safe request settings, source-record map, byte/character counts, SHA-256 values, and every Python omission or truncation. The investigation page exposes this proof under **AI Request and Data Lineage**. See [docs/ai-evidence-audit.md](docs/ai-evidence-audit.md) for the complete data path and review procedure.
 
 Saved profiles can be deleted from `/admin`. Historical reports and comparison results keep their recorded model identity. Deleting a comparison profile removes it from future three-model runs, and deleting the selected runtime profile automatically selects another active profile. The final saved profile cannot be deleted until a replacement exists.
 

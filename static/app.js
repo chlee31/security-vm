@@ -15,7 +15,6 @@ const els = {
   summaryModels: document.querySelector("#summary-models"),
   summaryEncrypted: document.querySelector("#summary-encrypted"),
   summaryZeek: document.querySelector("#summary-zeek"),
-  decisionEvidence: document.querySelector("#decision-evidence"),
   mode: document.querySelector("#mode"),
   updated: document.querySelector("#updated"),
   alerts: document.querySelector("#alerts"),
@@ -493,71 +492,6 @@ function renderEvents(events) {
   `).join("") || `<div class="empty">No runtime logs yet. Start ingest or check the AI model.</div>`;
 }
 
-function sensorFindingSummary(findings) {
-  const groups = new Map();
-  for (const finding of findings || []) {
-    const sensor = String(finding.sensor || "unknown").toUpperCase();
-    const name = finding.finding_name || finding.finding_type || "finding";
-    const key = `${sensor}|${name}`;
-    const existing = groups.get(key) || { sensor, name, count: 0 };
-    existing.count += 1;
-    groups.set(key, existing);
-  }
-  const unique = [...groups.values()];
-  if (!unique.length) return "";
-  const preview = unique.slice(0, 3).map((item) =>
-    `${item.sensor}: ${item.name}${item.count > 1 ? ` (${item.count} occurrences)` : ""}`
-  );
-  if (unique.length > preview.length) preview.push(`+${unique.length - preview.length} more unique findings`);
-  return `${unique.length} unique · ${(findings || []).length} total events · ${preview.join(" · ")}`;
-}
-
-function renderDecisionEvidence(rows) {
-  const outcomeLabel = selectedOutcome ? detectionLabel(selectedOutcome) : "All Outcomes";
-  els.decisionEvidence.innerHTML = rows.map((row) => `
-    <article class="evidence-item">
-      <div class="row tight">
-        <strong>${row.final_classification || "Decision"}</strong>
-        <time class="evidence-timestamp">${escapeHtml(displayTimestamp(row.timestamp || row.first_seen))}</time>
-      </div>
-      ${scoreBadge(row.final_score ?? 0, "Final")}
-      <div class="evidence-chain">
-        <div>
-          <span>Sensor Finding</span>
-          <strong>${row.signature || "Network detection"}</strong>
-          <small>${detectionLabel(row.sensor_state || "single_sensor")} · ${row.src_ip || "unknown"}:${row.src_port || ""} -> ${row.dest_ip || "unknown"}:${row.dest_port || ""}</small>
-          <small>${escapeHtml(sensorFindingSummary(row.sensor_findings) || `priority ${row.priority || "unknown"}`)}</small>
-        </div>
-        <div>
-          <span>Correlation</span>
-          <strong>${detectionLabel(row.detection_type)}</strong>
-          <small>${detectionLabel(row.sensor_state || "suricata_only")} · ${detectionLabel(row.agreement_state || "single_sensor")} · ${row.alert_count || 0} events · ${row.unique_dest_ports || 0} ports · ${row.mitre_id || "no MITRE"}</small>
-        </div>
-        <div>
-          <span>Scoring</span>
-          <strong>Python ${row.python_initial_score ?? 0} + AI ${row.ai_risk_adjustment ?? 0}</strong>
-          <small>
-            Final score ${row.final_score ?? 0}
-            ${row.src_asset || row.dest_asset ? ` · registered IP ${row.src_asset?.name || row.dest_asset?.name} importance ${row.src_asset?.asset_score ?? row.dest_asset?.asset_score}` : " · no registered IP importance available"}
-          </small>
-        </div>
-        <div>
-          <span>AI Model</span>
-          <strong>${row.ai_classification || "No opinion"} ${row.ai_confidence ? `(${row.ai_confidence})` : ""}</strong>
-          <small>${row.ai_model_identity || "unknown model"} · profile ${row.ai_profile_uid || "legacy-profile"} · run ${row.ai_model_run_id || "not recorded"}</small>
-          <small>${row.ai_reason || "No AI reason stored."}</small>
-        </div>
-        <div>
-          <span>Analyst</span>
-          <strong>${row.review_status || "No review"}</strong>
-          <small>${row.analyst_action || "No analyst override"} ${row.analyst_name ? `by ${row.analyst_name}` : ""}</small>
-        </div>
-      </div>
-      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Investigation</a>
-    </article>
-  `).join("") || `<div class="empty">No ${outcomeLabel} decision evidence rows for this selection yet.</div>`;
-}
-
 async function refresh(options = {}) {
   const preserveScroll = Boolean(options.preserveScroll);
   const scrollX = window.scrollX;
@@ -565,31 +499,25 @@ async function refresh(options = {}) {
   try {
     els.refresh.disabled = true;
     els.refresh.textContent = "Refreshing";
-    const evidencePath = selectedDetectionType
-      ? `/api/decision-evidence?detection_type=${encodeURIComponent(selectedDetectionType)}&limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`
-      : `/api/decision-evidence?limit=20${selectedOutcome ? `&outcome=${encodeURIComponent(selectedOutcome)}` : ""}`;
     const summaryRequest = getJson("/api/dashboard-summary?limit=12").catch((error) => ({ _error: error.message }));
-    const [metrics, summary, alerts, aiReports, events, evidence] = await Promise.all([
+    const [metrics, summary, alerts, aiReports, events] = await Promise.all([
       getJson("/api/metrics"),
       summaryRequest,
       getJson(`/api/latest-alerts?limit=50&sensor=${encodeURIComponent(selectedSensorFilter)}`),
       getJson("/api/ai-opinions?limit=50"),
-      getJson("/api/events?limit=40"),
-      getJson(evidencePath)
+      getJson("/api/events?limit=40")
     ]);
     renderMetrics(metrics);
     renderSummary(summary);
     renderAlerts(alerts);
     renderAiModelReports(aiReports);
     renderEvents(events);
-    renderDecisionEvidence(evidence);
     els.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (error) {
     els.updated.textContent = "Dashboard API error";
     els.alerts.innerHTML = `<div class="empty">${error.message}</div>`;
     els.aiReports.innerHTML = `<div class="empty">${error.message}</div>`;
     els.events.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.decisionEvidence.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryIpPie.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryTimeline.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryModels.innerHTML = `<div class="empty">${error.message}</div>`;

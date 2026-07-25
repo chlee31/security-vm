@@ -37,6 +37,7 @@ from app.database import (
     sensor_finding_detection_id,
     threat_intel_matches,
     update_detection_python_score,
+    upsert_ai_run_audit,
     upsert_pending_review,
     zeek_context_for_detection,
     zeek_flow_for_uid,
@@ -230,6 +231,8 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
         {
             "sensor": item.get("sensor"),
             "sensor_event_id": item.get("sensor_event_id"),
+            "source_table": item.get("source_table"),
+            "event_uid": item.get("event_uid"),
             "finding_type": item.get("finding_type"),
             "finding_name": item.get("finding_name"),
             "severity": item.get("severity"),
@@ -241,6 +244,9 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
             "destination_ip": item.get("destination_ip"),
             "destination_port": item.get("destination_port"),
             "protocol": item.get("protocol"),
+            "raw_record_sha256": item.get("raw_record_sha256"),
+            "raw_record_bytes": item.get("raw_record_bytes"),
+            "field_provenance": item.get("field_provenance"),
         }
         for item in findings
     ]
@@ -258,11 +264,19 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
         limit=8,
         provenance_limit=1,
     )
+    zeek_items = zeek_context.get("items") or []
     zeek_context = {
         "window_start": zeek_context.get("window_start"),
         "window_end": zeek_context.get("window_end"),
         "summary": zeek_context.get("summary") or {},
-        "items": compact_zeek_context_events(zeek_context.get("items") or [], limit=8),
+        "selection": {
+            "source": "zeek_events",
+            "available_count": len(zeek_items),
+            "included_count": min(len(zeek_items), 8),
+            "limit": 8,
+            "policy": "nearest flow, UID, endpoint, and repeated-source context within the configured case window",
+        },
+        "items": compact_zeek_context_events(zeek_items, limit=8),
     }
     return {
         "sensor_fusion": {
@@ -367,12 +381,14 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             },
         )
     except requests.RequestException as exc:
-        _, prompt_audit = build_prompt_audit(
-            runtime_config,
-            alert,
-            detection,
-            evidence_context=evidence_context,
-        )
+        prompt_audit = getattr(exc, "audit", None)
+        if not prompt_audit:
+            _, prompt_audit = build_prompt_audit(
+                runtime_config,
+                alert,
+                detection,
+                evidence_context=evidence_context,
+            )
         ai_report = {
             **prompt_audit,
             "classification": "Human Review Required",
@@ -405,6 +421,13 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             },
         )
     ai_report_id = insert_ai_report(conn, detection_id, ai_report)
+    upsert_ai_run_audit(
+        conn,
+        detection_id,
+        ai_report,
+        ai_report_id=ai_report_id,
+        assessment_type="initial",
+    )
     insert_ai_assessment(
         conn,
         detection_id,
@@ -988,6 +1011,13 @@ def run_ai_backfill(config_path, limit):
             )
             report = ensure_ai_report_metadata(config, alert, report)
             report_id = insert_ai_report(conn, row["detection_id"], report)
+            upsert_ai_run_audit(
+                conn,
+                row["detection_id"],
+                report,
+                ai_report_id=report_id,
+                assessment_type="backfill",
+            )
             insert_ai_assessment(
                 conn,
                 row["detection_id"],

@@ -13,6 +13,7 @@ from app.database import (
     sensor_findings_for_detection,
     threat_intel_matches,
     update_detection_python_score,
+    upsert_ai_run_audit,
     upsert_pending_review,
 )
 from app.decision_engine import decide, safe_risk_adjustment
@@ -230,6 +231,13 @@ def reassess_case(conn, config, case_uid):
 
     report = ask_ai_model(config, alert, detection, evidence_context=evidence)
     report_id = insert_ai_report(conn, detection_id, report)
+    upsert_ai_run_audit(
+        conn,
+        detection_id,
+        report,
+        ai_report_id=report_id,
+        assessment_type="reassessment",
+    )
     assessment_id = insert_ai_assessment(
         conn,
         detection_id,
