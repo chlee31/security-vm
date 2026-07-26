@@ -7,7 +7,7 @@ risk score is calculated here.
 
 CLASSIFICATION_ACTIONS = {
     "Safe": "log_only",
-    "Human Review Required": "human_review",
+    "Analyst Review Required": "human_review",
     "Dangerous": "escalate",
 }
 
@@ -19,9 +19,15 @@ def normalize_classification(value):
         return "Safe"
     if normalized == "dangerous":
         return "Dangerous"
-    if normalized in {"human review", "human review required", "review"}:
-        return "Human Review Required"
-    return "Human Review Required"
+    if normalized in {
+        "analyst review",
+        "analyst review required",
+        "human review",
+        "human review required",
+        "review",
+    }:
+        return "Analyst Review Required"
+    return "Analyst Review Required"
 
 
 def materially_disputed(detection):
@@ -36,11 +42,24 @@ def decide(conn, config, alert, detection, ai_report=None):
     compatibility with existing callers. The current policy depends only on
     model classification plus sensor-dispute state.
     """
-    classification = normalize_classification((ai_report or {}).get("classification"))
-    forced_review = bool(detection.get("forced_review")) or materially_disputed(detection)
+    report = ai_report or {}
+    classification = normalize_classification(report.get("classification"))
+    low_confidence = str(report.get("confidence") or "").strip().lower() == "low"
+    disputed = materially_disputed(detection)
+    forced_review = bool(detection.get("forced_review")) or disputed or low_confidence
     if forced_review:
-        classification = "Human Review Required"
+        classification = "Analyst Review Required"
     action = CLASSIFICATION_ACTIONS[classification]
+
+    forced_reasons = []
+    if detection.get("forced_review"):
+        forced_reasons.append(
+            detection.get("forced_review_reason") or "Python required analyst review."
+        )
+    if disputed:
+        forced_reasons.append("Materially disputed Suricata and Zeek findings.")
+    if low_confidence:
+        forced_reasons.append("The AI model reported Low confidence.")
 
     return {
         "final_classification": classification,
@@ -51,8 +70,5 @@ def decide(conn, config, alert, detection, ai_report=None):
         "response_status": action,
         "response_time_ms": 0,
         "forced_review": forced_review,
-        "forced_review_reason": (
-            detection.get("forced_review_reason")
-            or ("Materially disputed Suricata and Zeek findings." if forced_review else "")
-        ),
+        "forced_review_reason": " ".join(dict.fromkeys(forced_reasons)),
     }

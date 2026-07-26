@@ -69,12 +69,15 @@ function renderPie(ips) {
 }
 
 function renderAiModelChart(evidence) {
-  const counts = { Safe: 0, "Human Review Required": 0, Dangerous: 0, "No opinion": 0 };
+  const counts = { Safe: 0, "Analyst Review Required": 0, Dangerous: 0, "No opinion": 0 };
   evidence.forEach((row) => {
     const classification = row.ai_classification || "No opinion";
     if (classification.toLowerCase().includes("safe")) counts.Safe += 1;
     else if (classification.toLowerCase().includes("danger")) counts.Dangerous += 1;
-    else if (classification.toLowerCase().includes("human")) counts["Human Review Required"] += 1;
+    else if (
+      classification.toLowerCase().includes("human")
+      || classification.toLowerCase().includes("analyst")
+    ) counts["Analyst Review Required"] += 1;
     else counts["No opinion"] += 1;
   });
   const max = Math.max(1, ...Object.values(counts));

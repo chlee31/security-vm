@@ -44,14 +44,14 @@ flowchart TB
     subgraph AI[Bounded Local AI Explanation]
         PROMPT[Versioned evidence-only prompt<br/>who, what, when, where, why, how, next steps]
         MODEL[Configured local/compatible model]
-        REPORT[Structured explanation<br/>Safe, Human Review Required, or Dangerous]
+        REPORT[Structured explanation<br/>Safe, Analyst Review Required, or Dangerous]
         PACKAGE --> PROMPT --> MODEL --> REPORT
     end
 
     subgraph OUTCOME[Python Final Control]
         VALIDATE[Validate structured response<br/>and apply sensor-dispute safeguard]
         SAFE[Safe<br/>log only]
-        REVIEW[Human Review Required<br/>analyst queue]
+        REVIEW[Analyst Review Required<br/>analyst queue]
         DANGER[Dangerous<br/>escalate]
         REPORT --> VALIDATE
         VALIDATE --> SAFE
@@ -132,7 +132,7 @@ Detection type is a conservative, rule-based label used for grouping and display
 
 ## Classification Interpretation
 
-Security VM does not calculate an operational risk score. The model returns a qualitative `Safe`, `Human Review Required`, or `Dangerous` classification with confidence, evidence-based reasoning, and investigation steps. Python validates the response and owns the final action mapping. Invalid output and materially disputed sensor findings are routed to Human Review Required.
+Security VM does not calculate an operational risk score. The model returns a qualitative `Safe`, `Analyst Review Required`, or `Dangerous` classification with confidence, evidence-based reasoning, and investigation steps. Python validates the response and owns the final action mapping. Invalid output, Low-confidence conclusions, and materially disputed sensor findings are routed to Analyst Review Required.
 
 ## Sensor Responsibilities
 

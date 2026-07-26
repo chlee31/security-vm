@@ -29,7 +29,7 @@ decisions; this document provides the end-to-end map.
    response, and produces a complete local audit.
 9. `app/decision_engine.py` normalizes the qualitative classification and keeps
    final response control in Python. Materially disputed sensor findings force
-   `Human Review Required`.
+   `Analyst Review Required`.
 10. `app/virustotal.py` may verify eligible public IPs after a `Dangerous`
     classification. VirusTotal does not numerically change or lower the result.
 
@@ -192,7 +192,7 @@ truncated response.
 - supplies explicit fallback text for missing sections; and
 - limits arrays to the schema's expected sizes.
 
-Malformed or partial responses become `Human Review Required` with low
+Malformed or partial responses become `Analyst Review Required` with Low
 confidence. Model failure cannot silently classify a case as safe.
 
 ## Module Responsibilities

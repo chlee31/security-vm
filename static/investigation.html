@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Security VM Investigation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260721-doc-gallery">
+    <link rel="stylesheet" href="/static/styles.css?v=20260725-collapsible-evidence">
   </head>
   <body>
     <main class="shell workbook-shell">
@@ -59,30 +59,31 @@
           <div class="panel-head">
             <div>
               <p class="eyebrow">Case Summary</p>
-              <h2>Who, What, When, Where, Why, and How</h2>
+              <h2>Python Case Facts and AI Interpretation</h2>
             </div>
+            <small class="panel-hint">Every statement is labeled by its source</small>
           </div>
           <div id="inv-overview" class="case-overview-grid"></div>
         </section>
 
-        <section class="panel wide-panel">
-          <div class="panel-head">
+        <details class="panel wide-panel collapsible-panel">
+          <summary class="panel-head">
             <div>
               <p class="eyebrow">AI Comparison</p>
               <h2>All Model Responses</h2>
             </div>
             <small class="panel-hint">Sequential requests · model identities shown</small>
-          </div>
+          </summary>
           <div id="inv-comparison"></div>
-        </section>
+        </details>
 
-        <section class="panel wide-panel">
-          <div class="panel-head">
+        <details class="panel wide-panel collapsible-panel">
+          <summary class="panel-head">
             <div>
               <p class="eyebrow">Human Feedback</p>
               <h2>Analyst Review</h2>
             </div>
-          </div>
+          </summary>
           <div id="inv-review" class="workbook-list"></div>
           <form id="inv-review-form" class="form-grid investigation-review-form">
             <label class="field">
@@ -115,78 +116,58 @@
             <button class="wide-button" type="submit">Save Feedback</button>
             <div id="inv-review-status" class="connection-status">Feedback not submitted.</div>
           </form>
-        </section>
+        </details>
 
-        <section class="panel wide-panel">
-          <div class="panel-head">
+        <details class="panel wide-panel collapsible-panel">
+          <summary class="panel-head">
             <div>
               <p class="eyebrow">Sensor Fusion</p>
               <h2>Detection Findings</h2>
             </div>
-            <div class="finding-view-toolbar" aria-label="Finding display mode">
-              <span id="inv-finding-count">0 findings</span>
-              <div class="segmented-control finding-view-control">
-                <button type="button" class="active" data-finding-view="unique" aria-pressed="true">Unique</button>
-                <button type="button" data-finding-view="all" aria-pressed="false">All Events</button>
-              </div>
+            <small id="inv-finding-count" class="panel-hint">0 findings</small>
+          </summary>
+          <div class="finding-view-toolbar collapsible-panel-toolbar" aria-label="Finding display mode">
+            <div class="segmented-control finding-view-control">
+              <button type="button" class="active" data-finding-view="unique" aria-pressed="true">Unique</button>
+              <button type="button" data-finding-view="all" aria-pressed="false">All Events</button>
             </div>
           </div>
           <div id="inv-alert" class="workbook-list finding-browser"></div>
-        </section>
+        </details>
 
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">AI Review</p>
-              <h2>Evidence-Based Explanation</h2>
-            </div>
-          </div>
-          <div id="inv-ai" class="workbook-list"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
+        <details class="panel wide-panel collapsible-panel">
+          <summary class="panel-head">
             <div>
               <p class="eyebrow">Enrichment</p>
-              <h2>Registered IP Roles, Threat Intel & VirusTotal</h2>
+              <h2>Registered IP Roles, Threat Intel &amp; VirusTotal</h2>
             </div>
-          </div>
+          </summary>
           <div id="inv-intel" class="workbook-list"></div>
-        </section>
+        </details>
 
-        <section class="panel wide-panel">
-          <div class="panel-head">
+        <details class="panel wide-panel collapsible-panel">
+          <summary class="panel-head">
             <div>
               <p class="eyebrow">Zeek Sensor</p>
               <h2>Related Network Context</h2>
             </div>
-          </div>
+          </summary>
           <div id="inv-zeek" class="workbook-list"></div>
-        </section>
+        </details>
 
-        <section class="panel wide-panel">
-          <div class="panel-head">
+        <details class="panel wide-panel collapsible-panel">
+          <summary class="panel-head">
             <div>
               <p class="eyebrow">Audit Evidence</p>
               <h2>AI Request and Data Lineage</h2>
             </div>
             <small class="panel-hint">Python-captured proof · secrets and raw sensor records excluded</small>
-          </div>
+          </summary>
           <div id="inv-audit" class="workbook-list"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Raw AI Output</p>
-              <h2>Model JSON</h2>
-            </div>
-          </div>
-          <div id="inv-raw" class="workbook-list"></div>
-        </section>
+        </details>
       </section>
     </main>
 
-    <script src="/static/investigation.js?v=20260724-scroll-history"></script>
+    <script src="/static/investigation.js?v=20260725-analyst-review"></script>
   </body>
 </html>

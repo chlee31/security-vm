@@ -1936,7 +1936,7 @@ def create_app(config_path):
                 count = row["count"]
                 if classification == "dangerous":
                     outcome_counts["dangerous"] += count
-                elif "human" in classification:
+                elif "human" in classification or "analyst" in classification:
                     outcome_counts["human_review"] += count
                 else:
                     outcome_counts["safe"] += count

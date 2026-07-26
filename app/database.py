@@ -101,6 +101,7 @@ def ensure_migrations(conn):
     ensure_ai_comparison_tables(conn)
     ensure_evaluation_tables(conn)
     migrate_legacy_ai_reports(conn)
+    migrate_analyst_review_classification(conn)
 
     conn.execute(
         """
@@ -120,6 +121,39 @@ def ensure_migrations(conn):
         )
         """
     )
+
+
+def migrate_analyst_review_classification(conn):
+    """Rename legacy review labels while preserving raw model/audit evidence."""
+    classification_columns = {
+        "ai_reports": ("classification",),
+        "ai_assessments": ("classification",),
+        "ai_comparison_candidates": ("classification",),
+        "responses": ("final_classification",),
+        "analyst_reviews": ("original_classification", "analyst_classification"),
+        "evaluation_scenarios": (
+            "expected_min_classification",
+            "expected_max_classification",
+        ),
+    }
+    legacy_values = ("human review required", "human review", "review")
+    for table_name, column_names in classification_columns.items():
+        if not table_exists(conn, table_name):
+            continue
+        columns = table_columns(conn, table_name)
+        for column_name in column_names:
+            if column_name not in columns:
+                continue
+            placeholders = ", ".join("?" for _ in legacy_values)
+            conn.execute(
+                f"""
+                UPDATE {table_name}
+                SET {column_name} = 'Analyst Review Required'
+                WHERE lower(trim(COALESCE({column_name}, ''))) IN ({placeholders})
+                """,
+                legacy_values,
+            )
+
 
 def ensure_ai_comparison_tables(conn):
     conn.executescript(
@@ -1677,12 +1711,14 @@ def ai_run_audits_for_detection(conn, detection_id):
                 item[target] = json.loads(raw or ("[]" if target == "omission_manifest" else "{}"))
             except (TypeError, json.JSONDecodeError):
                 item[target] = [] if target == "omission_manifest" else {}
+        item["model_response"] = {}
         item["model_evidence_review"] = {}
         if item.get("response_text"):
             try:
                 from app.ai_client import normalize_report, parse_model_response
 
                 normalized = normalize_report(parse_model_response(item["response_text"]))
+                item["model_response"] = normalized
                 item["model_evidence_review"] = normalized.get("evidence_review") or {}
             except (TypeError, ValueError):
                 pass
@@ -1706,7 +1742,7 @@ def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", 
             assessment_type,
             report.get("model_provider"),
             report.get("model_name") or "unknown",
-            report.get("classification") or "Human Review Required",
+            report.get("classification") or "Analyst Review Required",
             report.get("confidence") or "Low",
             report.get("reason"),
             report.get("recommended_action"),
@@ -3763,7 +3799,10 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
     elif outcome == "human_review":
         filters.append(
             """
-            lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
+            (
+              lower(COALESCE(responses.final_classification, '')) LIKE '%human%'
+              OR lower(COALESCE(responses.final_classification, '')) LIKE '%analyst%'
+            )
             """
         )
     elif outcome == "safe":
@@ -4283,7 +4322,7 @@ def submit_analyst_review(
         ).fetchone()
         if not source:
             return False
-        original_classification = source["final_classification"] or "Human Review Required"
+        original_classification = source["final_classification"] or "Analyst Review Required"
         original_action = source["final_action"] or "human_review"
         values = (
             detection_id,

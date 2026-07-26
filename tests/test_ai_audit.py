@@ -70,7 +70,7 @@ class AIAuditTests(unittest.TestCase):
     @patch("app.ai_client.requests.post")
     def test_model_request_retains_exact_prompt_package_and_response_proof(self, mock_post):
         model_output = {
-            "classification": "Human Review Required",
+            "classification": "Analyst Review Required",
             "confidence": "Medium",
             "reason": "The supplied sensor records require validation.",
             "summary": "Suricata and Zeek observed related DNS activity.",
@@ -173,10 +173,22 @@ class AIAuditTests(unittest.TestCase):
                 {"sensor_fusion": {"findings": [{"event_uid": "SUR-20260724-000001"}]}},
             )
             report.update(
-                classification="Human Review Required",
+                classification="Analyst Review Required",
                 confidence="Low",
                 reason="Audit test",
-                raw_response="{}",
+                raw_response=json.dumps(
+                    {
+                        "classification": "Analyst Review Required",
+                        "confidence": "Low",
+                        "reason": "The stored sensor evidence requires analyst validation.",
+                        "summary": "A DNS-related case was assembled from sensor metadata.",
+                        "next_steps": [
+                            "Inspect the related Zeek DNS records.",
+                            "Validate the Suricata signature.",
+                        ],
+                        "recommended_action": "human_review",
+                    }
+                ),
                 audit_status="complete",
                 audit_parse_status="valid_json",
             )
@@ -187,6 +199,17 @@ class AIAuditTests(unittest.TestCase):
             self.assertEqual(len(audits), 1)
             self.assertEqual(audits[0]["prompt_text"], report["audit_prompt_text"])
             self.assertEqual(audits[0]["source_map"]["event_context"]["event_uid"], self.alert["event_uid"])
+            self.assertEqual(
+                audits[0]["model_response"]["summary"],
+                "A DNS-related case was assembled from sensor metadata.",
+            )
+            self.assertEqual(
+                audits[0]["model_response"]["next_steps"],
+                [
+                    "Inspect the related Zeek DNS records.",
+                    "Validate the Suricata signature.",
+                ],
+            )
 
             finding = sensor_findings_for_detection(conn, 1)[0]
             self.assertEqual(finding["source_table"], "alerts")

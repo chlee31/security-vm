@@ -380,7 +380,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
     )
     findings = sensor_findings_for_detection(conn, detection_id)
     record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_context)
-    # Model failure is converted to Human Review Required; sensor evidence is
+    # Model failure is converted to Analyst Review Required; sensor evidence is
     # never discarded simply because the explanatory service is unavailable.
     try:
         ai_report = ask_ai_model(
@@ -416,7 +416,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             )
         ai_report = {
             **prompt_audit,
-            "classification": "Human Review Required",
+            "classification": "Analyst Review Required",
             "confidence": "Low",
             "reason": f"AI model unavailable: {exc}",
             "recommended_action": "human_review",

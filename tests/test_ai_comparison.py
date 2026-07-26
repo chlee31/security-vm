@@ -45,7 +45,7 @@ class AIComparisonTests(unittest.TestCase):
             "model_run_id": f"run-{model}",
             "prompt_version": "test-prompt",
             "prompt_sha256": "same-evidence",
-            "classification": "Human Review Required",
+            "classification": "Analyst Review Required",
             "confidence": "Medium",
             "summary": f"Summary from {model}",
             "who": "source and destination",

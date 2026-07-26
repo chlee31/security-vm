@@ -173,6 +173,51 @@ class DatabaseMigrationTests(unittest.TestCase):
             finally:
                 migrated.close()
 
+    def test_legacy_review_labels_migrate_without_rewriting_raw_ai_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "legacy-review-label.db"
+            conn = init_db(db_path)
+            raw_response = (
+                '{"classification":"Human Review Required",'
+                '"reason":"Original model wording must remain auditable."}'
+            )
+            conn.execute(
+                """
+                INSERT INTO ai_reports (classification, confidence, raw_response)
+                VALUES ('Human Review Required', 'Low', ?)
+                """,
+                (raw_response,),
+            )
+            conn.execute(
+                """
+                INSERT INTO responses (final_classification, final_action)
+                VALUES ('Human Review Required', 'human_review')
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            migrated = init_db(db_path)
+            try:
+                report = migrated.execute(
+                    "SELECT classification, raw_response FROM ai_reports"
+                ).fetchone()
+                response = migrated.execute(
+                    "SELECT final_classification, final_action FROM responses"
+                ).fetchone()
+                self.assertEqual(
+                    report["classification"],
+                    "Analyst Review Required",
+                )
+                self.assertEqual(report["raw_response"], raw_response)
+                self.assertEqual(
+                    response["final_classification"],
+                    "Analyst Review Required",
+                )
+                self.assertEqual(response["final_action"], "human_review")
+            finally:
+                migrated.close()
+
 
 if __name__ == "__main__":
     unittest.main()

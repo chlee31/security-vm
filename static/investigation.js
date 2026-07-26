@@ -16,7 +16,6 @@ const els = {
   alert: document.querySelector("#inv-alert"),
   findingCount: document.querySelector("#inv-finding-count"),
   findingViewButtons: document.querySelectorAll("[data-finding-view]"),
-  ai: document.querySelector("#inv-ai"),
   intel: document.querySelector("#inv-intel"),
   zeek: document.querySelector("#inv-zeek"),
   audit: document.querySelector("#inv-audit"),
@@ -32,8 +31,7 @@ const els = {
   reviewAction: document.querySelector("#inv-review-action"),
   reviewLabel: document.querySelector("#inv-review-label"),
   reviewNotes: document.querySelector("#inv-review-notes"),
-  reviewStatus: document.querySelector("#inv-review-status"),
-  raw: document.querySelector("#inv-raw")
+  reviewStatus: document.querySelector("#inv-review-status")
 };
 
 let currentInvestigation = null;
@@ -43,6 +41,40 @@ function modelIdentity(candidate) {
   const provider = candidate.model_provider || "unknown provider";
   const name = candidate.model_name || candidate.model_identity || "unknown model";
   return `${provider}:${name}`;
+}
+
+function selectedModelIdentity(data) {
+  return modelIdentity({
+    model_provider: data.ai_model_provider,
+    model_name: data.ai_model_name,
+    model_identity: data.ai_model_identity
+  });
+}
+
+function sourceHeading(source, title, detail = "") {
+  return `
+    <span class="content-source ${source.toLowerCase()}">${escapeHtml(source)}</span>
+    ${escapeHtml(title)}
+    ${detail ? `<small class="content-source-detail">${escapeHtml(detail)}</small>` : ""}
+  `;
+}
+
+function orderedSteps(steps, fallback) {
+  const items = Array.isArray(steps)
+    ? steps.map((step) => String(step || "").trim()).filter(Boolean)
+    : [];
+  if (!items.length && fallback) items.push(String(fallback));
+  return `
+    <ol class="recommended-step-list">
+      ${items.map((step) => `<li>${escapeHtml(step)}</li>`).join("") || "<li>No recommendation was returned.</li>"}
+    </ol>
+  `;
+}
+
+function endpointIdentity(ip, registeredRole) {
+  if (!registeredRole) return ip || "Unknown endpoint";
+  const role = registeredRole.name || registeredRole.device_type || "Registered IP";
+  return `${role} (${ip || registeredRole.ip_address || "unknown IP"})`;
 }
 
 const threatIntelProviders = [
@@ -201,9 +233,9 @@ function displayTimestamp(value) {
   });
 }
 
-function row(title, body, meta = "") {
+function row(title, body, meta = "", className = "") {
   return `
-    <div class="workbook-row">
+    <div class="workbook-row${className ? ` ${escapeHtml(className)}` : ""}">
       <strong>${title}</strong>
       <p>${body || "None"}</p>
       ${meta ? `<small>${meta}</small>` : ""}
@@ -428,6 +460,11 @@ function renderAiAudit(data) {
     const request = audit.request_options || {};
     const responseMetrics = audit.response_metrics || {};
     const review = audit.model_evidence_review || (index === 0 ? (data.ai_evidence_review || {}) : {});
+    const response = audit.model_response || {};
+    const auditModel = modelIdentity({
+      model_provider: audit.model_provider,
+      model_name: audit.model_name
+    });
     return `
       <article class="ai-audit-record">
         <header>
@@ -480,6 +517,48 @@ function renderAiAudit(data) {
             <small>This acknowledgement is explanatory. The Python-captured prompt, package, and hashes above are the authoritative proof.</small>
           </section>
         ` : ""}
+        ${Object.keys(response).length ? `
+          <section class="audited-model-response">
+            <header>
+              <div>
+                <span class="content-source ai">AI</span>
+                <h3>Stored Model Reply</h3>
+                <small>${escapeHtml(auditModel)} · run ${escapeHtml(audit.model_run_id || "not recorded")}</small>
+              </div>
+              <span class="status-pill">${escapeHtml(response.confidence || "Unknown")} confidence</span>
+            </header>
+            <div class="audited-response-verdict">
+              <strong>${escapeHtml(response.classification || "No classification returned")}</strong>
+              <span>${escapeHtml(response.recommended_action || "No action returned")}</span>
+            </div>
+            <div class="audited-response-grid">
+              <section>
+                <h4>AI Summary</h4>
+                <p>${escapeHtml(response.summary || "No summary returned.")}</p>
+              </section>
+              <section>
+                <h4>AI Reasoning</h4>
+                <p>${escapeHtml(response.reason || "No reason returned.")}</p>
+              </section>
+              <section><h4>Who</h4><p>${escapeHtml(response.who || "Not established")}</p></section>
+              <section><h4>What</h4><p>${escapeHtml(response.what || "Not established")}</p></section>
+              <section><h4>When</h4><p>${escapeHtml(response.when || "Not established")}</p></section>
+              <section><h4>Where</h4><p>${escapeHtml(response.where || "Not established")}</p></section>
+              <section><h4>Why</h4><p>${escapeHtml(response.why || "Not established")}</p></section>
+              <section><h4>How</h4><p>${escapeHtml(response.how || "Not established")}</p></section>
+            </div>
+            <section class="audited-response-steps">
+              <h4>AI Recommended Next Steps</h4>
+              ${orderedSteps(response.next_steps, response.recommended_action)}
+            </section>
+            <details>
+              <summary>Complete raw reply from this model run</summary>
+              <pre class="raw-json audit-document">${escapeHtml(audit.response_text || "No raw response stored.")}</pre>
+            </details>
+          </section>
+        ` : `
+          <div class="connection-status">The raw response is stored, but no normalized model reply could be displayed.</div>
+        `}
       </article>
     `;
   }).join("");
@@ -534,49 +613,53 @@ function render(data) {
   els.timestamp.textContent = displayTimestamp(data.timestamp || data.first_seen);
 
   const nextSteps = Array.isArray(data.ai_next_steps) ? data.ai_next_steps : [];
+  const aiModel = selectedModelIdentity(data);
+  const aiRun = data.ai_model_run_id || "not recorded";
+  const sensors = [...new Set(
+    (data.sensor_findings || [])
+      .map((finding) => label(finding.sensor))
+      .filter((sensor) => sensor && sensor !== "Unknown")
+  )];
+  const sensorText = sensors.length ? sensors.join(" and ") : label(data.sensor_state || "unknown sensor");
+  const pythonWho = [
+    `Source: ${endpointIdentity(data.src_ip, data.src_asset)}`,
+    `Destination: ${endpointIdentity(data.dest_ip, data.dest_asset)}`
+  ].join(" · ");
+  const pythonWhat = `${data.signature || label(data.detection_type) || "Network sensor activity"} · observed by ${sensorText}`;
+  const pythonWhen = `${displayTimestamp(data.first_seen || data.timestamp)} to ${displayTimestamp(data.last_seen || data.timestamp)}`;
+  const pythonWhere = `${data.src_ip || "unknown"}:${data.src_port ?? "unknown"} to ${data.dest_ip || "unknown"}:${data.dest_port ?? "unknown"} ${data.protocol || ""}`.trim();
+  const pythonHow = `${sensorText} records joined using ${label(data.correlation_method || "single_sensor")}; ${data.sensor_findings?.length || 0} stored finding${data.sensor_findings?.length === 1 ? "" : "s"}.`;
   els.overview.innerHTML = [
-    row("Summary", escapeHtml(data.ai_summary || data.ai_reason || "No AI case summary stored yet.")),
-    row("Who", escapeHtml(data.ai_who || `${data.src_ip || "Unknown source"} and ${data.dest_ip || "unknown destination"}`)),
-    row("What", escapeHtml(data.ai_what || data.signature || "Network sensor activity")),
-    row("When", escapeHtml(data.ai_when || `${displayTimestamp(data.first_seen)} to ${displayTimestamp(data.last_seen)}`)),
-    row("Where", escapeHtml(data.ai_where || `${data.src_ip || "?"}:${data.src_port || "?"} to ${data.dest_ip || "?"}:${data.dest_port || "?"}`)),
-    row("Why", escapeHtml(data.ai_why || data.ai_reason || "Review the correlated sensor and threat-intelligence evidence.")),
-    row("How", escapeHtml(data.ai_how || `Correlated using ${label(data.correlation_method || "single_sensor")}.`)),
-    row("Next Steps", nextSteps.length ? nextSteps.map(escapeHtml).join(" · ") : escapeHtml(data.ai_recommended_action || "Review the evidence and record an analyst decision."))
+    row(
+      sourceHeading("AI", "Summary", aiModel),
+      escapeHtml(data.ai_summary || data.ai_reason || "No AI case summary stored yet."),
+      `Model run ${escapeHtml(aiRun)}`
+    ),
+    row(sourceHeading("Python", "Who"), escapeHtml(pythonWho), "Derived from normalized source/destination fields and registered IP roles."),
+    row(sourceHeading("Python", "What"), escapeHtml(pythonWhat), "Derived from stored Suricata and Zeek findings."),
+    row(sourceHeading("Python", "When"), escapeHtml(pythonWhen), "Derived from normalized first_seen and last_seen timestamps."),
+    row(sourceHeading("Python", "Where"), escapeHtml(pythonWhere), "Derived from normalized IP, port, and protocol fields."),
+    row(
+      sourceHeading("AI", "Why It May Matter", aiModel),
+      escapeHtml(data.ai_why || data.ai_reason || "No AI interpretation stored."),
+      `Model run ${escapeHtml(aiRun)}`
+    ),
+    row(sourceHeading("Python", "How It Was Detected"), escapeHtml(pythonHow), "Correlation is performed by Python before the model request."),
+    row(
+      sourceHeading("AI", "Recommended Next Steps", aiModel),
+      orderedSteps(nextSteps, data.ai_recommended_action || "Review the evidence and record an analyst decision."),
+      `Model run ${escapeHtml(aiRun)}`,
+      "overview-recommendations"
+    ),
+    `
+      <details class="summary-raw-response">
+        <summary>View raw AI response from ${escapeHtml(aiModel)}</summary>
+        <pre class="raw-json">${escapeHtml(data.ai_raw_response || "No raw AI response stored.")}</pre>
+      </details>
+    `
   ].join("");
 
   renderSensorFindings(data);
-
-  const assessments = data.ai_assessments || [];
-  const selectedIntelAnalysis = data.ai_threat_intel_analysis || {};
-  const assessmentHistory = assessments.map((item) => row(
-    `${label(item.assessment_type)} · ${item.model_name || "unknown model"}`,
-    item.classification || "Unknown",
-    `${item.confidence || "Unknown"} confidence · ${displayTimestamp(item.created_at)}`
-  )).join("");
-  els.ai.innerHTML = [
-    row("Classification", data.ai_classification || "No AI opinion", `${data.ai_confidence || "No"} confidence`),
-    row("AI Profile UID", data.ai_profile_uid || "legacy-profile", "Selected Admin profile stamped into this report"),
-    row("Model Identity", data.ai_model_identity || "unknown model", `provider ${data.ai_model_provider || "unknown"} · name ${data.ai_model_name || "unknown"}`),
-    row("Model Run", data.ai_model_run_id || "not recorded", `${data.ai_prompt_version || "unknown prompt"} · ${data.ai_elapsed_ms ?? 0}ms`),
-    row("Reason", data.ai_reason || "No AI reason stored."),
-    row(
-      "Threat Intelligence Conclusion",
-      selectedIntelAnalysis.overall || "No dedicated threat-intelligence conclusion stored for this response.",
-      `Influence: ${label(selectedIntelAnalysis.influence || "unavailable")}`
-    ),
-    row("Evidence Boundaries", "Network metadata only", "No raw packet capture, decrypted payload, endpoint telemetry, or user identity was supplied to the model."),
-    row("Recommended Action", data.ai_recommended_action || "none"),
-    assessments.length ? `
-      <section class="bounded-history">
-        <div class="bounded-history-head">
-          <strong>Assessment History</strong>
-          <span>${assessments.length}</span>
-        </div>
-        <div class="bounded-history-list">${assessmentHistory}</div>
-      </section>
-    ` : "",
-  ].join("");
 
   const vtRows = data.virustotal_verifications || [];
   const virustotalHistory = vtRows.map((item) => row(
@@ -614,13 +697,6 @@ function render(data) {
   els.reviewNotes.value = data.analyst_notes || "";
   setStatus("", data.review_status ? `Current review status: ${data.review_status}` : "No review item stored yet.");
 
-  els.raw.innerHTML = `
-    <div class="workbook-row">
-      <strong>Raw AI Response</strong>
-      <pre class="raw-json">${escapeHtml(data.ai_raw_response || "No raw AI response stored.")}</pre>
-    </div>
-  `;
-
   renderZeekContext(data);
   renderAiAudit(data);
   els.updated.textContent = new Date().toLocaleTimeString();
@@ -629,7 +705,7 @@ function render(data) {
 function classificationForAction(action) {
   if (action === "log_only") return "Safe";
   if (action === "escalate") return "Dangerous";
-  return "Human Review Required";
+  return "Analyst Review Required";
 }
 
 async function submitReview(event) {

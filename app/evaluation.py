@@ -30,7 +30,7 @@ EVENT_LABELS = (
 )
 REFERENCE_CLASSIFICATIONS = (
     "Safe",
-    "Human Review Required",
+    "Analyst Review Required",
     "Dangerous",
 )
 CLASSIFICATION_ORDER = {

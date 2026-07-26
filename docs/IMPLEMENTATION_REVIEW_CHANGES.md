@@ -33,9 +33,9 @@ These values remain design choices. Experimental work should measure missed corr
 ## Qualitative Classification
 
 - Retired deterministic alert scoring and model-provided numerical adjustments.
-- The model now returns only `Safe`, `Human Review Required`, or `Dangerous`, plus qualitative confidence, evidence-based reasoning, threat-intelligence interpretation, and investigation steps.
+- The model now returns only `Safe`, `Analyst Review Required`, or `Dangerous`, plus qualitative confidence, evidence-based reasoning, threat-intelligence interpretation, and investigation steps.
 - Python validates the response and maps it to `log_only`, `human_review`, or `escalate`.
-- Missing or invalid classifications and materially disputed sensor findings are forced to Human Review Required.
+- Missing or invalid classifications, Low-confidence conclusions, and materially disputed sensor findings are forced to Analyst Review Required.
 - Historical score columns and tables may remain only in upgraded SQLite databases so migrations are non-destructive. New installations omit them, and compatibility values in older databases are never exposed through the API or prompt.
 - Removed heuristic MITRE ATT&CK mapping. Investigation context now comes from observed Suricata and Zeek records, registered-IP roles, and threat-intelligence evidence.
 

@@ -29,7 +29,7 @@ async function getJson(path) {
 function label(value) {
   if (!value) return "Unknown";
   if (value === "all") return "All Outcomes";
-  if (value === "human_review") return "Human Review Required";
+  if (value === "human_review") return "Analyst Review Required";
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 

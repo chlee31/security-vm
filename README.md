@@ -144,10 +144,10 @@ Three configured models receive the same frozen evidence sequentially. Their com
 The model reviews bounded Suricata, Zeek, correlation, registered-IP role, and threat-intelligence evidence and returns one of three qualitative classifications:
 
 - `Safe`
-- `Human Review Required`
+- `Analyst Review Required`
 - `Dangerous`
 
-Python validates the structured response and maps those classifications to `log_only`, `human_review`, or `escalate`. Invalid or missing classifications default to Human Review Required. Materially disputed Suricata and Zeek evidence also forces Human Review Required. VirusTotal is separate post-AI verification for Dangerous results; it never supplies points and a no-detection result never lowers the classification.
+Python validates the structured response and maps those classifications to `log_only`, `human_review`, or `escalate`. Invalid or missing classifications, Low-confidence model conclusions, and materially disputed Suricata and Zeek evidence are routed to Analyst Review Required. The internal `human_review` action name is retained for database and API compatibility. VirusTotal is separate post-AI verification for Dangerous results; it never supplies points and a no-detection result never lowers the classification.
 
 ## Prerequisites
 

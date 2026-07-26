@@ -48,6 +48,10 @@ class QualitativePolicyTests(unittest.TestCase):
         self.assertNotIn("risk_adjustment", properties)
         self.assertNotIn("score", properties)
         self.assertNotIn("risk_adjustment", AI_RESPONSE_SCHEMA["required"])
+        self.assertEqual(
+            properties["classification"]["enum"],
+            ["Safe", "Analyst Review Required", "Dangerous"],
+        )
 
     def test_prompt_contains_evidence_but_no_operational_score(self):
         prompt = build_prompt(
@@ -84,6 +88,8 @@ class QualitativePolicyTests(unittest.TestCase):
         self.assertNotIn("python_initial_score", lower)
         self.assertNotIn("risk_adjustment", lower)
         self.assertNotIn("final_score", lower)
+        self.assertIn("low confidence", lower)
+        self.assertIn("analyst review required", lower)
 
     def test_normalization_discards_legacy_adjustment(self):
         report = normalize_report(
@@ -101,7 +107,7 @@ class QualitativePolicyTests(unittest.TestCase):
     def test_classifications_map_to_qualitative_actions(self):
         expected = {
             "Safe": "log_only",
-            "Human Review Required": "human_review",
+            "Analyst Review Required": "human_review",
             "Dangerous": "escalate",
         }
         for classification, action in expected.items():
@@ -125,7 +131,7 @@ class QualitativePolicyTests(unittest.TestCase):
             self.detection,
             {"classification": "maybe"},
         )
-        self.assertEqual(result["final_classification"], "Human Review Required")
+        self.assertEqual(result["final_classification"], "Analyst Review Required")
         self.assertEqual(result["final_action"], "human_review")
 
     def test_material_sensor_dispute_forces_human_review(self):
@@ -136,8 +142,38 @@ class QualitativePolicyTests(unittest.TestCase):
             {**self.detection, "agreement_state": "disputed"},
             {"classification": "Safe"},
         )
-        self.assertEqual(result["final_classification"], "Human Review Required")
+        self.assertEqual(result["final_classification"], "Analyst Review Required")
         self.assertTrue(result["forced_review"])
+
+    def test_low_confidence_always_requires_analyst_review(self):
+        for classification in ("Safe", "Dangerous", "Human Review Required"):
+            with self.subTest(classification=classification):
+                result = decide(
+                    self.conn,
+                    {},
+                    self.alert,
+                    self.detection,
+                    {"classification": classification, "confidence": "Low"},
+                )
+                self.assertEqual(
+                    result["final_classification"],
+                    "Analyst Review Required",
+                )
+                self.assertEqual(result["final_action"], "human_review")
+                self.assertTrue(result["forced_review"])
+                self.assertIn("Low confidence", result["forced_review_reason"])
+
+    def test_normalization_routes_low_confidence_to_analyst_review(self):
+        report = normalize_report(
+            {
+                "classification": "Safe",
+                "confidence": "Low",
+                "reason": "The model is uncertain.",
+                "recommended_action": "log_only",
+            }
+        )
+        self.assertEqual(report["classification"], "Analyst Review Required")
+        self.assertEqual(report["recommended_action"], "human_review")
 
     def test_new_database_schema_and_rows_have_no_operational_score_fields(self):
         detection_id = insert_detection(self.conn, self.detection)

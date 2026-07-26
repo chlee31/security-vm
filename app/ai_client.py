@@ -22,13 +22,13 @@ import json
 import hashlib
 import re
 import time
-
 import requests
 
 
 # Stored with every request so a report can identify the exact instruction set
 # under which it was produced.
 PROMPT_VERSION = "security-vm-case-explanation-v11-qualitative-evidence"
+REVIEW_CLASSIFICATION = "Analyst Review Required"
 
 THREAT_INTEL_PROVIDER_NAMES = (
     "otx",
@@ -54,7 +54,7 @@ AI_RESPONSE_SCHEMA = {
     "properties": {
         "classification": {
             "type": "string",
-            "enum": ["Safe", "Human Review Required", "Dangerous"],
+            "enum": ["Safe", REVIEW_CLASSIFICATION, "Dangerous"],
         },
         "confidence": {"type": "string", "enum": ["Low", "Medium", "High"]},
         "reason": {"type": "string"},
@@ -484,7 +484,7 @@ Return only valid JSON with exactly these keys:
 classification, confidence, reason, summary, who, what, when, where, why, how, next_steps, threat_intel_analysis, evidence_review, recommended_action.
 
 Allowed values:
-- classification: Safe, Human Review Required, Dangerous
+- classification: Safe, Analyst Review Required, Dangerous
 - confidence: Low, Medium, High
 - recommended_action: log_only, human_review, investigate, escalate
 - reason, summary, who, what, when, where, why, and how: concise strings grounded only in supplied evidence
@@ -493,9 +493,10 @@ Allowed values:
 - evidence_review: identify the supplied top-level sections, the specific records or fields used, missing or ambiguous evidence, and the method used to reach the conclusion. This is a model acknowledgement; Python independently preserves the authoritative request record.
 
 Classification guidance:
-- Safe: likely benign or routine activity. Usually recommend log_only.
-- Human Review Required: suspicious, ambiguous, incomplete context, low confidence, or activity involving important assets. Usually recommend human_review.
+- Safe: evidence supports benign or routine activity with Medium or High confidence. Usually recommend log_only.
+- Analyst Review Required: suspicious, ambiguous, incomplete context, Low confidence, or activity involving important assets. Usually recommend human_review.
 - Dangerous: high-confidence malicious behavior, clear attack pattern, or severe risk to a high-value asset. Recommend escalate.
+- A Low-confidence conclusion must always be Analyst Review Required. Never return Safe or Dangerous with Low confidence.
 
 Asset guidance:
 - registered_ip_role_context comes from analyst-defined SQLite inventory.
@@ -509,7 +510,7 @@ Evidence rules:
 - correlation_rule_strength is a configured matching value, not a calibrated probability, risk score, or model confidence.
 - Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
 - Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
-- If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Human Review Required and describe the disputed evidence.
+- If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Analyst Review Required and describe the disputed evidence.
 - Treat observed DNS tunneling, port scans, repeated connections, or many destination ports according to the supplied sensor evidence.
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
 - Use threat_intel in evidence_context when present. provider_status describes whether each source was active and refreshed; each observable's providers list describes matched, no_match, not_active, or unavailable results. Treat matches from independent sources as corroborating evidence and consider confidence, category, and freshness.
@@ -521,8 +522,8 @@ Evidence rules:
 - Use repeated_activity and zeek_context.summary to explain recurrence, duration, byte counts, DNS repetition, TLS server names, and periodicity only when those fields contain evidence.
 - Do not claim access to decrypted payloads, endpoint processes, users, files, or host activity unless the supplied evidence explicitly contains that information.
 - If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, asset context, correlation, and sensor metadata.
-- For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent, prefer Human Review Required or Safe with clear low-confidence wording.
-- If context is missing, prefer Human Review Required with Low or Medium confidence instead of guessing.
+- For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent but uncertainty remains, prefer Analyst Review Required. Use Safe only when supplied evidence supports routine activity with at least Medium confidence.
+- If context is missing, prefer Analyst Review Required with Low or Medium confidence instead of guessing.
 - Do not identify, advertise, or speculate about the model or provider that produced the response. Python records model identity separately.
 - The reason must briefly explain the main evidence supporting the classification.
 - In evidence_review.received_sections, list only section names that are actually present in the event package. In evidence_used, cite concrete event UIDs, Zeek log types, fields, and observables. Do not claim to have received raw sensor JSON because Python deliberately retains raw records locally.
@@ -609,7 +610,7 @@ def parse_model_response(raw_text):
 
     Strict JSON is attempted first. A bounded recovery pass handles models that
     add Markdown fences or a short preface. If only several scalar fields can be
-    recovered, the response is marked partial and later forced to human review.
+    recovered, the response is marked partial and later forced to analyst review.
     """
     text = str(raw_text or "").strip()
     attempts = [text]
@@ -689,6 +690,24 @@ def normalize_confidence(value):
         return "Low"
 
 
+def normalize_classification(value):
+    """Map legacy and current review labels to the canonical analyst label."""
+    text = normalize_text(value, REVIEW_CLASSIFICATION).strip().lower().replace("_", " ")
+    if text == "safe":
+        return "Safe"
+    if text == "dangerous":
+        return "Dangerous"
+    if text in {
+        "analyst review",
+        "analyst review required",
+        "human review",
+        "human review required",
+        "review",
+    }:
+        return REVIEW_CLASSIFICATION
+    return REVIEW_CLASSIFICATION
+
+
 def normalize_report(parsed):
     """Convert supported model response variants into one qualitative contract.
 
@@ -707,7 +726,7 @@ def normalize_report(parsed):
         severity = str(risk.get("severity_level") or "Medium").lower()
         parsed.setdefault(
             "classification",
-            "Dangerous" if severity in {"high", "critical", "dangerous"} else "Safe" if severity == "low" else "Human Review Required",
+            "Dangerous" if severity in {"high", "critical", "dangerous"} else "Safe" if severity == "low" else REVIEW_CLASSIFICATION,
         )
         parsed.setdefault("confidence", risk.get("confidence_score"))
         parsed.setdefault("summary", threat_summary.get("activity_pattern") or normalize_text(threat_summary))
@@ -727,7 +746,7 @@ def normalize_report(parsed):
         alert = parsed.get("alert") if isinstance(parsed.get("alert"), dict) else {}
         parsed = {
             **parsed,
-            "classification": "Human Review Required",
+            "classification": REVIEW_CLASSIFICATION,
             "confidence": "Low",
             "reason": "The model echoed a sensor record instead of returning an analytical explanation.",
             "summary": "Invalid analytical response: the model copied normalized sensor evidence.",
@@ -743,7 +762,7 @@ def normalize_report(parsed):
             ],
             "recommended_action": "human_review",
         }
-    parsed["classification"] = normalize_text(parsed.get("classification"), "Human Review Required")
+    parsed["classification"] = normalize_classification(parsed.get("classification"))
     parsed["confidence"] = normalize_confidence(parsed.get("confidence"))
     parsed.pop("risk_adjustment", None)
     parsed["reason"] = normalize_text(
@@ -830,6 +849,9 @@ def normalize_report(parsed):
     allowed_actions = {"log_only", "human_review", "investigate", "escalate"}
     if parsed["recommended_action"] not in allowed_actions:
         parsed["recommended_action"] = "human_review"
+    if parsed["confidence"] == "Low":
+        parsed["classification"] = REVIEW_CLASSIFICATION
+        parsed["recommended_action"] = "human_review"
     return parsed
 
 
@@ -910,7 +932,7 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
     raw_text = response_payload.get("response", "") or "{}"
 
     # A malformed model response cannot silently become Safe or Dangerous.
-    # Parsing failure produces a conservative human-review report.
+    # Parsing failure produces a conservative analyst-review report.
     parse_error = None
     try:
         parsed = parse_model_response(raw_text)
@@ -919,7 +941,7 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
         parse_status = "fallback"
         parse_error = str(exc)
         parsed = {
-            "classification": "Human Review Required",
+            "classification": REVIEW_CLASSIFICATION,
             "confidence": "Low",
             "reason": "AI model returned non-JSON output.",
             "recommended_action": "human_review",
@@ -929,14 +951,14 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
             "when": "Not established from the supplied evidence.",
             "where": "Not established from the supplied evidence.",
             "why": "The model did not return valid structured evidence.",
-            "how": "Python retained the sensor evidence for human review.",
+            "how": "Python retained the sensor evidence for analyst review.",
             "next_steps": ["Review the correlated sensor records manually."],
         }
 
     partial_response = bool(parsed.pop("_partial_response", False))
     parsed = normalize_report(parsed)
     if partial_response:
-        parsed["classification"] = "Human Review Required"
+        parsed["classification"] = REVIEW_CLASSIFICATION
         parsed["confidence"] = "Low"
         parsed["recommended_action"] = "human_review"
         parsed["reason"] = f"Model output was truncated. {parsed['reason']}"

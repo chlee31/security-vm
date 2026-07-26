@@ -79,9 +79,9 @@ A no-detection result does not lower a classification. Private, loopback, link-l
 
 ### 6. Describe Qualitative Classification Precisely
 
-Security VM no longer calculates a deterministic or AI-adjusted risk score. The model reviews the bounded evidence and returns `Safe`, `Human Review Required`, or `Dangerous`, together with confidence, reasoning, six-part case explanation, threat-intelligence interpretation, and next steps.
+Security VM no longer calculates a deterministic or AI-adjusted risk score. The model reviews the bounded evidence and returns `Safe`, `Analyst Review Required`, or `Dangerous`, together with confidence, reasoning, six-part case explanation, threat-intelligence interpretation, and next steps.
 
-Python validates this structure and maps it to `log_only`, `human_review`, or `escalate`. Missing or invalid classifications default to Human Review Required. Materially disputed Suricata and Zeek findings also force human review. Describe confidence as the model's qualitative assessment, not a calibrated probability.
+Python validates this structure and maps it to `log_only`, `human_review`, or `escalate`. Missing or invalid classifications, Low-confidence conclusions, and materially disputed Suricata and Zeek findings are routed to Analyst Review Required. Describe confidence as the model's qualitative assessment, not a calibrated probability.
 
 ### 7. Add the Three-Model Comparison Experiment
 
