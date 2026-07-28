@@ -4,8 +4,6 @@ const els = {
   safeCount: document.querySelector("#safe-count"),
   reviewCount: document.querySelector("#review-count"),
   dangerCount: document.querySelector("#danger-count"),
-  topDetection: document.querySelector("#top-detection"),
-  systemMode: document.querySelector("#system-mode"),
   zeekNoticeCount: document.querySelector("#zeek-notice-count"),
   zeekWeirdCount: document.querySelector("#zeek-weird-count"),
   investigationsReady: document.querySelector("#investigations-ready"),
@@ -17,8 +15,6 @@ const els = {
   mode: document.querySelector("#mode"),
   updated: document.querySelector("#updated"),
   alerts: document.querySelector("#alerts"),
-  aiReports: document.querySelector("#ai-opinions"),
-  detections: document.querySelector("#detections"),
   events: document.querySelector("#events"),
   checkAiModel: document.querySelector("#check-ai-model"),
   resetLogs: document.querySelector("#reset-logs"),
@@ -53,10 +49,6 @@ function filteredDashboardUrl(outcome) {
   if (outcome) params.set("outcome", outcome);
   const hash = params.toString();
   return `${window.location.pathname}${hash ? `#${hash}` : ""}`;
-}
-
-function detectionWorkbookUrl(detectionType) {
-  return `/detection?type=${encodeURIComponent(detectionType)}`;
 }
 
 function outcomeWorkbookUrl(outcome) {
@@ -335,7 +327,6 @@ function renderSummary(summary) {
 }
 
 function renderMetrics(metrics) {
-  const detections = metrics.detections_by_type || [];
   els.totalAlerts.textContent = metrics.total_alerts ?? 0;
   els.totalDetections.textContent = metrics.total_detections ?? 0;
   els.safeCount.textContent = metrics.outcome_counts?.safe ?? 0;
@@ -344,56 +335,53 @@ function renderMetrics(metrics) {
   els.zeekNoticeCount.textContent = metrics.zeek_notice_count ?? 0;
   els.zeekWeirdCount.textContent = metrics.zeek_weird_count ?? 0;
   els.investigationsReady.textContent = metrics.total_detections ?? 0;
-  els.topDetection.textContent = detections[0] ? detectionLabel(detections[0].detection_type) : "None";
-  els.systemMode.textContent = "analysis";
   els.mode.textContent = "analysis";
   document.querySelectorAll("[data-outcome-filter]").forEach((card) => {
     card.classList.toggle("selected", card.dataset.outcomeFilter === selectedOutcome);
   });
   document.querySelector("[data-outcome-all]")?.classList.toggle("selected", !selectedOutcome);
 
-  const max = Math.max(1, ...detections.map((item) => item.count));
-  const allTrafficButton = `
-    <button
-      class="list-item detection-button ${selectedDetectionType ? "" : "selected"}"
-      type="button"
-      data-detection-all="true"
-      aria-pressed="${selectedDetectionType ? "false" : "true"}"
-      title="Show all traffic"
-    >
-      <div class="row">
-        <strong>All Traffic</strong>
-        <span>${metrics.total_detections ?? 0}</span>
-      </div>
-      <div class="bar"><span style="--value:100%"></span></div>
-      <small>Clear investigation filter</small>
-    </button>
-  `;
-  els.detections.innerHTML = allTrafficButton + (detections.map((item) => `
-    <a
-      class="list-item detection-button ${item.detection_type === selectedDetectionType ? "selected" : ""}"
-      href="${detectionWorkbookUrl(item.detection_type)}"
-      target="_blank"
-      rel="noopener"
-      title="Open ${detectionLabel(item.detection_type)} investigation"
-    >
-      <div class="row">
-        <strong>${detectionLabel(item.detection_type)}</strong>
-        <span>${item.count}</span>
-      </div>
-      <div class="bar"><span style="--value:${(item.count / max) * 100}%"></span></div>
-      <small>Open detection workbook</small>
-    </a>
-  `).join("") || `<div class="empty">No detections yet. Start ingest and generate test traffic.</div>`);
+}
+
+function dashboardFindingGroups(findings) {
+  const groups = new Map();
+  findings.forEach((finding) => {
+    const sensor = String(finding.sensor || "unknown").toLowerCase();
+    const name = String(finding.finding_name || finding.finding_type || "Finding");
+    const key = `${sensor}|${name.toLowerCase()}`;
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        sensor,
+        name,
+        count: 1,
+        first: finding,
+        last: finding
+      });
+      return;
+    }
+    existing.count += 1;
+    const timestamp = new Date(finding.finding_timestamp || 0).getTime();
+    const firstTimestamp = new Date(existing.first.finding_timestamp || 0).getTime();
+    const lastTimestamp = new Date(existing.last.finding_timestamp || 0).getTime();
+    if (timestamp < firstTimestamp) existing.first = finding;
+    if (timestamp >= lastTimestamp) existing.last = finding;
+  });
+  return [...groups.values()];
 }
 
 function renderAlerts(alerts) {
   els.alerts.innerHTML = alerts.map((alert) => {
     const findings = alert.sensor_findings || [];
+    const findingGroups = dashboardFindingGroups(findings);
     const sensors = [...new Set(findings.map((finding) => String(finding.sensor || "unknown").toLowerCase()))];
     const timestamp = alert.timestamp || findings[0]?.finding_timestamp;
+    const hasDecision = Boolean(alert.final_classification);
+    const primaryName = alert.signature || findingGroups[0]?.name || "Network detection";
+    const primaryGroup = findingGroups.find((group) => group.name === primaryName);
+    const repeatedCount = Math.max(0, Number(primaryGroup?.count || 1) - 1);
     return `
-      <a class="alert unified-alert investigation-link ${sensors.length > 1 ? "multi-sensor-alert" : ""}" href="${alert.detection_id ? investigationUrl(alert.detection_id, alert.case_uid) : "#"}" target="_blank" rel="noopener">
+      <a class="alert unified-alert investigation-link ${sensors.length > 1 ? "multi-sensor-alert" : ""} ${hasDecision ? "" : "pending-assessment"}" href="${alert.detection_id ? investigationUrl(alert.detection_id, alert.case_uid) : "#"}" target="_blank" rel="noopener">
         <div class="alert-time-block">
           <span>Detected</span>
           <time>${escapeHtml(displayTimestamp(timestamp))}</time>
@@ -404,7 +392,10 @@ function renderAlerts(alerts) {
             ${sensors.map((sensor) => `<span class="sensor-badge ${escapeHtml(sensor)}">${escapeHtml(sensor.toUpperCase())}</span>`).join("") || `<span class="sensor-badge unknown">UNLINKED</span>`}
             <span class="correlation-label">${escapeHtml(detectionLabel(alert.sensor_state || "single_sensor"))}</span>
           </div>
-          <strong class="alert-signature">${escapeHtml(alert.signature || "Network detection")}</strong>
+          <strong class="alert-signature">
+            ${escapeHtml(primaryName)}
+            ${repeatedCount ? `<span class="signature-repeat-count">+${repeatedCount}</span>` : ""}
+          </strong>
           <p class="alert-flow">
             ${escapeHtml(alert.src_ip || "unknown")}:${escapeHtml(alert.src_port || "")}
             <span aria-hidden="true">-&gt;</span>
@@ -412,21 +403,23 @@ function renderAlerts(alerts) {
             ${escapeHtml(alert.protocol || "")}
           </p>
           <div class="sensor-finding-list">
-            ${findings.map((finding) => `
+            ${findingGroups.map((group) => `
               <div class="sensor-finding-row">
-                <span class="sensor-badge ${escapeHtml(String(finding.sensor || "unknown").toLowerCase())}">${escapeHtml(String(finding.sensor || "unknown").toUpperCase())}</span>
+                <span class="sensor-badge ${escapeHtml(group.sensor)}">${escapeHtml(group.sensor.toUpperCase())}</span>
                 <div class="sensor-finding-copy">
-                  <strong>${escapeHtml(finding.event_uid || "No event UID")}</strong>
-                  <span>${escapeHtml(finding.finding_name || finding.finding_type || "Finding")}</span>
-                  <time>${escapeHtml(displayTimestamp(finding.finding_timestamp))}</time>
+                  <strong>${escapeHtml(group.name)}${group.count > 1 ? ` <span class="inline-repeat-count">+${group.count - 1}</span>` : ""}</strong>
+                  <span>${group.count} stored event${group.count === 1 ? "" : "s"} · ${escapeHtml(group.first.event_uid || "No event UID")}${group.count > 1 ? ` through ${escapeHtml(group.last.event_uid || "latest event")}` : ""}</span>
+                  <time>${escapeHtml(displayTimestamp(group.first.finding_timestamp))}${group.count > 1 ? ` to ${escapeHtml(displayTimestamp(group.last.finding_timestamp))}` : ""}</time>
                 </div>
               </div>
             `).join("") || `<small>No linked sensor findings stored.</small>`}
           </div>
         </div>
-        <div class="classification-badge ${classificationClass(alert.final_classification)}">
-          <span>${escapeHtml(alert.final_classification || "Pending review")}</span>
-        </div>
+        ${hasDecision ? `
+          <div class="classification-badge ${classificationClass(alert.final_classification)}">
+            <span>${escapeHtml(alert.final_classification)}</span>
+          </div>
+        ` : ""}
       </a>
     `;
   }).join("") || `<div class="empty">No unified detections yet. Start Suricata and Zeek ingestion, then refresh.</div>`;
@@ -435,30 +428,8 @@ function renderAlerts(alerts) {
 function classificationClass(value) {
   const normalized = String(value || "").toLowerCase();
   if (normalized.includes("dangerous")) return "danger";
-  if (normalized.includes("human")) return "review";
+  if (normalized.includes("human") || normalized.includes("analyst")) return "review";
   return "safe";
-}
-
-function renderAiModelReports(reports) {
-  els.aiReports.innerHTML = reports.map((report) => `
-    <a class="alert ai-opinion investigation-link ${classificationClass(report.classification)}" href="${report.detection_id ? investigationUrl(report.detection_id, report.case_uid) : "#"}" target="_blank" rel="noopener">
-      <time>${report.created_at || report.timestamp || ""}</time>
-      <div>
-        <div class="row tight">
-          <strong>${report.classification || "AI opinion"}</strong>
-          <span>${report.confidence || "Unknown"} confidence · ${report.model_identity || "unknown model"}</span>
-        </div>
-        <p>
-          ${report.src_ip || "unknown"} -> ${report.dest_ip || "unknown"}
-          ${report.signature || ""}
-        </p>
-        <p>${detectionLabel(report.sensor_state || "suricata_only")} · ${detectionLabel(report.agreement_state || "single_sensor")}</p>
-        <p>${report.reason || "No reason returned."}</p>
-        <p>Recommended action: ${report.recommended_action || "none"}</p>
-        <p>Profile ${report.ai_profile_uid || "legacy-profile"} · run ${report.model_run_id || "not recorded"} · ${report.elapsed_ms ?? 0}ms</p>
-      </div>
-    </a>
-  `).join("") || `<div class="empty">No AI opinions yet. Start ingest and confirm the AI model is reachable.</div>`;
 }
 
 function renderEvents(events) {
@@ -482,23 +453,20 @@ async function refresh(options = {}) {
     els.refresh.disabled = true;
     els.refresh.textContent = "Refreshing";
     const summaryRequest = getJson("/api/dashboard-summary?limit=12").catch((error) => ({ _error: error.message }));
-    const [metrics, summary, alerts, aiReports, events] = await Promise.all([
+    const [metrics, summary, alerts, events] = await Promise.all([
       getJson("/api/metrics"),
       summaryRequest,
       getJson(`/api/latest-alerts?limit=50&sensor=${encodeURIComponent(selectedSensorFilter)}`),
-      getJson("/api/ai-opinions?limit=50"),
       getJson("/api/events?limit=40")
     ]);
     renderMetrics(metrics);
     renderSummary(summary);
     renderAlerts(alerts);
-    renderAiModelReports(aiReports);
     renderEvents(events);
     els.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (error) {
     els.updated.textContent = "Dashboard API error";
     els.alerts.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.aiReports.innerHTML = `<div class="empty">${error.message}</div>`;
     els.events.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryIpPie.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryTimeline.innerHTML = `<div class="empty">${error.message}</div>`;
@@ -554,21 +522,6 @@ async function handleDashboardClick(event) {
   const outcome = outcomeCard ? outcomeCard.dataset.outcomeFilter : null;
   if (outcome) {
     window.open(outcomeWorkbookUrl(outcome), "_blank", "noopener");
-    return;
-  }
-
-  const allTrafficButton = event.target.closest ? event.target.closest("[data-detection-all]") : null;
-  if (allTrafficButton) {
-    selectedDetectionType = null;
-    writeHashFilters();
-    refresh();
-    return;
-  }
-
-  const detectionButton = event.target.closest ? event.target.closest("[data-detection-type]") : null;
-  const detectionType = detectionButton ? detectionButton.dataset.detectionType : null;
-  if (detectionType) {
-    window.open(detectionWorkbookUrl(detectionType), "_blank", "noopener");
     return;
   }
 

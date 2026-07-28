@@ -6,14 +6,20 @@ dashboard from becoming the source of security evidence.
 """
 
 from pathlib import Path
+import base64
+import binascii
+import csv
+import io
 import importlib.util
 import ipaddress
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -26,6 +32,7 @@ from pydantic import BaseModel
 from app.config import load_config, save_config
 from app.database import (
     ai_comparison_detail,
+    ai_comparison_export_rows,
     ai_comparison_selection_summary,
     ai_model_comparison,
     asset_summary,
@@ -55,6 +62,8 @@ from app.database import (
     ip_detail,
     investigation_detail,
     latest_alerts,
+    latest_ai_request_activity,
+    latest_runtime_components,
     latest_sensor_alerts,
     latest_app_events,
     latest_decision_evidence,
@@ -67,7 +76,9 @@ from app.database import (
     list_review_queue,
     mark_ai_profile_selected,
     public_ips_for_enrichment,
+    promote_ai_comparison_winner,
     reset_dashboard_logs,
+    reopen_ai_comparison_review,
     submit_analyst_review,
     upsert_threat_intel_lookup,
     upsert_asset,
@@ -154,6 +165,11 @@ class AIComparisonSettingsRequest(BaseModel):
 class AIComparisonVoteRequest(BaseModel):
     analyst_name: str = "analyst"
     selection: str
+    notes: str = ""
+
+
+class AIComparisonPromotionRequest(BaseModel):
+    analyst_name: str = "analyst"
     notes: str = ""
 
 
@@ -500,6 +516,8 @@ def create_app(config_path):
     """
     config = load_config(config_path)
     db_path = config.get("database", {}).get("path", "security_vm.db")
+    admin_username = os.environ.get("SECURITY_VM_ADMIN_USER", "admin")
+    admin_password = os.environ.get("SECURITY_VM_ADMIN_PASSWORD", "")
     init_db(db_path).close()
     app = FastAPI(title="Security VM Dashboard")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -511,6 +529,39 @@ def create_app(config_path):
         }
         retired_prefixes = ("/api/assets",)
         path = request.url.path
+        if path == "/admin" or path.startswith("/api/admin/"):
+            if not admin_password:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": (
+                            "Admin access is disabled. Set SECURITY_VM_ADMIN_PASSWORD "
+                            "before starting Security VM."
+                        )
+                    },
+                )
+            authorization = request.headers.get("Authorization", "")
+            authenticated = False
+            if authorization.startswith("Basic "):
+                try:
+                    decoded = base64.b64decode(
+                        authorization.split(" ", 1)[1],
+                        validate=True,
+                    ).decode("utf-8")
+                    supplied_username, supplied_password = decoded.split(":", 1)
+                    authenticated = (
+                        secrets.compare_digest(supplied_username, admin_username)
+                        and secrets.compare_digest(supplied_password, admin_password)
+                    )
+                except (binascii.Error, ValueError, UnicodeDecodeError):
+                    authenticated = False
+            if not authenticated:
+                return Response(
+                    status_code=401,
+                    content="Admin authentication required",
+                    headers={"WWW-Authenticate": 'Basic realm="Security VM Admin"'},
+                    media_type="text/plain",
+                )
         if path in retired_paths or path.startswith(retired_prefixes):
             return JSONResponse(
                 status_code=410,
@@ -861,6 +912,26 @@ def create_app(config_path):
                 },
                 "tools": tool_status(),
                 "python_packages": python_package_status(),
+            }
+        finally:
+            conn.close()
+
+    @app.get("/api/admin/runtime-console")
+    def api_admin_runtime_console(limit: int = 100):
+        """Return sanitized request lifecycles and background component events."""
+        conn = connect(db_path)
+        try:
+            activities = latest_ai_request_activity(conn, max(1, min(limit, 200)))
+            events = latest_app_events(conn, max(1, min(limit, 200)))
+            for event in events:
+                event["details"] = redact_secrets(event.get("details") or "", config)
+            return {
+                "active_requests": sum(
+                    1 for activity in activities if activity.get("status") == "active"
+                ),
+                "components": latest_runtime_components(conn),
+                "ai_requests": activities,
+                "events": events,
             }
         finally:
             conn.close()
@@ -1243,6 +1314,49 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.get("/api/ai-comparisons/export")
+    def api_ai_comparison_export(format: str = "csv"):
+        conn = connect(db_path)
+        try:
+            rows = ai_comparison_export_rows(conn)
+        finally:
+            conn.close()
+        if format.lower() == "json":
+            content = json.dumps(
+                {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "record_count": len(rows),
+                    "comparisons": rows,
+                },
+                indent=2,
+                default=str,
+            )
+            return Response(
+                content=content,
+                media_type="application/json",
+                headers={
+                    "Content-Disposition": 'attachment; filename="ai-comparison-results.json"'
+                },
+            )
+        if format.lower() != "csv":
+            raise HTTPException(status_code=400, detail="format must be csv or json")
+        fieldnames = []
+        for row in rows:
+            for key in row:
+                if key not in fieldnames:
+                    fieldnames.append(key)
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames or ["comparison_uid"])
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="ai-comparison-results.csv"'
+            },
+        )
+
     @app.get("/api/ai-comparisons/{comparison_uid}")
     def api_ai_comparison_detail(comparison_uid: str):
         conn = connect(db_path)
@@ -1276,6 +1390,56 @@ def create_app(config_path):
                 "ai_comparison",
                 f"AI comparison selection recorded for {comparison_uid}",
                 {"selection": payload.selection},
+            )
+            return ai_comparison_detail(conn, comparison_uid)
+        finally:
+            conn.close()
+
+    @app.post("/api/ai-comparisons/{comparison_uid}/reopen")
+    def api_reopen_ai_comparison(comparison_uid: str):
+        conn = connect(db_path)
+        try:
+            try:
+                reopened = reopen_ai_comparison_review(conn, comparison_uid)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            if not reopened:
+                raise HTTPException(status_code=404, detail="AI comparison not found")
+            insert_app_event(
+                conn,
+                "info",
+                "ai_comparison",
+                f"AI comparison review reopened for {comparison_uid}",
+                {"comparison_uid": comparison_uid},
+            )
+            return ai_comparison_detail(conn, comparison_uid)
+        finally:
+            conn.close()
+
+    @app.post("/api/ai-comparisons/{comparison_uid}/use-as-case-explanation")
+    def api_use_ai_comparison_as_case_explanation(
+        comparison_uid: str,
+        payload: AIComparisonPromotionRequest,
+    ):
+        conn = connect(db_path)
+        try:
+            try:
+                promoted = promote_ai_comparison_winner(
+                    conn,
+                    comparison_uid,
+                    payload.analyst_name.strip() or "analyst",
+                    payload.notes.strip(),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            if not promoted:
+                raise HTTPException(status_code=404, detail="AI comparison not found")
+            insert_app_event(
+                conn,
+                "info",
+                "ai_comparison",
+                f"Selected AI comparison response promoted for {comparison_uid}",
+                {"comparison_uid": comparison_uid},
             )
             return ai_comparison_detail(conn, comparison_uid)
         finally:

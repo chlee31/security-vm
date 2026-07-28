@@ -7,6 +7,7 @@ a new independent AI audit, and never overwrites the historical assessment.
 
 import json
 
+from app.ai_activity import ai_activity_callback
 from app.ai_client import ask_ai_model
 from app.database import (
     asset_context_for_alert,
@@ -230,7 +231,30 @@ def reassess_case(conn, config, case_uid):
     )
     detection_id = workspace["detection_id"]
 
-    report = ask_ai_model(config, alert, detection, evidence_context=evidence)
+    _activity_uid, progress = ai_activity_callback(
+        conn,
+        config,
+        "reassessment",
+        case_uid=case_uid,
+        detection_id=detection_id,
+    )
+    try:
+        report = ask_ai_model(
+            config,
+            alert,
+            detection,
+            evidence_context=evidence,
+            progress_callback=progress,
+        )
+    except Exception as exc:
+        progress(
+            "failed",
+            {
+                "status": "failed",
+                "error_message": f"{type(exc).__name__}: {exc}",
+            },
+        )
+        raise
     report_id = insert_ai_report(conn, detection_id, report)
     upsert_ai_run_audit(
         conn,

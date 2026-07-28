@@ -22,12 +22,14 @@ import json
 import hashlib
 import re
 import time
+from collections import OrderedDict
+from copy import deepcopy
 import requests
 
 
 # Stored with every request so a report can identify the exact instruction set
 # under which it was produced.
-PROMPT_VERSION = "security-vm-case-explanation-v11-qualitative-evidence"
+PROMPT_VERSION = "security-vm-case-explanation-v12-grounded-comparison"
 REVIEW_CLASSIFICATION = "Analyst Review Required"
 
 THREAT_INTEL_PROVIDER_NAMES = (
@@ -242,6 +244,107 @@ def compact_ai_evidence_with_manifest(value, key="", path="$", depth=0):
     return compacted, omissions
 
 
+def summarize_sensor_findings_for_model(evidence_context, representative_limit=12):
+    """Collapse repeated sensor rows into traceable model-facing aggregates.
+
+    SQLite and the case workspace retain every original finding. Only the
+    request package is condensed so repeated signatures contribute recurrence
+    evidence without crowding out distinct Suricata or Zeek observations.
+    """
+    evidence = deepcopy(evidence_context or {})
+    fusion = evidence.get("sensor_fusion")
+    if not isinstance(fusion, dict):
+        return evidence
+    findings = fusion.get("findings")
+    if not isinstance(findings, list) or not findings:
+        return evidence
+
+    groups = OrderedDict()
+    sensor_counts = {}
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        sensor = str(finding.get("sensor") or "unknown")
+        sensor_counts[sensor] = sensor_counts.get(sensor, 0) + 1
+        key = (
+            sensor,
+            str(finding.get("finding_type") or ""),
+            str(finding.get("finding_name") or ""),
+            str(finding.get("source_ip") or ""),
+            str(finding.get("destination_ip") or ""),
+            str(finding.get("destination_port") or ""),
+            str(finding.get("protocol") or ""),
+        )
+        group = groups.setdefault(
+            key,
+            {
+                "sensor": sensor,
+                "finding_type": finding.get("finding_type"),
+                "finding_name": finding.get("finding_name"),
+                "source_ip": finding.get("source_ip"),
+                "source_port": finding.get("source_port"),
+                "destination_ip": finding.get("destination_ip"),
+                "destination_port": finding.get("destination_port"),
+                "protocol": finding.get("protocol"),
+                "severity": finding.get("severity"),
+                "confidence": finding.get("confidence"),
+                "community_id": finding.get("community_id"),
+                "occurrence_count": 0,
+                "first_seen": finding.get("timestamp"),
+                "last_seen": finding.get("timestamp"),
+                "event_uid_examples": [],
+                "source_record_examples": [],
+                "raw_record_sha256_examples": [],
+            },
+        )
+        group["occurrence_count"] += 1
+        timestamp = finding.get("timestamp")
+        if timestamp:
+            if not group.get("first_seen") or timestamp < group["first_seen"]:
+                group["first_seen"] = timestamp
+            if not group.get("last_seen") or timestamp > group["last_seen"]:
+                group["last_seen"] = timestamp
+        for field, target in (
+            ("event_uid", "event_uid_examples"),
+            ("sensor_event_id", "source_record_examples"),
+            ("raw_record_sha256", "raw_record_sha256_examples"),
+        ):
+            value = finding.get(field)
+            if value not in (None, "") and value not in group[target] and len(group[target]) < 5:
+                group[target].append(value)
+
+    representatives = sorted(
+        groups.values(),
+        key=lambda item: (
+            -int(item.get("occurrence_count") or 0),
+            str(item.get("sensor") or ""),
+            str(item.get("finding_name") or ""),
+        ),
+    )
+    included = representatives[: max(1, int(representative_limit))]
+    fusion["finding_summary"] = {
+        "raw_finding_count": len(findings),
+        "distinct_finding_groups": len(representatives),
+        "representative_group_count": len(included),
+        "sensor_counts": sensor_counts,
+        "grouping_fields": [
+            "sensor",
+            "finding_type",
+            "finding_name",
+            "source_ip",
+            "destination_ip",
+            "destination_port",
+            "protocol",
+        ],
+        "policy": (
+            "Repeated rows are represented by occurrence_count and time range. "
+            "Original sensor rows remain in SQLite and the case evidence view."
+        ),
+    }
+    fusion["findings"] = included
+    return evidence
+
+
 def infer_model_provider(host, model):
     """Derive a display/provider label from the configured endpoint and model."""
     text = f"{host or ''} {model or ''}".lower()
@@ -353,8 +456,12 @@ def _evidence_source_map(package):
                 "sensor": item.get("sensor"),
                 "source_table": item.get("source_table"),
                 "source_record_id": item.get("sensor_event_id"),
+                "source_record_examples": item.get("source_record_examples") or [],
                 "event_uid": item.get("event_uid"),
+                "event_uid_examples": item.get("event_uid_examples") or [],
                 "raw_record_sha256": item.get("raw_record_sha256"),
+                "raw_record_sha256_examples": item.get("raw_record_sha256_examples") or [],
+                "occurrence_count": item.get("occurrence_count") or 1,
             }
             for item in findings
         ],
@@ -413,6 +520,7 @@ def _build_prompt_components(alert, detection, evidence_context=None):
     likely_encrypted = bool(port_values & encrypted_ports) or any(word in signature_text for word in encrypted_keywords)
     # This is the normalized case package embedded verbatim as JSON in the
     # prompt. It contains selected fields, not raw database or sensor files.
+    model_evidence = summarize_sensor_findings_for_model(evidence_context)
     package = {
         "event_context": {
             "case_uid": detection.get("case_uid"),
@@ -436,7 +544,7 @@ def _build_prompt_components(alert, detection, evidence_context=None):
             "correlation_method": detection.get("correlation_method", "single_sensor"),
             "correlation_rule_strength": detection.get("correlation_confidence", 0.5),
             "community_id": detection.get("community_id"),
-            "repeated_activity": (evidence_context or {}).get("repeated_activity", {}),
+            "repeated_activity": model_evidence.get("repeated_activity", {}),
         },
         "registered_ip_role_context": {
             "match": asset_context.get("asset_match", "none"),
@@ -471,7 +579,7 @@ def _build_prompt_components(alert, detection, evidence_context=None):
     }
     # Evidence collected by main.py is filtered at the final trust boundary.
     package["evidence_context"], omissions = compact_ai_evidence_with_manifest(
-        evidence_context or {}, key="evidence_context", path="$.evidence_context"
+        model_evidence, key="evidence_context", path="$.evidence_context"
     )
 
     # The instruction block explains how each evidence type may and may not be
@@ -497,6 +605,9 @@ Classification guidance:
 - Analyst Review Required: suspicious, ambiguous, incomplete context, Low confidence, or activity involving important assets. Usually recommend human_review.
 - Dangerous: high-confidence malicious behavior, clear attack pattern, or severe risk to a high-value asset. Recommend escalate.
 - A Low-confidence conclusion must always be Analyst Review Required. Never return Safe or Dangerous with Low confidence.
+- Safe and Dangerous require concrete supporting records or fields named in evidence_review.evidence_used. If the evidence does not support either conclusion, choose Analyst Review Required.
+- Never classify traffic as Dangerous merely because it is encrypted, unfamiliar, repeated, or absent from threat-intelligence feeds.
+- Never classify traffic as Safe merely because threat-intelligence providers returned no match.
 
 Asset guidance:
 - registered_ip_role_context comes from analyst-defined SQLite inventory.
@@ -505,6 +616,7 @@ Asset guidance:
 
 Evidence rules:
 - sensor_fusion in evidence_context is authoritative about which sensors produced findings. Evaluate every finding independently and then explain whether they support the same security conclusion.
+- sensor_fusion.finding_summary explains when Python grouped repeated rows. Treat occurrence_count, first_seen, and last_seen as recurrence evidence. Do not mistake representative groups for the complete raw-row count, and cite event_uid_examples when referring to grouped evidence.
 - A Suricata signature may initiate a detection without a Zeek notice. A Zeek notice may initiate a detection without a Suricata signature. Absence of a finding from one sensor is missing evidence, not evidence that the traffic is safe, and must never cancel the other sensor's finding.
 - When sensor_state is multi_sensor, use Community ID or flow/time correlation metadata to understand why findings were grouped. Corroborating independent findings should increase confidence, but should not automatically mean Dangerous.
 - correlation_rule_strength is a configured matching value, not a calibrated probability, risk score, or model confidence.
@@ -515,6 +627,7 @@ Evidence rules:
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
 - Use threat_intel in evidence_context when present. provider_status describes whether each source was active and refreshed; each observable's providers list describes matched, no_match, not_active, or unavailable results. Treat matches from independent sources as corroborating evidence and consider confidence, category, and freshness.
 - In threat_intel_analysis.providers, discuss every provider separately. State "Not active", "No match", or "Unavailable" when that is the supplied state. For matches, name the observable, category, confidence when supplied, and what the match means. Do not turn a no-match result into proof that traffic is benign.
+- Do not report supports_suspicious or supports_malicious unless a supplied provider result contains a concrete matching indicator. A sensor signature is not a threat-intelligence match.
 - VirusTotal is post-AI verification. During an initial comparison it will normally be not requested; state that clearly and do not imply it was checked. During reassessment, interpret only the stored VirusTotal evidence supplied by Python.
 - The explanation must explicitly cover who, what, when, where, why, and how. Distinguish observed facts from interpretations and uncertainty.
 - Make next_steps specific to this case and order them by investigative value. Each step must name the evidence or observable to inspect and what question the analyst should answer. Do not return generic advice such as only "monitor traffic" or "investigate further."
@@ -524,6 +637,7 @@ Evidence rules:
 - If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, asset context, correlation, and sensor metadata.
 - For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent but uncertainty remains, prefer Analyst Review Required. Use Safe only when supplied evidence supports routine activity with at least Medium confidence.
 - If context is missing, prefer Analyst Review Required with Low or Medium confidence instead of guessing.
+- Do not use generic placeholders such as "Analyst", "Automated system", "Network traffic", or "Unknown" when a source, destination, timestamp, protocol, sensor, event UID, or finding name is present in the supplied package. Copy the supplied observable instead.
 - Do not identify, advertise, or speculate about the model or provider that produced the response. Python records model identity separately.
 - The reason must briefly explain the main evidence supporting the classification.
 - In evidence_review.received_sections, list only section names that are actually present in the event package. In evidence_used, cite concrete event UIDs, Zeek log types, fields, and observables. Do not claim to have received raw sensor JSON because Python deliberately retains raw records locally.
@@ -593,6 +707,61 @@ def build_prompt_audit(config, alert, detection, evidence_context=None):
         "audit_omissions": omissions,
         "audit_source_map": source_map,
         "audit_status": "prepared",
+    }
+
+
+def rebuild_prompt_audit(config, alert, snapshot):
+    """Stamp one stored prompt snapshot for a new model invocation.
+
+    Multi-model comparisons use this path so every candidate receives the exact
+    prompt that produced the case's initial summary. Model identity and run ID
+    remain unique, while the prompt/evidence hashes remain identical.
+    """
+    metadata = model_metadata(config)
+    prompt = str(snapshot.get("prompt_text") or "")
+    if not prompt:
+        raise ValueError("Stored AI request snapshot has no prompt text")
+    package = snapshot.get("evidence_package")
+    if not isinstance(package, dict):
+        raise ValueError("Stored AI request snapshot has no evidence package")
+    package_text = json.dumps(package, sort_keys=True, separators=(",", ":"))
+    omissions = snapshot.get("omission_manifest")
+    if not isinstance(omissions, list):
+        omissions = []
+    source_map = snapshot.get("source_map")
+    if not isinstance(source_map, dict):
+        source_map = _evidence_source_map(package)
+    prompt_version = snapshot.get("prompt_version") or metadata["prompt_version"]
+    metadata["prompt_version"] = prompt_version
+    return prompt, {
+        **metadata,
+        "model_run_id": model_run_id(metadata, alert),
+        "prompt_sha256": text_sha256(prompt),
+        "prompt_chars": len(prompt),
+        "audit_prompt_text": prompt,
+        "audit_prompt_bytes": len(prompt.encode("utf-8")),
+        "audit_evidence_package": package,
+        "audit_evidence_sha256": text_sha256(package_text),
+        "audit_evidence_chars": len(package_text),
+        "audit_evidence_bytes": len(package_text.encode("utf-8")),
+        "audit_evidence_manifest": snapshot.get("evidence_manifest") or {
+            "top_level_sections": list(package),
+            "sensor_finding_count": len(
+                ((package.get("evidence_context") or {}).get("sensor_fusion") or {}).get("findings") or []
+            ),
+            "zeek_context_count": len(
+                ((package.get("evidence_context") or {}).get("zeek_context") or {}).get("items") or []
+            ),
+            "omission_count": len(omissions),
+        },
+        "audit_omissions": omissions,
+        "audit_source_map": source_map,
+        "audit_status": "prepared",
+        "audit_snapshot_source": {
+            "assessment_type": snapshot.get("assessment_type"),
+            "model_run_id": snapshot.get("model_run_id"),
+            "prepared_at": snapshot.get("prepared_at"),
+        },
     }
 
 
@@ -855,6 +1024,150 @@ def normalize_report(parsed):
     return parsed
 
 
+def _supplied_threat_intel_facts(evidence_package):
+    """Summarize provider states from the evidence Python actually supplied."""
+    threat_intel = (
+        ((evidence_package or {}).get("evidence_context") or {}).get("threat_intel")
+        or {}
+    )
+    facts = {
+        name: {
+            "enabled": False,
+            "available": False,
+            "matched": False,
+            "not_requested": False,
+        }
+        for name in THREAT_INTEL_PROVIDER_NAMES
+    }
+
+    def visit(value):
+        if isinstance(value, dict):
+            name = str(value.get("name") or value.get("source") or "").lower()
+            if name in facts:
+                fact = facts[name]
+                enabled = value.get("enabled")
+                status = str(value.get("status") or "").lower()
+                result = str(value.get("result") or "").lower()
+                matches = value.get("matches")
+                match_count = value.get("match_count")
+                fact["enabled"] = fact["enabled"] or enabled is True
+                fact["available"] = fact["available"] or status in {
+                    "active",
+                    "ready",
+                    "ready_to_refresh",
+                    "cached",
+                    "success",
+                }
+                fact["not_requested"] = fact["not_requested"] or result == "not_requested"
+                fact["matched"] = fact["matched"] or bool(matches) or (
+                    isinstance(match_count, (int, float)) and match_count > 0
+                ) or result in {
+                    "match",
+                    "matched",
+                    "malicious",
+                    "suspicious",
+                }
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(threat_intel)
+    return facts
+
+
+def enforce_evidence_grounding(report, evidence_package):
+    """Conservatively correct conclusions unsupported by the supplied package.
+
+    The language model remains responsible for interpretation, but Python does
+    not accept a confident Safe/Dangerous result whose core fields are mostly
+    placeholders or whose threat-intelligence conclusion invents a match.
+    """
+    corrections = []
+    provider_facts = _supplied_threat_intel_facts(evidence_package)
+    any_intel_match = any(item["matched"] for item in provider_facts.values())
+    threat_intel = report.get("threat_intel_analysis") or {}
+    influence = str(threat_intel.get("influence") or "unavailable").lower()
+    unsupported_intel = (
+        influence in {"supports_suspicious", "supports_malicious"}
+        and not any_intel_match
+    )
+    if unsupported_intel:
+        corrections.append(
+            "The model claimed suspicious or malicious threat intelligence, "
+            "but Python supplied no matching provider result."
+        )
+        usable_provider = any(
+            item["enabled"] and item["available"] for item in provider_facts.values()
+        )
+        threat_intel["influence"] = "none" if usable_provider else "unavailable"
+        threat_intel["overall"] = (
+            "No matching threat-intelligence indicator was present in the "
+            "provider evidence supplied by Python. A no-match result is not "
+            "proof that the traffic is benign."
+        )
+
+    provider_text = threat_intel.setdefault("providers", {})
+    for name, fact in provider_facts.items():
+        if fact["matched"]:
+            continue
+        if fact["not_requested"]:
+            provider_text[name] = "Not requested in the supplied evidence."
+        elif fact["enabled"] and fact["available"]:
+            provider_text[name] = "No match in the supplied evidence."
+        elif fact["enabled"]:
+            provider_text[name] = "Unavailable in the supplied evidence."
+        else:
+            provider_text[name] = "Not active in the supplied evidence."
+    report["threat_intel_analysis"] = threat_intel
+
+    placeholders = {
+        "",
+        "unknown",
+        "not established",
+        "not established from the supplied evidence.",
+        "automated system",
+        "analyst",
+        "network traffic",
+        "network boundary",
+        "unidentified network activity",
+        "no specific action taken.",
+    }
+    missing_fields = []
+    for key in ("who", "what", "when", "where", "why", "how"):
+        value = str(report.get(key) or "").strip().lower()
+        if value in placeholders or value.startswith("not established"):
+            missing_fields.append(key)
+    evidence_used = (
+        (report.get("evidence_review") or {}).get("evidence_used")
+        if isinstance(report.get("evidence_review"), dict)
+        else []
+    )
+    unsupported_verdict = report.get("classification") in {"Safe", "Dangerous"} and (
+        len(missing_fields) >= 3 or not evidence_used
+    )
+    if unsupported_verdict:
+        corrections.append(
+            "The model returned a confident verdict without enough concrete "
+            "case fields or evidence citations."
+        )
+
+    if corrections:
+        original_reason = str(report.get("reason") or "").strip()
+        report["classification"] = REVIEW_CLASSIFICATION
+        report["confidence"] = "Low"
+        report["recommended_action"] = "human_review"
+        report["reason"] = " ".join(corrections + ([original_reason] if original_reason else []))
+    report["grounding_review"] = {
+        "corrected": bool(corrections),
+        "corrections": corrections,
+        "missing_core_fields": missing_fields,
+        "supplied_threat_intel_match": any_intel_match,
+    }
+    return report
+
+
 class AIModelRequestError(requests.RequestException):
     """Request failure that retains the exact local audit record."""
 
@@ -863,7 +1176,14 @@ class AIModelRequestError(requests.RequestException):
         self.audit = audit
 
 
-def ask_ai_model(config, alert, detection, evidence_context=None):
+def ask_ai_model(
+    config,
+    alert,
+    detection,
+    evidence_context=None,
+    progress_callback=None,
+    prepared_request=None,
+):
     """Send one audited request and return a normalized qualitative report.
 
     ``num_ctx`` is the total token window allocated by Ollama for this request.
@@ -872,8 +1192,31 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
     supplies both values explicitly, so they apply even when the remote Ollama
     app has a different default context-length slider.
     """
+    def progress(phase, details=None):
+        if not progress_callback:
+            return
+        try:
+            progress_callback(phase, details or {})
+        except Exception:
+            # Request observability must never alter the model decision path.
+            return
+
     ai_model = config.get("ai_model", {})
-    prompt, audit = build_prompt_audit(config, alert, detection, evidence_context)
+    progress("preparing")
+    try:
+        if prepared_request:
+            prompt, audit = rebuild_prompt_audit(config, alert, prepared_request)
+        else:
+            prompt, audit = build_prompt_audit(config, alert, detection, evidence_context)
+    except Exception as exc:
+        progress(
+            "failed",
+            {
+                "status": "failed",
+                "error_message": f"{type(exc).__name__}: prompt construction failed",
+            },
+        )
+        raise
     host = audit["model_endpoint"]
     model = audit["model_name"]
     timeout = ai_model.get("timeout_seconds", 90)
@@ -882,7 +1225,8 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
     options = {
         "num_predict": int(ai_model.get("num_predict", 1024)),
         "num_ctx": int(ai_model.get("num_ctx", 8192)),
-        "temperature": float(ai_model.get("temperature", 0.1)),
+        "temperature": float(ai_model.get("temperature", 0.0)),
+        "seed": int(ai_model.get("seed", 42)),
     }
     # Four characters per token is only a planning estimate. Tokenization is
     # model-specific, so prompt_eval_count from Ollama is saved after completion
@@ -903,10 +1247,28 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
         "estimated_fits_configured_context": estimated_prompt_tokens <= estimated_input_budget,
         "token_estimate_note": "Character-based estimate only; prompt_eval_count is the model-server measurement when returned.",
     }
+    progress(
+        "prompt_ready",
+        {
+            "prompt_chars": len(prompt),
+            "prompt_bytes": len(prompt.encode("utf-8")),
+            "estimated_tokens": estimated_prompt_tokens,
+            "timeout_seconds": timeout,
+        },
+    )
     start = time.monotonic()
     try:
         # Tailscale, when used, only transports this ordinary HTTP request to the
         # configured host. It does not alter the prompt, schema, or token limits.
+        progress(
+            "requesting",
+            {
+                "prompt_chars": len(prompt),
+                "prompt_bytes": len(prompt.encode("utf-8")),
+                "estimated_tokens": estimated_prompt_tokens,
+                "timeout_seconds": timeout,
+            },
+        )
         response = requests.post(
             f"{host}/api/generate",
             json={
@@ -923,17 +1285,28 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
         if response_payload.get("error"):
             raise requests.RequestException(response_payload["error"])
     except (requests.RequestException, ValueError) as exc:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
         audit["audit_status"] = "failed"
         audit["audit_parse_status"] = "request_failed"
         audit["audit_parse_error"] = f"{type(exc).__name__}: {exc}"
+        progress(
+            "failed",
+            {
+                "status": "failed",
+                "elapsed_ms": elapsed_ms,
+                "error_message": audit["audit_parse_error"],
+            },
+        )
         raise AIModelRequestError(str(exc), audit) from exc
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
+    progress("response_received", {"elapsed_ms": elapsed_ms})
     raw_text = response_payload.get("response", "") or "{}"
 
     # A malformed model response cannot silently become Safe or Dangerous.
     # Parsing failure produces a conservative analyst-review report.
     parse_error = None
+    progress("parsing", {"elapsed_ms": elapsed_ms})
     try:
         parsed = parse_model_response(raw_text)
         parse_status = "partial_recovery" if parsed.get("_partial_response") else "valid_json"
@@ -957,6 +1330,7 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
 
     partial_response = bool(parsed.pop("_partial_response", False))
     parsed = normalize_report(parsed)
+    parsed = enforce_evidence_grounding(parsed, audit.get("audit_evidence_package") or {})
     if partial_response:
         parsed["classification"] = REVIEW_CLASSIFICATION
         parsed["confidence"] = "Low"
@@ -968,6 +1342,8 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
     parsed["audit_response_sha256"] = text_sha256(raw_text)
     parsed["audit_response_chars"] = len(raw_text)
     parsed["audit_response_bytes"] = len(raw_text.encode("utf-8"))
+    if parsed.get("grounding_review", {}).get("corrected"):
+        parse_status = f"{parse_status}_grounding_corrected"
     parsed["audit_parse_status"] = parse_status
     parsed["audit_parse_error"] = parse_error
     # Ollama's counters provide measured model-server usage. In particular,
@@ -987,6 +1363,14 @@ def ask_ai_model(config, alert, detection, evidence_context=None):
         if response_payload.get(key) is not None
     }
     parsed["audit_status"] = "complete"
+    progress(
+        "complete",
+        {
+            "status": "complete",
+            "elapsed_ms": elapsed_ms,
+            "parse_status": parse_status,
+        },
+    )
     return parsed
 
 

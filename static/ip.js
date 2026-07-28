@@ -156,7 +156,7 @@ function renderDetections(rows) {
           <small>${escapeHtml(row.analyst_action || "No analyst override")}</small>
         </div>
       </div>
-      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Investigation</a>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Case</a>
     </article>
   `).join("") || `<div class="empty">No correlated detections found for this IP.</div>`;
 }
@@ -167,7 +167,7 @@ function renderAlerts(rows) {
       <strong>${escapeHtml(alert.src_ip || "unknown")} -> ${escapeHtml(alert.dest_ip || "unknown")}</strong>
       <p>${escapeHtml(alert.signature || "Suricata alert")}</p>
       <small>${escapeHtml(alert.timestamp || "unknown time")} · ${escapeHtml(alert.protocol || "")} · priority ${escapeHtml(alert.priority || "unknown")} · ${escapeHtml(label(alert.detection_type))}</small>
-      ${alert.detection_id ? `<a class="inline-link" href="${investigationUrl(alert.detection_id)}" target="_blank" rel="noopener">Open Investigation</a>` : ""}
+      ${alert.detection_id ? `<a class="inline-link" href="${investigationUrl(alert.detection_id)}" target="_blank" rel="noopener">Open Case</a>` : ""}
     </div>
   `).join("") || `<div class="empty">No raw alerts found for this IP.</div>`;
 }

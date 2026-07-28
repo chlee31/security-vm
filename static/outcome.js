@@ -28,7 +28,7 @@ async function getJson(path) {
 
 function label(value) {
   if (!value) return "Unknown";
-  if (value === "all") return "All Outcomes";
+  if (value === "all") return "All Cases";
   if (value === "human_review") return "Analyst Review Required";
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
@@ -149,7 +149,7 @@ function renderEvidence(rows) {
           <small>${row.analyst_action || "No analyst override"}</small>
         </div>
       </div>
-      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Investigate / Give Feedback</a>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Case / Give Feedback</a>
     </article>
   `).join("") || `<div class="empty">No matching decisions.</div>`;
 }

@@ -17,7 +17,9 @@
           <span class="dot"></span>
           <span id="admin-updated">Loading</span>
           <span class="divider"></span>
-          <a class="nav-link" href="/evaluation">Evaluation</a>
+          <a class="nav-link" href="/outcome?type=all">Cases</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/evaluation">Evaluation Lab</a>
           <span class="divider"></span>
           <a class="nav-link" href="/">Dashboard</a>
         </div>
@@ -26,9 +28,41 @@
       <nav class="admin-tabs" aria-label="Admin sections">
         <button class="admin-tab-button active" type="button" data-admin-tab-button="settings">Settings</button>
         <button class="admin-tab-button" type="button" data-admin-tab-button="threat-intel">Threat Intelligence</button>
+        <button class="admin-tab-button" type="button" data-admin-tab-button="runtime">Runtime Console</button>
       </nav>
 
       <section class="admin-grid">
+        <section class="panel wide-panel runtime-console-panel" data-admin-tab-panel="runtime" hidden>
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Operations</p>
+              <h2>Runtime Console</h2>
+            </div>
+            <div class="runtime-console-actions">
+              <span id="runtime-console-state" class="status-pill">Loading</span>
+              <button id="refresh-runtime-console" type="button">Refresh</button>
+              <button id="pause-runtime-console" type="button">Pause</button>
+            </div>
+          </div>
+          <div id="runtime-components" class="runtime-components"></div>
+          <div class="runtime-console-grid">
+            <section class="runtime-console-section">
+              <header>
+                <h3>AI Request Activity</h3>
+                <small>Prompt lifecycle and API wait state</small>
+              </header>
+              <div id="runtime-ai-activity" class="runtime-stream"></div>
+            </section>
+            <section class="runtime-console-section">
+              <header>
+                <h3>Background Events</h3>
+                <small>Sensors, correlation, enrichment, and workers</small>
+              </header>
+              <div id="runtime-event-stream" class="runtime-stream console-event-stream"></div>
+            </section>
+          </div>
+        </section>
+
         <section class="panel wide-panel" data-admin-tab-panel="threat-intel" hidden>
           <div class="panel-head">
             <div>
@@ -203,6 +237,6 @@
       </section>
     </main>
 
-    <script src="/static/admin.js?v=20260717-direct-model-responses"></script>
+    <script src="/static/admin.js?v=20260727-runtime-console"></script>
   </body>
 </html>

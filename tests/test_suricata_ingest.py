@@ -2,8 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from app.database import get_suricata_checkpoint, init_db, insert_alert
+from app.main import run_ingest
 from app.normalizer import normalize_suricata_event
 from app.suricata_reader import SuricataEveFollower
 
@@ -133,6 +135,43 @@ class SuricataIngestTests(unittest.TestCase):
             1,
         )
         self.assertEqual(first["event_fingerprint"], second["event_fingerprint"])
+
+    @patch("app.main.assess_detection")
+    @patch("app.main.asset_context_for_alert", return_value=None)
+    @patch("app.main.insert_sensor_finding")
+    @patch("app.main.insert_detection", return_value=22)
+    @patch("app.main.find_correlated_detection", return_value=(None, None, None))
+    @patch("app.main.insert_alert", return_value=11)
+    @patch("app.main.insert_app_event")
+    @patch("app.main.init_db")
+    @patch("app.main.load_config")
+    @patch("app.main.follow_file")
+    def test_live_ingest_acknowledges_before_ai_worker(
+        self,
+        follow_file,
+        load_config,
+        init_db,
+        _insert_app_event,
+        _insert_alert,
+        _find_correlated_detection,
+        _insert_detection,
+        _insert_sensor_finding,
+        _asset_context,
+        assess_detection,
+    ):
+        record = MagicMock()
+        record.event = eve_event("2026-07-27T18:50:00-04:00", "Live DNS alert")
+        follow_file.return_value = [record]
+        load_config.return_value = {
+            "database": {"path": ":memory:"},
+            "suricata": {"eve_json_path": "/tmp/eve.json", "start_position": "end"},
+        }
+        init_db.return_value = MagicMock()
+
+        run_ingest("config.yaml")
+
+        record.acknowledge.assert_called_once_with()
+        assess_detection.assert_not_called()
 
 
 if __name__ == "__main__":

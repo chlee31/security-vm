@@ -132,7 +132,7 @@ function renderRecent(recent) {
         <strong>${item.src_ip || "unknown"} -> ${item.dest_ip || "unknown"}</strong>
         <p>${item.signature || "Detection"}</p>
         <small>${item.ai_classification || "no AI opinion"} · ${item.ai_model_identity || "unknown model"}${item.ai_profile_uid ? ` · profile ${item.ai_profile_uid}` : ""}</small>
-        <a class="inline-link" href="${investigationUrl(item.detection_id, item.case_uid)}" target="_blank" rel="noopener">Open Investigation</a>
+        <a class="inline-link" href="${investigationUrl(item.detection_id, item.case_uid)}" target="_blank" rel="noopener">Open Case</a>
       </div>
     </div>
   `).join("") || `<div class="empty">No recent detections.</div>`;
@@ -168,7 +168,7 @@ function renderEvidence(rows) {
           <small>${row.analyst_action || "No analyst override"}</small>
         </div>
       </div>
-      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Investigation</a>
+      <a class="text-button evidence-open" href="${investigationUrl(row.detection_id, row.case_uid)}" target="_blank" rel="noopener">Open Case</a>
     </article>
   `).join("") || `<div class="empty">No decision evidence yet.</div>`;
 }

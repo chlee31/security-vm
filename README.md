@@ -210,6 +210,12 @@ With the virtual environment active:
 python -m app.main run-all --config config.yaml
 ```
 
+`run-all` starts three required processing workers in addition to the
+dashboard: Suricata ingestion, Zeek ingestion, and AI assessment. Sensor
+readers store and checkpoint evidence immediately. The AI worker processes
+persisted cases separately, one case at a time, so a slow model response
+cannot make Suricata or Zeek ingestion fall behind.
+
 This command starts or checks:
 
 1. Suricata service and EVE ingestion
@@ -228,10 +234,27 @@ http://127.0.0.1:8000
 For access from a trusted management network:
 
 ```bash
+export SECURITY_VM_ADMIN_USER=admin
+read -rsp "Security VM admin password: " SECURITY_VM_ADMIN_PASSWORD
+export SECURITY_VM_ADMIN_PASSWORD
+echo
 python -m app.main run-all --config config.yaml --host 192.168.57.134 --port 8000
 ```
 
-Binding to `0.0.0.0` exposes the unauthenticated prototype on every interface and prints a warning. Use it only on a controlled lab/management network with host firewall restrictions.
+`SECURITY_VM_ADMIN_PASSWORD` is required for `/admin` and every `/api/admin/*`
+endpoint. The browser requests HTTP Basic credentials once; the default
+username is `admin`. The password remains in the launcher environment and is
+not written to YAML or SQLite.
+
+The Admin **Runtime Console** refreshes every two seconds and displays sanitized
+AI request phases plus recent sensor, correlation, enrichment, and worker
+events. It shows prompt size, estimated token count, request timeout, elapsed
+wait, parse state, safe errors, and live `run-all` process heartbeats, but never
+API keys or complete prompt text.
+
+Binding to `0.0.0.0` still exposes the main research dashboard without built-in
+authentication and prints a warning. Use it only on a controlled lab or
+management network with host firewall restrictions.
 
 Stop the launcher and its child workers with `Ctrl+C` before shutting down the lab or AI host.
 
@@ -252,7 +275,13 @@ sudo tail -f /opt/zeek/logs/current/conn.log
 
 The dashboard's Zeek page shows runtime state, log counts, TLS, DNS, HTTP, file observations, checkpoints, and recent records.
 
-Suricata ingestion stores a path/inode/offset checkpoint and resumes from the last event acknowledged after case assessment completes. It detects EVE rotation or truncation and uses a canonical event fingerprint to prevent duplicate alert rows during replay. On a new database, `suricata.start_position: end` ignores historical EVE content; set it to `beginning` only when an intentional replay is required.
+Suricata ingestion stores a path/inode/offset checkpoint and resumes from the
+last event durably stored and correlated in SQLite. AI assessment happens in a
+separate worker and does not delay this checkpoint. The reader detects EVE
+rotation or truncation and uses a canonical event fingerprint to prevent
+duplicate alert rows during replay. On a new database,
+`suricata.start_position: end` ignores historical EVE content; set it to
+`beginning` only when an intentional replay is required.
 
 ## Community ID
 
@@ -289,11 +318,17 @@ The **Reassess Case** button makes one explicit AI request using the latest stor
 
 ### Three-Model Comparison
 
-Create at least three active AI profiles under `/admin`, then choose exactly three in **Comparison profiles**. From a case investigation, select **Run Three-Model Comparison**. Python freezes one evidence package and sends it to the three profiles sequentially, waiting for each response before starting the next request.
+Create at least three active AI profiles under `/admin`, then choose exactly three in **Comparison profiles**. From a case investigation, select **Run Three-Model Comparison**. When the initial request audit exists, Python reuses the exact prompt and evidence snapshot that produced the case summary. It sends that immutable input to the three profiles sequentially, waiting for each response before starting the next request.
 
-All three responses appear directly on the case investigation page with model names, profile UIDs, summaries, six-part explanations, ordered investigation steps, and expandable raw responses. Open the run in `/compare` to select the most useful response, mark a tie, or reject all responses. The comparison selection summary reports which profile has been selected most often.
+Comparison requests use `temperature: 0` and seed `42` to reduce sampling variation. The dashboard verifies the prompt hash, evidence hash, and generation options across A, B, and C. Different model architectures can still interpret identical evidence differently; disagreement is an evaluation result rather than proof that the inputs differed.
 
-Model comparison is an evaluation feature. Candidate classifications do not replace the official case assessment and do not alter Python's recorded action.
+For cases with repeated sensor events, Python keeps every raw finding in SQLite and the case evidence view but sends the models a bounded recurrence summary. Repeated rows are grouped by sensor, finding name/type, endpoints, destination port, and protocol. The model receives occurrence counts, first/last timestamps, and representative event UIDs, which prevents dozens of duplicate alerts from obscuring distinct evidence.
+
+All three anonymized responses appear directly on the case investigation page with summaries, six-part explanations, ordered investigation steps, and expandable raw responses. Open the run in `/compare` to select the most useful response, mark a tie, or reject all responses. After a winner is recorded, the workspace reveals the selected model identity. Select **Use Selected Response on Case** to make that immutable response the case's displayed AI explanation. The original AI report, candidate, request audit, Python facts, sensor evidence, and final analyst decision remain unchanged. Reviews can be reopened without losing the prior selection from review history, and the queue can be filtered to reviewed, rejected, tied, pending, or failed runs.
+
+The comparison workspace exports CSV or JSON research records containing case and comparison UIDs, review outcomes, selected response/model, candidate status, classification, confidence, request hashes, and timing measurements. Timing fields include milliseconds and seconds for A, B, and C, the selected response duration, total and average successful model-request time, and the full comparison wall-clock duration. Summary cards report reviewed cases, pending runs, rejected comparisons, ties, and model selection counts.
+
+Model comparison is an evaluation feature. Promoting a winner changes only which AI explanation is presented on the case page. Candidate classifications do not replace the official case assessment and do not alter Python's recorded action.
 
 ## Evaluation Lab
 

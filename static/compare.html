@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Model Comparison</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260721-doc-gallery">
+    <link rel="stylesheet" href="/static/styles.css?v=20260727-comparison-research">
   </head>
   <body>
     <main class="shell workbook-shell">
@@ -20,7 +20,9 @@
           <span class="divider"></span>
           <a class="nav-link" href="/">Dashboard</a>
           <span class="divider"></span>
-          <a class="nav-link" href="/evaluation">Evaluation</a>
+          <a class="nav-link" href="/outcome?type=all">Cases</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/evaluation">Evaluation Lab</a>
           <span class="divider"></span>
           <a class="nav-link" href="/admin">Admin</a>
         </div>
@@ -47,6 +49,16 @@
           <strong id="cmp-neutral">0</strong>
           <small>No single winner</small>
         </article>
+        <article class="metric">
+          <span>Cases Reviewed</span>
+          <strong id="cmp-cases-reviewed">0</strong>
+          <small>Distinct reviewed case UIDs</small>
+        </article>
+        <article class="metric">
+          <span>Rejected</span>
+          <strong id="cmp-rejected">0</strong>
+          <small>All responses rejected</small>
+        </article>
       </section>
 
       <section class="comparison-layout">
@@ -55,6 +67,23 @@
             <div>
               <p class="eyebrow">Cases</p>
               <h2>Review Queue</h2>
+            </div>
+          </div>
+          <div class="comparison-queue-tools">
+            <label class="field">
+              <span>Show</span>
+              <select id="cmp-filter">
+                <option value="all">All comparisons</option>
+                <option value="pending">Awaiting review</option>
+                <option value="reviewed">Reviewed with winner</option>
+                <option value="rejected">Rejected</option>
+                <option value="tie">Ties</option>
+                <option value="failed">Failed or partial</option>
+              </select>
+            </label>
+            <div class="comparison-export-actions">
+              <a class="toolbar-button" href="/api/ai-comparisons/export?format=csv">Export CSV</a>
+              <a class="toolbar-button" href="/api/ai-comparisons/export?format=json">Export JSON</a>
             </div>
           </div>
           <div id="cmp-runs-list" class="workbook-list comparison-run-list"></div>
@@ -66,7 +95,12 @@
               <p class="eyebrow">Model Responses</p>
               <h2 id="cmp-case-title">Select a Comparison</h2>
             </div>
-            <small id="cmp-model-state" class="panel-hint">Model identities shown for direct comparison</small>
+            <div class="comparison-review-actions">
+              <small id="cmp-model-state" class="panel-hint">Responses anonymized as A, B, and C</small>
+              <a id="cmp-open-case" class="toolbar-button" href="/outcome?type=all" hidden>Open Case</a>
+              <button id="cmp-use-response" class="toolbar-button" type="button" hidden>Use Selected Response on Case</button>
+              <button id="cmp-reopen-review" class="toolbar-button" type="button" hidden>Reopen Review</button>
+            </div>
           </div>
           <div id="cmp-candidates" class="comparison-content"></div>
           <form id="cmp-vote-form" class="comparison-vote-form" hidden>
@@ -108,6 +142,6 @@
       </section>
     </main>
 
-    <script src="/static/compare.js?v=20260717-case-evidence-browser"></script>
+    <script src="/static/compare.js?v=20260727-case-explanation-promotion"></script>
   </body>
 </html>

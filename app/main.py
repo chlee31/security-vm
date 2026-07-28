@@ -1,9 +1,9 @@
 """Command-line entry point and orchestration for the Security VM pipeline.
 
-The ingest path normalizes sensor records, correlates them into cases, gathers
-bounded evidence, requests an AI explanation, stores a complete audit, applies
-Python response policy, and optionally performs post-classification
-VirusTotal verification.
+Suricata and Zeek readers persist and correlate sensor evidence without waiting
+for network model I/O. A separate required AI worker gathers bounded evidence,
+requests an explanation, stores the complete audit, applies Python response
+policy, and optionally performs post-classification VirusTotal verification.
 """
 
 import argparse
@@ -16,15 +16,18 @@ import sys
 import threading
 import time
 from collections import deque
+from datetime import datetime, timezone
 
 import requests
 import uvicorn
 
+from app.ai_activity import ai_activity_callback
 from app.config import load_config
 from app.correlator import Correlator
 from app.dashboard import create_app
 from app.database import (
     asset_context_for_alert,
+    connect,
     detection_by_id,
     detections_without_ai_reports,
     find_correlated_detection,
@@ -39,6 +42,7 @@ from app.database import (
     insert_sensor_finding,
     ip_enrichment_profile,
     latest_threat_intel_for_ip,
+    record_runtime_components,
     record_threat_intel_usage,
     sensor_findings_for_detection,
     sensor_finding_detection_id,
@@ -380,6 +384,13 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
     )
     findings = sensor_findings_for_detection(conn, detection_id)
     record_pre_ai_threat_intel_usage(conn, detection_id, alert_id, evidence_context)
+    _activity_uid, progress = ai_activity_callback(
+        conn,
+        runtime_config,
+        "initial",
+        case_uid=detection.get("case_uid"),
+        detection_id=detection_id,
+    )
     # Model failure is converted to Analyst Review Required; sensor evidence is
     # never discarded simply because the explanatory service is unavailable.
     try:
@@ -388,6 +399,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
             alert,
             detection,
             evidence_context=evidence_context,
+            progress_callback=progress,
         )
         ai_report = ensure_ai_report_metadata(runtime_config, alert, ai_report)
         insert_app_event(
@@ -512,7 +524,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
 
 
 def run_ingest(config_path):
-    """Continuously ingest new Suricata alerts and assess resulting cases."""
+    """Continuously persist Suricata alerts without waiting for AI analysis."""
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     correlator = Correlator(config)
@@ -520,18 +532,6 @@ def run_ingest(config_path):
     mode = "analysis"
     print(f"[+] Security VM ingest starting in {mode} mode")
     insert_app_event(conn, "info", "ingest", f"Security VM ingest starting in {mode} mode")
-
-    try:
-        status = check_ai_model(config)
-        insert_app_event(
-            conn,
-            "info",
-            "ai_model",
-            f"AI model reachable at {status['host']}",
-            {"elapsed_ms": status["elapsed_ms"], "models": status["models"]},
-        )
-    except requests.RequestException as exc:
-        insert_app_event(conn, "error", "ai_model", f"AI model unreachable: {exc}")
 
     start_position = config.get("suricata", {}).get("start_position", "end")
     for record in follow_file(
@@ -568,7 +568,9 @@ def run_ingest(config_path):
             detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
             detection_id = insert_detection(conn, detection)
             insert_sensor_finding(conn, detection_id, suricata_finding(alert_id, alert))
-        assess_detection(conn, config_path, alert, detection, alert_id, detection_id)
+        # The required AI worker picks up this durable, unassessed case. Keeping
+        # model I/O out of this loop lets the EVE checkpoint follow Suricata in
+        # real time even when a model response takes tens of seconds.
         record.acknowledge()
 
 
@@ -667,7 +669,8 @@ def run_zeek_ingest(config_path):
             f"Zeek notice entered detection pipeline as {detection.get('sensor_state')}",
             {"zeek_event_id": event_id, "detection_id": detection_id, "correlation_method": detection.get("correlation_method")},
         )
-        assess_detection(conn, config_path, alert, detection, None, detection_id)
+        # AI analysis is deliberately asynchronous so Zeek log checkpoints are
+        # never held behind a remote model request.
 
     run_zeek_ingest_loop(conn, config, on_event=process_zeek_event)
 
@@ -814,6 +817,11 @@ def run_all(
         [sys.executable, "-m", "app.main", "zeek-ingest", "--config", config_path],
         True,
     ))
+    commands.append((
+        "ai-worker",
+        [sys.executable, "-m", "app.main", "ai-worker", "--config", config_path],
+        True,
+    ))
     threat_worker_enabled = any(
         provider_config(config, name).get("enabled") for name in FETCHERS
     )
@@ -844,6 +852,27 @@ def run_all(
 
     processes = []
     shutting_down = False
+    launcher_conn = None
+    component_started_at = {}
+
+    def publish_runtime_components(force_status=None):
+        snapshot = []
+        for name, process, _thread, _recent_lines, required in processes:
+            return_code = process.poll()
+            snapshot.append(
+                {
+                    "component": name,
+                    "status": force_status or (
+                        "running" if return_code is None else "exited"
+                    ),
+                    "pid": process.pid,
+                    "required": required,
+                    "exit_code": return_code,
+                    "started_at": component_started_at.get(name),
+                }
+            )
+        if snapshot and launcher_conn is not None:
+            record_runtime_components(launcher_conn, snapshot)
 
     def handle_stop(_signum, _frame):
         nonlocal shutting_down
@@ -858,9 +887,16 @@ def run_all(
 
     print("[+] Security VM launcher starting", flush=True)
     print(f"[+] Dashboard: http://{host}:{port}/", flush=True)
+    if not os.environ.get("SECURITY_VM_ADMIN_PASSWORD"):
+        print(
+            "[!] Admin is disabled because SECURITY_VM_ADMIN_PASSWORD is not set. "
+            "Set it before launch to use Admin and the Runtime Console.",
+            flush=True,
+        )
     if host == "0.0.0.0":
         print(
-            "[!] Dashboard is listening on every interface without built-in authentication. "
+            "[!] The main dashboard is listening on every interface without built-in "
+            "authentication. Admin routes use HTTP Basic auth when configured. "
             "Use a trusted management network and host firewall rules.",
             flush=True,
         )
@@ -895,13 +931,17 @@ def run_all(
         print("[!] Cannot start: Zeek is required but is not running after deploy.", flush=True)
         return
 
+    launcher_conn = connect(database_path)
     try:
         for name, command, required in commands:
             recent_lines = deque(maxlen=40)
             process, thread = start_managed_process(name, command, recent_lines)
             processes.append((name, process, thread, recent_lines, required))
+            component_started_at[name] = datetime.now(timezone.utc).isoformat()
+            publish_runtime_components()
             print(f"[+] Started {name}{' (required)' if required else ' (optional)'}", flush=True)
 
+        last_heartbeat = 0.0
         while not shutting_down:
             for name, process, _thread, recent_lines, required in list(processes):
                 return_code = process.poll()
@@ -916,10 +956,18 @@ def run_all(
                     if return_code != 0:
                         print_recent_tail(name, recent_lines)
                     processes.remove((name, process, _thread, recent_lines, required))
+            if time.monotonic() - last_heartbeat >= 2:
+                publish_runtime_components()
+                last_heartbeat = time.monotonic()
             if shutting_down:
                 break
             time.sleep(1)
     finally:
+        try:
+            publish_runtime_components(force_status="stopped")
+        finally:
+            if launcher_conn is not None:
+                launcher_conn.close()
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
         stop_managed_processes(processes)
@@ -1012,6 +1060,13 @@ def run_ai_backfill(config_path, limit):
             row.get("alert_id"),
             evidence_context,
         )
+        _activity_uid, progress = ai_activity_callback(
+            conn,
+            config,
+            "backfill",
+            case_uid=row.get("case_uid"),
+            detection_id=row["detection_id"],
+        )
 
         try:
             report = ask_ai_model(
@@ -1019,6 +1074,7 @@ def run_ai_backfill(config_path, limit):
                 alert,
                 detection,
                 evidence_context=evidence_context,
+                progress_callback=progress,
             )
             report = ensure_ai_report_metadata(config, alert, report)
             report_id = insert_ai_report(conn, row["detection_id"], report)
@@ -1089,6 +1145,89 @@ def run_ai_backfill(config_path, limit):
     conn.close()
 
 
+def assessment_inputs_from_row(conn, row):
+    """Rebuild the canonical alert and detection inputs for a queued case."""
+    alert = {
+        "suricata_event_id": row.get("suricata_event_id"),
+        "timestamp": row.get("timestamp"),
+        "src_ip": row.get("src_ip"),
+        "dest_ip": row.get("dest_ip"),
+        "src_port": row.get("src_port"),
+        "dest_port": row.get("dest_port"),
+        "protocol": row.get("protocol"),
+        "signature": row.get("signature"),
+        "category": row.get("category"),
+        "severity": row.get("severity"),
+        "priority": row.get("priority"),
+        "flow_id": row.get("flow_id"),
+        "community_id": row.get("community_id"),
+        "raw_json": row.get("raw_json"),
+    }
+    detection = {
+        "first_alert_id": row.get("first_alert_id"),
+        "first_seen": row.get("first_seen"),
+        "last_seen": row.get("last_seen"),
+        "src_ip": row.get("src_ip"),
+        "dest_ip": row.get("dest_ip"),
+        "src_port": row.get("detection_src_port") or row.get("src_port"),
+        "dest_port": row.get("detection_dest_port") or row.get("dest_port"),
+        "protocol": row.get("detection_protocol") or row.get("protocol"),
+        "community_id": row.get("detection_community_id") or row.get("community_id"),
+        "sensor_state": row.get("sensor_state") or "suricata_only",
+        "agreement_state": row.get("agreement_state") or "single_sensor",
+        "correlation_method": row.get("correlation_method") or "single_sensor",
+        "correlation_confidence": row.get("correlation_confidence") or 0.5,
+        "detection_type": row.get("detection_type"),
+        "alert_count": row.get("alert_count"),
+        "unique_dest_ports": row.get("unique_dest_ports"),
+        "unique_dest_hosts": row.get("unique_dest_hosts"),
+        "time_window_seconds": row.get("time_window_seconds"),
+        "status": row.get("status"),
+        "case_uid": row.get("case_uid"),
+    }
+    return alert, attach_asset_context(detection, asset_context_for_alert(conn, alert))
+
+
+def run_ai_worker(config_path, poll_seconds=1.0, correlation_delay_seconds=5):
+    """Continuously assess persisted cases without blocking either sensor."""
+    config = load_config(config_path)
+    conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
+    print("[+] AI assessment worker starting")
+    insert_app_event(
+        conn,
+        "info",
+        "ai_model",
+        "AI assessment worker starting",
+        {"correlation_delay_seconds": correlation_delay_seconds},
+    )
+    try:
+        while True:
+            runtime_config = load_config(config_path)
+            metadata = model_metadata(runtime_config)
+            rows = detections_without_ai_reports(
+                conn,
+                limit=1,
+                model_identity=metadata["model_identity"],
+                ai_profile_uid=metadata.get("ai_profile_uid"),
+                minimum_age_seconds=correlation_delay_seconds,
+            )
+            if not rows:
+                time.sleep(max(0.1, poll_seconds))
+                continue
+            row = rows[0]
+            alert, detection = assessment_inputs_from_row(conn, row)
+            assess_detection(
+                conn,
+                config_path,
+                alert,
+                detection,
+                row.get("alert_id"),
+                row["detection_id"],
+            )
+    finally:
+        conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Security VM application")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1118,6 +1257,8 @@ def main():
     ai_backfill = sub.add_parser("ai-backfill", help="Ask the AI model for opinions on detections without reports")
     ai_backfill.add_argument("--config", default="config.yaml")
     ai_backfill.add_argument("--limit", default=50, type=int)
+    ai_worker = sub.add_parser("ai-worker", help="Assess queued cases without blocking sensor ingestion")
+    ai_worker.add_argument("--config", default="config.yaml")
 
     args = parser.parse_args()
     if args.command == "ingest":
@@ -1133,6 +1274,8 @@ def main():
         )
     elif args.command == "ai-backfill":
         run_ai_backfill(args.config, args.limit)
+    elif args.command == "ai-worker":
+        run_ai_worker(args.config)
     elif args.command == "zeek-ingest":
         run_zeek_ingest(args.config)
     elif args.command == "zeek-status":

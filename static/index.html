@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Security VM Dashboard</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260724-expanded-event-stream">
+    <title>Security VM</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260727-grouped-sensor-logs">
   </head>
   <body>
     <main class="shell">
       <section class="topbar">
         <div>
           <p class="eyebrow">Security VM</p>
-          <h1>Security VM Threat Dashboard</h1>
+          <h1>Security VM</h1>
         </div>
         <div class="status">
           <span class="dot"></span>
@@ -20,11 +20,11 @@
           <span id="updated">Waiting for data</span>
           <button id="refresh" class="refresh-button" type="button" title="Load the latest sensor and decision data">Refresh</button>
           <span class="divider"></span>
-          <a class="nav-link" href="/outcome?type=human_review" target="_blank" rel="noopener">Investigate</a>
+          <a class="nav-link" href="/outcome?type=all" target="_blank" rel="noopener">Cases</a>
           <span class="divider"></span>
-          <a class="nav-link" href="/compare" target="_blank" rel="noopener">Compare</a>
+          <a class="nav-link" href="/compare" target="_blank" rel="noopener">AI Comparison</a>
           <span class="divider"></span>
-          <a class="nav-link" href="/evaluation" target="_blank" rel="noopener">Evaluation</a>
+          <a class="nav-link" href="/evaluation" target="_blank" rel="noopener">Evaluation Lab</a>
           <span class="divider"></span>
           <a class="nav-link" href="/admin" target="_blank" rel="noopener">Admin</a>
         </div>
@@ -55,16 +55,6 @@
           <span>Dangerous</span>
           <strong id="danger-count">0</strong>
           <small>Open dangerous decisions</small>
-        </article>
-        <article class="metric">
-          <span>Top Detection</span>
-          <strong id="top-detection">None</strong>
-          <small>By count</small>
-        </article>
-        <article class="metric">
-          <span>Platform Role</span>
-          <strong id="system-mode">analysis</strong>
-          <small>Passive investigation</small>
         </article>
         <article class="metric sensor-metric">
           <span>Zeek Notices</span>
@@ -154,65 +144,41 @@
         <div id="alerts" class="alerts event-stream-list"></div>
       </section>
 
-      <section class="grid">
-        <section class="streams">
-          <section class="panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">AI Triage</p>
-                <h2>AI Opinions</h2>
-              </div>
+      <section class="insight-grid dashboard-operations-grid">
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Runtime</p>
+              <h2>System Logs</h2>
             </div>
-            <div id="ai-opinions" class="alerts compact-alerts"></div>
-          </section>
+            <div class="panel-actions">
+              <button id="check-ai-model" type="button" title="Check AI model">AI</button>
+              <button id="reset-logs" class="danger-button" type="button" title="Reset dashboard logs">X</button>
+            </div>
+          </div>
+          <div id="events" class="list log-list"></div>
         </section>
 
-        <aside class="side">
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
-                <p class="eyebrow">Correlation</p>
-                <h2>Detection Types</h2>
-              </div>
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Project Flow</p>
+              <h2>Pipeline</h2>
             </div>
-            <div id="detections" class="list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
-                <p class="eyebrow">Runtime</p>
-                <h2>System Logs</h2>
-              </div>
-              <div class="panel-actions">
-                <button id="check-ai-model" type="button" title="Check AI model">AI</button>
-                <button id="reset-logs" class="danger-button" type="button" title="Reset dashboard logs">X</button>
-              </div>
-            </div>
-            <div id="events" class="list log-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head compact">
-              <div>
-                <p class="eyebrow">Project Flow</p>
-                <h2>Pipeline</h2>
-              </div>
-            </div>
-            <div class="pipeline">
-              <span>Suricata and Zeek findings</span>
-              <span>SQLite storage</span>
-              <span>Python correlation</span>
-              <span>Registered IP role context</span>
-              <span>Cached enrichment</span>
-              <span>Qualitative AI case explanation</span>
-              <span>Human review and final classification</span>
-            </div>
-          </section>
-        </aside>
+          </div>
+          <div class="pipeline">
+            <span>Suricata and Zeek findings</span>
+            <span>SQLite storage</span>
+            <span>Python correlation</span>
+            <span>Registered IP role context</span>
+            <span>Cached enrichment</span>
+            <span>Qualitative AI case explanation</span>
+            <span>Analyst review and final classification</span>
+          </div>
+        </section>
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260724-expanded-event-stream"></script>
+    <script src="/static/app.js?v=20260727-grouped-sensor-logs"></script>
   </body>
 </html>

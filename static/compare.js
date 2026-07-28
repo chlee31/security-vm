@@ -8,9 +8,15 @@ const els = {
   pending: document.querySelector("#cmp-pending"),
   reviewed: document.querySelector("#cmp-reviewed"),
   neutral: document.querySelector("#cmp-neutral"),
+  casesReviewed: document.querySelector("#cmp-cases-reviewed"),
+  rejected: document.querySelector("#cmp-rejected"),
   runsList: document.querySelector("#cmp-runs-list"),
+  filter: document.querySelector("#cmp-filter"),
   caseTitle: document.querySelector("#cmp-case-title"),
   modelState: document.querySelector("#cmp-model-state"),
+  openCase: document.querySelector("#cmp-open-case"),
+  useResponse: document.querySelector("#cmp-use-response"),
+  reopenReview: document.querySelector("#cmp-reopen-review"),
   candidates: document.querySelector("#cmp-candidates"),
   voteForm: document.querySelector("#cmp-vote-form"),
   analyst: document.querySelector("#cmp-analyst"),
@@ -20,7 +26,7 @@ const els = {
   refresh: document.querySelector("#compare-refresh")
 };
 
-let state = { runs: [], selected: null, selectionSummary: null };
+let state = { runs: [], selected: null, selectionSummary: null, filter: "all" };
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -63,19 +69,24 @@ function renderRuns() {
   els.runs.textContent = state.runs.length;
   els.pending.textContent = state.runs.length - reviewed;
   els.reviewed.textContent = reviewed;
-  els.runsList.innerHTML = state.runs.map((run) => `
+  const visible = state.runs.filter((run) => {
+    if (state.filter === "all") return true;
+    if (state.filter === "pending") return !run.selection && !["failed"].includes(run.status);
+    if (state.filter === "reviewed") return ["A", "B", "C"].includes(run.selection);
+    if (state.filter === "rejected") return run.selection === "reject_all";
+    if (state.filter === "tie") return run.selection === "tie";
+    if (state.filter === "failed") return ["failed", "partial"].includes(run.status);
+    return true;
+  });
+  els.runsList.innerHTML = visible.map((run) => `
     <button class="comparison-run-button ${state.selected?.comparison_uid === run.comparison_uid ? "selected" : ""}" type="button" data-run="${escapeHtml(run.comparison_uid)}">
       <span>
         <strong>${escapeHtml(run.case_uid)}</strong>
-        <small>${escapeHtml(run.comparison_uid)} · ${run.candidate_count || 0}/3 responses</small>
+        <small>${escapeHtml(run.comparison_uid)} · ${run.candidate_count || 0}/3 successful · ${run.processed_count || 0}/3 attempted</small>
       </span>
-      <span class="status-pill ${run.vote_count ? "active" : ""}">${run.vote_count ? "reviewed" : label(run.status)}</span>
+      <span class="status-pill ${run.vote_count ? "active" : ""}">${run.selection ? label(run.selection) : label(run.status)}</span>
     </button>
-  `).join("") || `<div class="empty">No model comparisons yet. Start one from a case investigation.</div>`;
-}
-
-function candidateIdentity(candidate) {
-  return `${candidate.model_provider || "unknown"}:${candidate.model_name || candidate.model_identity || "unknown"} · profile ${candidate.ai_profile_uid || "unknown"}`;
+  `).join("") || `<div class="empty">No comparisons match this view.</div>`;
 }
 
 function renderModelThreatIntel(candidate) {
@@ -131,15 +142,36 @@ function renderCandidates() {
   if (!detail) {
     els.candidates.innerHTML = `<div class="empty">Choose a case comparison from the review queue.</div>`;
     els.voteForm.hidden = true;
+    els.useResponse.hidden = true;
     return;
   }
   const vote = detail.votes?.[0];
+  const outcome = detail.review_outcome || {};
+  const winner = outcome.winner;
+  const activeExplanation = detail.active_case_explanation;
+  const selectedResponseIsActive = Boolean(
+    winner
+      && activeExplanation
+      && activeExplanation.comparison_uid === detail.comparison_uid
+      && activeExplanation.anonymous_slot === winner.anonymous_slot
+  );
   els.caseTitle.textContent = detail.case_uid;
-  els.modelState.textContent = vote
-    ? `${vote.analyst_name || "Analyst"} selected ${label(vote.selection)}`
-    : "Model identities and complete responses are visible";
+  els.openCase.href = `/investigation?case=${encodeURIComponent(detail.case_uid)}`;
+  els.openCase.hidden = false;
+  els.reopenReview.hidden = !vote;
+  els.useResponse.hidden = !winner;
+  els.useResponse.disabled = selectedResponseIsActive;
+  els.useResponse.textContent = selectedResponseIsActive
+    ? "Selected Response Is Used on Case"
+    : "Use Selected Response on Case";
+  els.modelState.textContent = winner
+    ? `${vote.analyst_name || "Analyst"} selected Response ${winner.anonymous_slot}: ${winner.model_identity || winner.model_name}`
+    : vote
+    ? `${vote.analyst_name || "Analyst"} recorded ${label(vote.selection)}`
+    : "Responses are anonymized as A, B, and C";
   els.candidates.innerHTML = `
     ${renderThreatIntelEvidence(detail.threat_intel_evidence)}
+    ${renderComparisonInputProof(detail)}
     <div class="model-candidate-grid comparison-response-grid">
     ${(detail.candidates || []).map((candidate) => `
     <article class="model-candidate ${vote?.selection === candidate.anonymous_slot ? "winner" : ""} ${candidate.status === "failed" ? "failed" : ""}">
@@ -147,7 +179,8 @@ function renderCandidates() {
         <span class="candidate-letter">${escapeHtml(candidate.anonymous_slot)}</span>
         <div>
           <strong>Response ${escapeHtml(candidate.anonymous_slot)}</strong>
-          <small>${escapeHtml(candidateIdentity(candidate))}</small>
+          <small>${candidate.status === "failed" ? "Request failed" : `${candidate.elapsed_ms ?? 0}ms`}</small>
+          ${winner?.anonymous_slot === candidate.anonymous_slot ? `<small class="winner-identity">${escapeHtml(winner.model_identity || winner.model_name || "Selected model")}</small>` : ""}
         </div>
         ${vote?.selection === candidate.anonymous_slot ? `<span class="status-pill active">selected</span>` : ""}
       </header>
@@ -176,7 +209,7 @@ function renderCandidates() {
           <ol>${(candidate.next_steps || []).map((step) => `<li>${escapeHtml(step)}</li>`).join("") || `<li>No concrete next steps returned.</li>`}</ol>
         </section>
         <details class="model-raw-response"><summary>View complete raw model response</summary><pre class="raw-json">${escapeHtml(candidate.raw_response || "No raw response stored.")}</pre></details>
-        <footer>${candidate.elapsed_ms ?? 0}ms · run ${escapeHtml(candidate.model_run_id || "not recorded")}</footer>
+        <footer>Response ${escapeHtml(candidate.anonymous_slot)} · prompt ${escapeHtml(candidate.prompt_version || "unknown")}</footer>
       `}
     </article>
     `).join("")}
@@ -184,7 +217,14 @@ function renderCandidates() {
   `;
   els.voteForm.hidden = Boolean(vote) || detail.status === "failed";
   if (vote) {
-    setStatus("ok", `Review complete. Selection: ${label(vote.selection)}.`);
+    setStatus(
+      "ok",
+      selectedResponseIsActive
+        ? `Response ${winner.anonymous_slot} is the analyst-approved explanation displayed on the case.`
+        : winner
+        ? `Review complete. Response ${winner.anonymous_slot} was ${winner.model_identity || winner.model_name}.`
+        : `Review complete. Selection: ${label(vote.selection)}.`
+    );
   } else if (detail.status === "partial") {
     setStatus("", "A partial comparison completed. Vote among the available responses or reject all.");
   } else {
@@ -192,9 +232,36 @@ function renderCandidates() {
   }
 }
 
+function renderComparisonInputProof(detail) {
+  const proof = detail?.input_consistency || {};
+  const fullyVerified = proof.same_prompt_across_candidates
+    && proof.same_evidence_across_candidates
+    && proof.same_generation_options_across_candidates;
+  const matchesInitial = proof.matches_initial_case_prompt
+    && proof.matches_initial_case_evidence;
+  return `
+    <section class="comparison-input-proof ${fullyVerified ? "verified" : "warning"}">
+      <div>
+        <strong>${fullyVerified ? "Verified identical input for A, B, and C" : "Comparison input could not be fully verified"}</strong>
+        <small>${matchesInitial
+          ? "These responses use the exact prompt and evidence snapshot that produced the initial case summary."
+          : "The initial case summary used a different evidence snapshot. Compare the responses as separate assessments."}</small>
+      </div>
+      <details>
+        <summary>View input hashes and snapshot time</summary>
+        <p>Prompt SHA-256: <span class="hash-value">${escapeHtml(proof.prompt_sha256 || "not recorded")}</span></p>
+        <p>Evidence SHA-256: <span class="hash-value">${escapeHtml(proof.evidence_sha256 || "not recorded")}</span></p>
+        <p>Initial snapshot: ${escapeHtml(proof.initial_prepared_at || "not recorded")}</p>
+      </details>
+    </section>
+  `;
+}
+
 function renderSelectionSummary() {
   const summary = state.selectionSummary || { models: [], votes: 0, ties: 0, rejected: 0 };
   els.neutral.textContent = Number(summary.ties || 0) + Number(summary.rejected || 0);
+  els.casesReviewed.textContent = Number(summary.reviewed_cases || 0);
+  els.rejected.textContent = Number(summary.rejected || 0);
   const decisiveVotes = Math.max(1, Number(summary.votes || 0) - Number(summary.ties || 0) - Number(summary.rejected || 0));
   els.selectionSummary.innerHTML = (summary.models || []).map((model, index) => `
     <div class="workbook-row selection-summary-row">
@@ -241,6 +308,54 @@ async function submitVote(event) {
   }
 }
 
+async function reopenReview() {
+  if (!state.selected) return;
+  if (!window.confirm("Reopen this review? The previous selection will remain in review history.")) return;
+  try {
+    state.selected = await sendJson(
+      `/api/ai-comparisons/${encodeURIComponent(state.selected.comparison_uid)}/reopen`,
+      "POST"
+    );
+    state.selectionSummary = await getJson("/api/ai-comparisons/selection-summary");
+    const run = state.runs.find((item) => item.comparison_uid === state.selected.comparison_uid);
+    if (run) {
+      run.vote_count = 0;
+      run.selection = null;
+      run.analyst_name = null;
+      run.reviewed_at = null;
+    }
+    renderRuns();
+    renderCandidates();
+    renderSelectionSummary();
+  } catch (error) {
+    setStatus("error", error.message);
+  }
+}
+
+async function useSelectedResponse() {
+  if (!state.selected?.review_outcome?.winner) return;
+  const winner = state.selected.review_outcome.winner;
+  if (!window.confirm(
+    `Use Response ${winner.anonymous_slot} as the displayed AI explanation on ${state.selected.case_uid}?`
+  )) return;
+  els.useResponse.disabled = true;
+  try {
+    state.selected = await sendJson(
+      `/api/ai-comparisons/${encodeURIComponent(state.selected.comparison_uid)}/use-as-case-explanation`,
+      "POST",
+      {
+        analyst_name: els.analyst.value || state.selected.review_outcome.analyst_name || "analyst",
+        notes: els.notes.value || "Promoted from reviewed three-model comparison"
+      }
+    );
+    renderCandidates();
+    setStatus("ok", "The selected response is now the AI explanation shown on the case page.");
+  } catch (error) {
+    els.useResponse.disabled = false;
+    setStatus("error", error.message);
+  }
+}
+
 async function refresh() {
   els.refresh.disabled = true;
   try {
@@ -270,4 +385,10 @@ els.runsList.addEventListener("click", (event) => {
 });
 els.voteForm.addEventListener("submit", submitVote);
 els.refresh.addEventListener("click", refresh);
+els.reopenReview.addEventListener("click", reopenReview);
+els.useResponse.addEventListener("click", useSelectedResponse);
+els.filter.addEventListener("change", () => {
+  state.filter = els.filter.value;
+  renderRuns();
+});
 refresh();

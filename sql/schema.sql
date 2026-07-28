@@ -437,6 +437,76 @@ CREATE INDEX IF NOT EXISTS idx_ai_comparison_votes_run
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_comparison_votes_one_per_run
   ON ai_comparison_votes(comparison_run_id);
 
+CREATE TABLE IF NOT EXISTS ai_comparison_review_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comparison_run_id INTEGER NOT NULL,
+  analyst_name TEXT NOT NULL,
+  selection TEXT NOT NULL,
+  notes TEXT,
+  reviewed_at TEXT,
+  reopened_at TEXT NOT NULL,
+  FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_comparison_review_history_run
+  ON ai_comparison_review_history(comparison_run_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS ai_case_explanation_promotions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detection_id INTEGER NOT NULL,
+  case_uid TEXT NOT NULL,
+  comparison_run_id INTEGER NOT NULL,
+  candidate_id INTEGER NOT NULL,
+  analyst_name TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (detection_id) REFERENCES detections(id),
+  FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id),
+  FOREIGN KEY (candidate_id) REFERENCES ai_comparison_candidates(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_case_explanation_promotions_detection
+  ON ai_case_explanation_promotions(detection_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_case_explanation_promotions_run
+  ON ai_case_explanation_promotions(comparison_run_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS ai_request_activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  activity_uid TEXT NOT NULL UNIQUE,
+  case_uid TEXT,
+  detection_id INTEGER,
+  comparison_uid TEXT,
+  anonymous_slot TEXT,
+  assessment_type TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  message TEXT NOT NULL,
+  prompt_chars INTEGER,
+  prompt_bytes INTEGER,
+  estimated_tokens INTEGER,
+  timeout_seconds INTEGER,
+  elapsed_ms INTEGER,
+  parse_status TEXT,
+  error_message TEXT,
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_request_activity_recent
+  ON ai_request_activity(id DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_request_activity_status
+  ON ai_request_activity(status, id DESC);
+
+CREATE TABLE IF NOT EXISTS runtime_components (
+  component TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  pid INTEGER,
+  required INTEGER NOT NULL DEFAULT 0,
+  exit_code INTEGER,
+  started_at TEXT,
+  heartbeat_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS responses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,

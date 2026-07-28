@@ -37,13 +37,21 @@ const els = {
   threatIntelProviders: document.querySelector("#threat-intel-providers"),
   threatIntelStatus: document.querySelector("#threat-intel-status"),
   refreshThreatIntel: document.querySelector("#refresh-threat-intel"),
+  runtimeConsoleState: document.querySelector("#runtime-console-state"),
+  runtimeAiActivity: document.querySelector("#runtime-ai-activity"),
+  runtimeEvents: document.querySelector("#runtime-event-stream"),
+  refreshRuntimeConsole: document.querySelector("#refresh-runtime-console"),
+  pauseRuntimeConsole: document.querySelector("#pause-runtime-console"),
+  runtimeComponents: document.querySelector("#runtime-components"),
   tabButtons: Array.from(document.querySelectorAll("[data-admin-tab-button]")),
   tabPanels: Array.from(document.querySelectorAll("[data-admin-tab-panel]"))
 };
 
 let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", comparisonProfileUids: [], threatIntelProviders: [] };
 const initialTab = window.location.hash.replace("#", "");
-let activeAdminTab = initialTab === "threat-intel" ? "threat-intel" : "settings";
+let activeAdminTab = ["settings", "threat-intel", "runtime"].includes(initialTab) ? initialTab : "settings";
+let runtimeConsoleTimer = null;
+let runtimeConsolePaused = false;
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -90,7 +98,7 @@ function setStatus(element, kind, text) {
 }
 
 function setAdminTab(tabName, updateHash = true) {
-  activeAdminTab = ["settings", "threat-intel"].includes(tabName) ? tabName : "settings";
+  activeAdminTab = ["settings", "threat-intel", "runtime"].includes(tabName) ? tabName : "settings";
   els.tabButtons.forEach((button) => {
     const selected = button.dataset.adminTabButton === activeAdminTab;
     button.classList.toggle("active", selected);
@@ -100,8 +108,90 @@ function setAdminTab(tabName, updateHash = true) {
     panel.hidden = panel.dataset.retired === "true" || panel.dataset.adminTabPanel !== activeAdminTab;
   });
   if (updateHash) {
-    const hash = activeAdminTab === "threat-intel" ? "#threat-intel" : "#settings";
-    history.replaceState(null, "", hash);
+    history.replaceState(null, "", `#${activeAdminTab}`);
+  }
+  window.clearInterval(runtimeConsoleTimer);
+  runtimeConsoleTimer = null;
+  if (activeAdminTab === "runtime" && !runtimeConsolePaused) {
+    refreshRuntimeConsole();
+    runtimeConsoleTimer = window.setInterval(refreshRuntimeConsole, 2000);
+  }
+}
+
+function timestamp(value) {
+  if (!value) return "Unknown time";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+}
+
+function activityTitle(item) {
+  if (item.anonymous_slot) return `Response ${item.anonymous_slot}`;
+  if (item.assessment_type === "reassessment") return "Case reassessment";
+  if (item.assessment_type === "backfill") return "AI backfill";
+  return "Initial case analysis";
+}
+
+function renderRuntimeConsole(data) {
+  const activities = data.ai_requests || [];
+  const events = data.events || [];
+  const components = data.components || [];
+  const active = Number(data.active_requests || 0);
+  els.runtimeConsoleState.className = `status-pill ${active ? "active" : ""}`;
+  els.runtimeConsoleState.textContent = active ? `${active} active` : "Idle";
+  els.runtimeComponents.innerHTML = components.map((item) => `
+    <article class="runtime-component ${escapeHtml(item.status)}">
+      <span class="runtime-component-dot"></span>
+      <div>
+        <strong>${escapeHtml(label(item.component))}</strong>
+        <small>${escapeHtml(label(item.status))}${item.pid ? ` · PID ${Number(item.pid)}` : ""}${item.required ? " · required" : " · optional"}</small>
+      </div>
+      <span>${Number(item.heartbeat_age_seconds || 0)}s ago</span>
+    </article>
+  `).join("") || `<div class="empty">No run-all worker heartbeat has been recorded.</div>`;
+  els.runtimeAiActivity.innerHTML = activities.map((item) => `
+    <article class="runtime-entry ai-runtime-entry ${escapeHtml(item.status)}">
+      <div class="runtime-entry-head">
+        <div>
+          <strong>${escapeHtml(activityTitle(item))}</strong>
+          <span>${escapeHtml(label(item.phase))}</span>
+        </div>
+        <span class="runtime-elapsed">${Number(item.elapsed_seconds || 0)}s</span>
+      </div>
+      <p>${escapeHtml(item.message)}</p>
+      <div class="runtime-metadata">
+        ${item.case_uid ? `<a href="/investigation?case=${encodeURIComponent(item.case_uid)}" target="_blank" rel="noopener">${escapeHtml(item.case_uid)}</a>` : ""}
+        ${item.comparison_uid ? `<span>${escapeHtml(item.comparison_uid)}</span>` : ""}
+        ${item.prompt_chars != null ? `<span>${Number(item.prompt_chars).toLocaleString()} prompt chars</span>` : ""}
+        ${item.estimated_tokens != null ? `<span>~${Number(item.estimated_tokens).toLocaleString()} tokens</span>` : ""}
+        ${item.timeout_seconds != null ? `<span>${Number(item.timeout_seconds)}s timeout</span>` : ""}
+        ${item.parse_status ? `<span>${escapeHtml(label(item.parse_status))}</span>` : ""}
+      </div>
+      ${item.error_message ? `<pre class="runtime-error">${escapeHtml(item.error_message)}</pre>` : ""}
+    </article>
+  `).join("") || `<div class="empty">No AI requests have been recorded since this feature was enabled.</div>`;
+  els.runtimeEvents.innerHTML = events.map((event) => `
+    <article class="runtime-entry event-${escapeHtml(event.level)}">
+      <div class="runtime-entry-head">
+        <div>
+          <strong>${escapeHtml(event.component)}</strong>
+          <span>${escapeHtml(label(event.level))}</span>
+        </div>
+        <time>${escapeHtml(timestamp(event.created_at))}</time>
+      </div>
+      <p>${escapeHtml(event.message)}</p>
+      ${event.details ? `<details><summary>Event details</summary><pre>${escapeHtml(event.details)}</pre></details>` : ""}
+    </article>
+  `).join("") || `<div class="empty">No runtime events are stored.</div>`;
+}
+
+async function refreshRuntimeConsole() {
+  if (activeAdminTab !== "runtime" || runtimeConsolePaused) return;
+  try {
+    renderRuntimeConsole(await getJson("/api/admin/runtime-console?limit=100"));
+  } catch (error) {
+    els.runtimeConsoleState.className = "status-pill danger";
+    els.runtimeConsoleState.textContent = "Console error";
+    els.runtimeAiActivity.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -660,6 +750,25 @@ els.refreshThreatIntel.addEventListener("click", async () => {
     setStatus(els.threatIntelStatus, "error", error.message);
   } finally {
     els.refreshThreatIntel.disabled = false;
+  }
+});
+
+els.refreshRuntimeConsole.addEventListener("click", () => {
+  runtimeConsolePaused = false;
+  els.pauseRuntimeConsole.textContent = "Pause";
+  refreshRuntimeConsole();
+  window.clearInterval(runtimeConsoleTimer);
+  runtimeConsoleTimer = window.setInterval(refreshRuntimeConsole, 2000);
+});
+
+els.pauseRuntimeConsole.addEventListener("click", () => {
+  runtimeConsolePaused = !runtimeConsolePaused;
+  els.pauseRuntimeConsole.textContent = runtimeConsolePaused ? "Resume" : "Pause";
+  window.clearInterval(runtimeConsoleTimer);
+  runtimeConsoleTimer = null;
+  if (!runtimeConsolePaused) {
+    refreshRuntimeConsole();
+    runtimeConsoleTimer = window.setInterval(refreshRuntimeConsole, 2000);
   }
 });
 

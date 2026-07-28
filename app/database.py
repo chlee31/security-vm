@@ -99,6 +99,38 @@ def ensure_migrations(conn):
     ensure_case_identity_columns(conn)
     ensure_virustotal_verification_table(conn)
     ensure_ai_comparison_tables(conn)
+    # A dashboard restart can interrupt a synchronous three-model request. Do
+    # not leave those historical runs displayed as "Running" indefinitely.
+    conn.execute(
+        """
+        UPDATE ai_comparison_runs
+        SET status = 'failed',
+            error_message = COALESCE(
+              error_message,
+              'Comparison interrupted before all model requests completed'
+            ),
+            completed_at = ?
+        WHERE status = 'running'
+          AND created_at < datetime('now', '-10 minutes')
+        """,
+        (utc_now(),),
+    )
+    conn.execute(
+        """
+        UPDATE ai_request_activity
+        SET phase = 'failed',
+            status = 'failed',
+            message = 'AI request interrupted',
+            error_message = COALESCE(
+              error_message,
+              'The application stopped before this request completed'
+            ),
+            updated_at = ?
+        WHERE status = 'active'
+          AND started_at < datetime('now', '-10 minutes')
+        """,
+        (utc_now(),),
+    )
     ensure_evaluation_tables(conn)
     migrate_legacy_ai_reports(conn)
     migrate_analyst_review_classification(conn)
@@ -220,6 +252,35 @@ def ensure_ai_comparison_tables(conn):
           ON ai_comparison_votes(comparison_run_id, id DESC);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_comparison_votes_one_per_run
           ON ai_comparison_votes(comparison_run_id);
+        CREATE TABLE IF NOT EXISTS ai_comparison_review_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          comparison_run_id INTEGER NOT NULL,
+          analyst_name TEXT NOT NULL,
+          selection TEXT NOT NULL,
+          notes TEXT,
+          reviewed_at TEXT,
+          reopened_at TEXT NOT NULL,
+          FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_comparison_review_history_run
+          ON ai_comparison_review_history(comparison_run_id, id DESC);
+        CREATE TABLE IF NOT EXISTS ai_case_explanation_promotions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          detection_id INTEGER NOT NULL,
+          case_uid TEXT NOT NULL,
+          comparison_run_id INTEGER NOT NULL,
+          candidate_id INTEGER NOT NULL,
+          analyst_name TEXT NOT NULL,
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (detection_id) REFERENCES detections(id),
+          FOREIGN KEY (comparison_run_id) REFERENCES ai_comparison_runs(id),
+          FOREIGN KEY (candidate_id) REFERENCES ai_comparison_candidates(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_case_explanation_promotions_detection
+          ON ai_case_explanation_promotions(detection_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_case_explanation_promotions_run
+          ON ai_case_explanation_promotions(comparison_run_id, id DESC);
         """
     )
     run_columns = {
@@ -819,6 +880,174 @@ def new_ai_comparison_uid():
     return f"cmp-{uuid.uuid4().hex[:16]}"
 
 
+def new_ai_activity_uid():
+    return f"air-{uuid.uuid4().hex[:16]}"
+
+
+def create_ai_request_activity(
+    conn,
+    assessment_type,
+    case_uid=None,
+    detection_id=None,
+    comparison_uid=None,
+    anonymous_slot=None,
+):
+    """Start one sanitized lifecycle record for an outbound AI request."""
+    activity_uid = new_ai_activity_uid()
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO ai_request_activity (
+          activity_uid, case_uid, detection_id, comparison_uid, anonymous_slot,
+          assessment_type, phase, status, message, started_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'preparing', 'active',
+                'Preparing normalized evidence', ?, ?)
+        """,
+        (
+            activity_uid,
+            case_uid,
+            detection_id,
+            comparison_uid,
+            anonymous_slot,
+            assessment_type,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return activity_uid
+
+
+def update_ai_request_activity(conn, activity_uid, phase, details=None):
+    """Advance an AI request lifecycle using an allow-listed metadata set."""
+    details = details or {}
+    status = details.get("status")
+    if status not in {"active", "complete", "failed"}:
+        status = "failed" if phase == "failed" else "complete" if phase == "complete" else "active"
+    messages = {
+        "preparing": "Preparing normalized evidence",
+        "prompt_ready": "Prompt built and request settings prepared",
+        "requesting": "API request sent; waiting for model response",
+        "response_received": "Model response received",
+        "parsing": "Validating structured model response",
+        "complete": "AI request completed",
+        "failed": "AI request failed",
+    }
+    conn.execute(
+        """
+        UPDATE ai_request_activity
+        SET phase = ?,
+            status = ?,
+            message = ?,
+            prompt_chars = COALESCE(?, prompt_chars),
+            prompt_bytes = COALESCE(?, prompt_bytes),
+            estimated_tokens = COALESCE(?, estimated_tokens),
+            timeout_seconds = COALESCE(?, timeout_seconds),
+            elapsed_ms = COALESCE(?, elapsed_ms),
+            parse_status = COALESCE(?, parse_status),
+            error_message = COALESCE(?, error_message),
+            updated_at = ?
+        WHERE activity_uid = ?
+        """,
+        (
+            phase,
+            status,
+            messages.get(phase, str(details.get("message") or phase)),
+            details.get("prompt_chars"),
+            details.get("prompt_bytes"),
+            details.get("estimated_tokens"),
+            details.get("timeout_seconds"),
+            details.get("elapsed_ms"),
+            details.get("parse_status"),
+            details.get("error_message"),
+            utc_now(),
+            activity_uid,
+        ),
+    )
+    conn.commit()
+
+
+def latest_ai_request_activity(conn, limit=100):
+    """Return recent sanitized AI lifecycle records for the Admin console."""
+    rows = conn.execute(
+        """
+        SELECT activity_uid, case_uid, detection_id, comparison_uid,
+               anonymous_slot, assessment_type, phase, status, message,
+               prompt_chars, prompt_bytes, estimated_tokens, timeout_seconds,
+               elapsed_ms, parse_status, error_message, started_at, updated_at,
+               CASE
+                 WHEN status = 'active' THEN
+                   MAX(0, CAST((julianday('now') - julianday(started_at)) * 86400 AS INTEGER))
+                 ELSE
+                   MAX(0, CAST((julianday(updated_at) - julianday(started_at)) * 86400 AS INTEGER))
+               END AS elapsed_seconds
+        FROM ai_request_activity
+        ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, id DESC
+        LIMIT ?
+        """,
+        (max(1, min(int(limit), 500)),),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_runtime_components(conn, components):
+    """Store one launcher heartbeat snapshot for all managed child processes."""
+    now = utc_now()
+    conn.executemany(
+        """
+        INSERT INTO runtime_components (
+          component, status, pid, required, exit_code, started_at, heartbeat_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(component) DO UPDATE SET
+          status = excluded.status,
+          pid = excluded.pid,
+          required = excluded.required,
+          exit_code = excluded.exit_code,
+          started_at = COALESCE(excluded.started_at, runtime_components.started_at),
+          heartbeat_at = excluded.heartbeat_at
+        """,
+        [
+            (
+                item["component"],
+                item["status"],
+                item.get("pid"),
+                1 if item.get("required") else 0,
+                item.get("exit_code"),
+                item.get("started_at"),
+                now,
+            )
+            for item in components
+        ],
+    )
+    conn.commit()
+
+
+def latest_runtime_components(conn):
+    """Return launcher process state and mark expired heartbeats as stale."""
+    rows = conn.execute(
+        """
+        SELECT component, status, pid, required, exit_code, started_at,
+               heartbeat_at,
+               MAX(
+                 0,
+                 CAST((julianday('now') - julianday(heartbeat_at)) * 86400 AS INTEGER)
+               ) AS heartbeat_age_seconds
+        FROM runtime_components
+        ORDER BY required DESC, component ASC
+        """
+    ).fetchall()
+    components = []
+    for row in rows:
+        item = dict(row)
+        if item["status"] == "running" and item["heartbeat_age_seconds"] > 10:
+            item["status"] = "stale"
+        item["required"] = bool(item["required"])
+        components.append(item)
+    return components
+
+
 def create_ai_comparison_run(
     conn,
     case_uid,
@@ -898,6 +1127,53 @@ def insert_ai_comparison_candidate(conn, comparison_run_id, slot, profile_uid, r
     return cur.lastrowid
 
 
+def update_ai_comparison_progress(conn, comparison_run_id):
+    """Persist live completion counts while a sequential comparison is running."""
+    row = conn.execute(
+        """
+        SELECT
+          SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS completed,
+          COUNT(*) AS processed
+        FROM ai_comparison_candidates
+        WHERE comparison_run_id = ?
+        """,
+        (comparison_run_id,),
+    ).fetchone()
+    completed = int(row["completed"] or 0)
+    processed = int(row["processed"] or 0)
+    conn.execute(
+        """
+        UPDATE ai_comparison_runs
+        SET candidate_count = ?
+        WHERE id = ?
+        """,
+        (completed, comparison_run_id),
+    )
+    conn.commit()
+    return {"completed": completed, "processed": processed}
+
+
+def fail_stale_ai_comparison_runs(conn, max_age_seconds=600):
+    """Close runs left in progress by a stopped dashboard process."""
+    cutoff = f"-{max(60, int(max_age_seconds))} seconds"
+    cur = conn.execute(
+        """
+        UPDATE ai_comparison_runs
+        SET status = 'failed',
+            error_message = COALESCE(
+              error_message,
+              'Comparison interrupted before all model requests completed'
+            ),
+            completed_at = ?
+        WHERE status = 'running'
+          AND created_at < datetime('now', ?)
+        """,
+        (utc_now(), cutoff),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def finish_ai_comparison_run(conn, comparison_run_id, status, candidate_count, error_message=None):
     conn.execute(
         """
@@ -954,6 +1230,30 @@ def ai_comparison_detail(conn, comparison_uid):
         """,
         (result["id"],),
     ).fetchall()
+    model_run_ids = [row["model_run_id"] for row in rows if row["model_run_id"]]
+    audit_by_run = {}
+    if model_run_ids:
+        placeholders = ",".join("?" for _item in model_run_ids)
+        audit_rows = conn.execute(
+            f"""
+            SELECT model_run_id, prompt_sha256, evidence_sha256,
+                   request_options_json, prepared_at
+            FROM ai_run_audits
+            WHERE detection_id = ?
+              AND model_run_id IN ({placeholders})
+            """,
+            (result["detection_id"], *model_run_ids),
+        ).fetchall()
+        for audit_row in audit_rows:
+            audit = dict(audit_row)
+            try:
+                request_options = json.loads(
+                    audit.pop("request_options_json") or "{}"
+                )
+            except (TypeError, json.JSONDecodeError):
+                request_options = {}
+            audit["request_options"] = request_options
+            audit_by_run[audit["model_run_id"]] = audit
     candidates = []
     try:
         result["threat_intel_evidence"] = json.loads(
@@ -973,6 +1273,7 @@ def ai_comparison_detail(conn, comparison_uid):
             )
         except (TypeError, ValueError):
             item["threat_intel_analysis"] = {}
+        item["input_audit"] = audit_by_run.get(item.get("model_run_id")) or {}
         if item.get("raw_response") and (
             item.get("summary") in {None, "", "AI model did not provide a reason."}
             or item.get("who_summary") == "Not established from the supplied evidence."
@@ -999,9 +1300,145 @@ def ai_comparison_detail(conn, comparison_uid):
             except (TypeError, ValueError):
                 pass
         candidates.append(without_operational_scores(item))
+    result["candidate_count"] = sum(
+        1 for candidate in candidates if candidate.get("status") == "complete"
+    )
+    result["processed_count"] = len(candidates)
     result["candidates"] = candidates
     result["votes"] = votes
     result["identities_revealed"] = True
+    vote = votes[0] if votes else None
+    selected_candidate = None
+    if vote and vote.get("selection") in {"A", "B", "C"}:
+        selected_candidate = next(
+            (
+                item
+                for item in candidates
+                if item.get("anonymous_slot") == vote.get("selection")
+            ),
+            None,
+        )
+    result["review_outcome"] = {
+        "status": (
+            "winner_selected"
+            if selected_candidate
+            else "rejected"
+            if vote and vote.get("selection") == "reject_all"
+            else "tie"
+            if vote and vote.get("selection") == "tie"
+            else "awaiting_review"
+        ),
+        "selection": vote.get("selection") if vote else None,
+        "analyst_name": vote.get("analyst_name") if vote else None,
+        "reviewed_at": vote.get("created_at") if vote else None,
+        "winner": (
+            {
+                "anonymous_slot": selected_candidate.get("anonymous_slot"),
+                "ai_profile_uid": selected_candidate.get("ai_profile_uid"),
+                "model_provider": selected_candidate.get("model_provider"),
+                "model_name": selected_candidate.get("model_name"),
+                "model_identity": selected_candidate.get("model_identity"),
+            }
+            if selected_candidate
+            else None
+        ),
+    }
+    promoted = conn.execute(
+        """
+        SELECT promotions.analyst_name, promotions.notes, promotions.created_at,
+               candidates.anonymous_slot, candidates.ai_profile_uid,
+               candidates.model_provider, candidates.model_name,
+               candidates.model_identity
+        FROM ai_case_explanation_promotions AS promotions
+        JOIN ai_comparison_candidates AS candidates
+          ON candidates.id = promotions.candidate_id
+        WHERE promotions.comparison_run_id = ?
+        ORDER BY promotions.id DESC
+        LIMIT 1
+        """,
+        (result["id"],),
+    ).fetchone()
+    active_promotion = conn.execute(
+        """
+        SELECT runs.comparison_uid, candidates.anonymous_slot,
+               candidates.model_identity, promotions.created_at
+        FROM ai_case_explanation_promotions AS promotions
+        JOIN ai_comparison_runs AS runs
+          ON runs.id = promotions.comparison_run_id
+        JOIN ai_comparison_candidates AS candidates
+          ON candidates.id = promotions.candidate_id
+        WHERE promotions.detection_id = ?
+        ORDER BY promotions.id DESC
+        LIMIT 1
+        """,
+        (result["detection_id"],),
+    ).fetchone()
+    result["case_explanation_promotion"] = dict(promoted) if promoted else None
+    result["active_case_explanation"] = (
+        dict(active_promotion) if active_promotion else None
+    )
+    completed_inputs = [
+        item.get("input_audit") or {}
+        for item in candidates
+        if item.get("status") == "complete"
+    ]
+    prompt_hashes = {
+        item.get("prompt_sha256")
+        for item in completed_inputs
+        if item.get("prompt_sha256")
+    }
+    evidence_hashes = {
+        item.get("evidence_sha256")
+        for item in completed_inputs
+        if item.get("evidence_sha256")
+    }
+    generation_options = {
+        json.dumps(
+            (item.get("request_options") or {}).get("options") or {},
+            sort_keys=True,
+        )
+        for item in completed_inputs
+    }
+    initial_snapshot = initial_ai_request_snapshot(conn, result["detection_id"])
+    initial_prompt_hash = (
+        initial_snapshot.get("prompt_sha256") if initial_snapshot else None
+    )
+    initial_evidence_hash = (
+        initial_snapshot.get("evidence_sha256") if initial_snapshot else None
+    )
+    result["input_consistency"] = {
+        "candidate_count_with_audit": len(completed_inputs),
+        "same_prompt_across_candidates": (
+            bool(completed_inputs) and len(prompt_hashes) == 1
+        ),
+        "same_evidence_across_candidates": (
+            bool(completed_inputs) and len(evidence_hashes) == 1
+        ),
+        "same_generation_options_across_candidates": (
+            bool(completed_inputs) and len(generation_options) == 1
+        ),
+        "prompt_sha256": next(iter(prompt_hashes), None)
+        if len(prompt_hashes) == 1
+        else None,
+        "evidence_sha256": next(iter(evidence_hashes), None)
+        if len(evidence_hashes) == 1
+        else None,
+        "matches_initial_case_prompt": (
+            len(prompt_hashes) == 1
+            and initial_prompt_hash is not None
+            and next(iter(prompt_hashes)) == initial_prompt_hash
+        ),
+        "matches_initial_case_evidence": (
+            len(evidence_hashes) == 1
+            and initial_evidence_hash is not None
+            and next(iter(evidence_hashes)) == initial_evidence_hash
+        ),
+        "initial_prompt_sha256": initial_prompt_hash,
+        "initial_evidence_sha256": initial_evidence_hash,
+        "initial_prepared_at": (
+            initial_snapshot.get("prepared_at") if initial_snapshot else None
+        ),
+    }
     result.pop("id", None)
     return result
 
@@ -1016,8 +1453,23 @@ def list_ai_comparison_runs(conn, limit=50, case_uid=None):
     rows = conn.execute(
         f"""
         SELECT runs.comparison_uid, runs.case_uid, runs.detection_id,
-               runs.status, runs.candidate_count, runs.created_at,
-               runs.completed_at, COUNT(votes.id) AS vote_count
+               runs.status,
+               (
+                 SELECT COUNT(*)
+                 FROM ai_comparison_candidates AS completed_candidates
+                 WHERE completed_candidates.comparison_run_id = runs.id
+                   AND completed_candidates.status = 'complete'
+               ) AS candidate_count,
+               (
+                 SELECT COUNT(*)
+                 FROM ai_comparison_candidates AS processed_candidates
+                 WHERE processed_candidates.comparison_run_id = runs.id
+               ) AS processed_count,
+               runs.created_at, runs.completed_at,
+               COUNT(votes.id) AS vote_count,
+               MAX(votes.selection) AS selection,
+               MAX(votes.analyst_name) AS analyst_name,
+               MAX(votes.created_at) AS reviewed_at
         FROM ai_comparison_runs AS runs
         LEFT JOIN ai_comparison_votes AS votes ON votes.comparison_run_id = runs.id
         {where}
@@ -1069,6 +1521,151 @@ def vote_ai_comparison(conn, comparison_uid, analyst_name, selection, notes=""):
     return True
 
 
+def promote_ai_comparison_winner(conn, comparison_uid, analyst_name="", notes=""):
+    """Make the reviewed winner the case's displayed AI explanation.
+
+    The comparison candidate and original AI report remain immutable. A new
+    promotion row records the analyst's presentation choice, and the latest
+    promotion for a detection becomes the explanation shown on its case page.
+    """
+    row = conn.execute(
+        """
+        SELECT runs.id AS comparison_run_id, runs.detection_id, runs.case_uid,
+               votes.analyst_name AS reviewing_analyst,
+               votes.selection, candidates.id AS candidate_id
+        FROM ai_comparison_runs AS runs
+        JOIN ai_comparison_votes AS votes
+          ON votes.comparison_run_id = runs.id
+        LEFT JOIN ai_comparison_candidates AS candidates
+          ON candidates.comparison_run_id = runs.id
+         AND candidates.anonymous_slot = votes.selection
+         AND candidates.status = 'complete'
+        WHERE runs.comparison_uid = ?
+        """,
+        (comparison_uid,),
+    ).fetchone()
+    if not row:
+        raise ValueError("Select a comparison winner before using it on the case")
+    if row["selection"] not in {"A", "B", "C"} or not row["candidate_id"]:
+        raise ValueError("Only a completed winning response can be used on the case")
+    conn.execute(
+        """
+        INSERT INTO ai_case_explanation_promotions (
+          detection_id, case_uid, comparison_run_id, candidate_id,
+          analyst_name, notes, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["detection_id"],
+            row["case_uid"],
+            row["comparison_run_id"],
+            row["candidate_id"],
+            (analyst_name or row["reviewing_analyst"] or "analyst").strip(),
+            (notes or "").strip(),
+            utc_now(),
+        ),
+    )
+    conn.commit()
+    return True
+
+
+def selected_case_explanation(conn, detection_id):
+    """Return the latest analyst-promoted comparison response for a case."""
+    row = conn.execute(
+        """
+        SELECT promotions.analyst_name AS selected_by,
+               promotions.notes AS selection_notes,
+               promotions.created_at AS selected_at,
+               runs.comparison_uid,
+               candidates.anonymous_slot,
+               candidates.ai_profile_uid,
+               candidates.model_provider,
+               candidates.model_name,
+               candidates.model_identity,
+               candidates.model_run_id,
+               candidates.prompt_version,
+               candidates.classification,
+               candidates.confidence,
+               candidates.summary,
+               candidates.who_summary,
+               candidates.what_summary,
+               candidates.when_summary,
+               candidates.where_summary,
+               candidates.why_summary,
+               candidates.how_summary,
+               candidates.next_steps_json,
+               candidates.threat_intel_analysis_json,
+               candidates.recommended_action,
+               candidates.raw_response,
+               candidates.elapsed_ms
+        FROM ai_case_explanation_promotions AS promotions
+        JOIN ai_comparison_runs AS runs
+          ON runs.id = promotions.comparison_run_id
+        JOIN ai_comparison_candidates AS candidates
+          ON candidates.id = promotions.candidate_id
+        WHERE promotions.detection_id = ?
+        ORDER BY promotions.id DESC
+        LIMIT 1
+        """,
+        (detection_id,),
+    ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    try:
+        result["next_steps"] = json.loads(result.pop("next_steps_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        result["next_steps"] = []
+    try:
+        result["threat_intel_analysis"] = json.loads(
+            result.pop("threat_intel_analysis_json") or "{}"
+        )
+    except (TypeError, json.JSONDecodeError):
+        result["threat_intel_analysis"] = {}
+    return without_operational_scores(result)
+
+
+def reopen_ai_comparison_review(conn, comparison_uid):
+    """Archive and remove the current vote so the comparison can be reviewed again."""
+    run = conn.execute(
+        "SELECT id FROM ai_comparison_runs WHERE comparison_uid = ?",
+        (comparison_uid,),
+    ).fetchone()
+    if not run:
+        return False
+    vote = conn.execute(
+        """
+        SELECT id, analyst_name, selection, notes, created_at
+        FROM ai_comparison_votes
+        WHERE comparison_run_id = ?
+        LIMIT 1
+        """,
+        (run["id"],),
+    ).fetchone()
+    if not vote:
+        raise ValueError("This comparison has not been reviewed")
+    conn.execute(
+        """
+        INSERT INTO ai_comparison_review_history (
+          comparison_run_id, analyst_name, selection, notes, reviewed_at, reopened_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run["id"],
+            vote["analyst_name"],
+            vote["selection"],
+            vote["notes"],
+            vote["created_at"],
+            utc_now(),
+        ),
+    )
+    conn.execute("DELETE FROM ai_comparison_votes WHERE id = ?", (vote["id"],))
+    conn.commit()
+    return True
+
+
 def ai_comparison_selection_summary(conn):
     rows = conn.execute(
         """
@@ -1092,12 +1689,175 @@ def ai_comparison_selection_summary(conn):
         FROM ai_comparison_votes
         """
     ).fetchone()
+    run_totals = conn.execute(
+        """
+        SELECT COUNT(*) AS runs,
+               COUNT(DISTINCT case_uid) AS cases,
+               SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete,
+               SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) AS partial,
+               SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+        FROM ai_comparison_runs
+        """
+    ).fetchone()
+    pending = conn.execute(
+        """
+        SELECT COUNT(*) AS pending
+        FROM ai_comparison_runs AS runs
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ai_comparison_votes AS votes
+          WHERE votes.comparison_run_id = runs.id
+        )
+        """
+    ).fetchone()
+    reviewed_cases = conn.execute(
+        """
+        SELECT COUNT(DISTINCT runs.case_uid) AS count
+        FROM ai_comparison_runs AS runs
+        JOIN ai_comparison_votes AS votes
+          ON votes.comparison_run_id = runs.id
+        """
+    ).fetchone()
+    reopened = conn.execute(
+        "SELECT COUNT(*) AS count FROM ai_comparison_review_history"
+    ).fetchone()
     return {
         "models": [dict(row) for row in rows],
         "votes": int(totals["votes"] or 0),
         "ties": int(totals["ties"] or 0),
         "rejected": int(totals["rejected"] or 0),
+        "runs": int(run_totals["runs"] or 0),
+        "cases": int(run_totals["cases"] or 0),
+        "complete": int(run_totals["complete"] or 0),
+        "partial": int(run_totals["partial"] or 0),
+        "failed": int(run_totals["failed"] or 0),
+        "pending": int(pending["pending"] or 0),
+        "reviewed_cases": int(reviewed_cases["count"] or 0),
+        "reopened_reviews": int(reopened["count"] or 0),
     }
+
+
+def ai_comparison_export_rows(conn):
+    """Return one research-friendly row per comparison run."""
+    rows = conn.execute(
+        """
+        SELECT runs.comparison_uid, runs.case_uid, runs.detection_id,
+               runs.status AS run_status, runs.created_at, runs.completed_at,
+               CASE
+                 WHEN runs.completed_at IS NOT NULL THEN
+                   ROUND(
+                     MAX(
+                       0,
+                       (julianday(runs.completed_at) - julianday(runs.created_at))
+                       * 86400
+                     ),
+                     3
+                   )
+                 ELSE NULL
+               END AS comparison_wall_clock_seconds,
+               runs.evidence_sha256, runs.prompt_version,
+               votes.selection, votes.analyst_name, votes.notes AS review_notes,
+               votes.created_at AS reviewed_at
+        FROM ai_comparison_runs AS runs
+        LEFT JOIN ai_comparison_votes AS votes
+          ON votes.comparison_run_id = runs.id
+        ORDER BY runs.id DESC
+        """
+    ).fetchall()
+    exported = []
+    for row in rows:
+        item = dict(row)
+        candidates = conn.execute(
+            """
+            SELECT anonymous_slot, ai_profile_uid, model_provider, model_name,
+                   model_identity, classification, confidence, status,
+                   elapsed_ms, prompt_sha256
+            FROM ai_comparison_candidates
+            WHERE comparison_run_id = (
+              SELECT id FROM ai_comparison_runs WHERE comparison_uid = ?
+            )
+            ORDER BY anonymous_slot
+            """,
+            (item["comparison_uid"],),
+        ).fetchall()
+        item["review_status"] = (
+            "rejected"
+            if item.get("selection") == "reject_all"
+            else "tie"
+            if item.get("selection") == "tie"
+            else "reviewed"
+            if item.get("selection")
+            else "pending"
+        )
+        item["selected_response"] = (
+            item.get("selection") if item.get("selection") in {"A", "B", "C"} else None
+        )
+        selected = None
+        completed_elapsed_ms = []
+        for candidate_row in candidates:
+            candidate = dict(candidate_row)
+            slot = candidate.pop("anonymous_slot")
+            for key, value in candidate.items():
+                item[f"response_{slot.lower()}_{key}"] = value
+            elapsed_ms = candidate.get("elapsed_ms")
+            item[f"response_{slot.lower()}_elapsed_seconds"] = (
+                round(float(elapsed_ms) / 1000, 3)
+                if elapsed_ms is not None
+                else None
+            )
+            if candidate.get("status") == "complete" and elapsed_ms is not None:
+                completed_elapsed_ms.append(float(elapsed_ms))
+            if slot == item.get("selected_response"):
+                selected = candidate
+        item["selected_profile_uid"] = (
+            selected.get("ai_profile_uid") if selected else None
+        )
+        item["selected_model_identity"] = (
+            selected.get("model_identity") if selected else None
+        )
+        item["selected_response_elapsed_ms"] = (
+            selected.get("elapsed_ms") if selected else None
+        )
+        item["selected_response_elapsed_seconds"] = (
+            round(float(selected["elapsed_ms"]) / 1000, 3)
+            if selected and selected.get("elapsed_ms") is not None
+            else None
+        )
+        item["successful_response_total_elapsed_ms"] = (
+            int(round(sum(completed_elapsed_ms))) if completed_elapsed_ms else None
+        )
+        item["successful_response_total_elapsed_seconds"] = (
+            round(sum(completed_elapsed_ms) / 1000, 3)
+            if completed_elapsed_ms
+            else None
+        )
+        item["successful_response_average_elapsed_ms"] = (
+            round(sum(completed_elapsed_ms) / len(completed_elapsed_ms), 3)
+            if completed_elapsed_ms
+            else None
+        )
+        item["successful_response_average_elapsed_seconds"] = (
+            round(sum(completed_elapsed_ms) / len(completed_elapsed_ms) / 1000, 3)
+            if completed_elapsed_ms
+            else None
+        )
+        history = conn.execute(
+            """
+            SELECT analyst_name, selection, notes, reviewed_at, reopened_at
+            FROM ai_comparison_review_history
+            WHERE comparison_run_id = (
+              SELECT id FROM ai_comparison_runs WHERE comparison_uid = ?
+            )
+            ORDER BY id
+            """,
+            (item["comparison_uid"],),
+        ).fetchall()
+        item["reopened_review_count"] = len(history)
+        item["review_history_json"] = json.dumps(
+            [dict(history_row) for history_row in history],
+            sort_keys=True,
+        )
+        exported.append(item)
+    return exported
 
 
 def list_ai_profiles(conn, limit=100):
@@ -1724,6 +2484,41 @@ def ai_run_audits_for_detection(conn, detection_id):
                 pass
         results.append(item)
     return results
+
+
+def initial_ai_request_snapshot(conn, detection_id):
+    """Return the exact audited input that produced the initial case summary."""
+    row = conn.execute(
+        """
+        SELECT assessment_type, model_run_id, prompt_version, prompt_text,
+               prompt_sha256, evidence_package_json, evidence_sha256,
+               evidence_manifest_json, omission_manifest_json, source_map_json,
+               request_options_json, prepared_at
+        FROM ai_run_audits
+        WHERE detection_id = ?
+          AND assessment_type = 'initial'
+          AND prompt_text <> ''
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (detection_id,),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    for source, target, fallback in (
+        ("evidence_package_json", "evidence_package", {}),
+        ("evidence_manifest_json", "evidence_manifest", {}),
+        ("omission_manifest_json", "omission_manifest", []),
+        ("source_map_json", "source_map", {}),
+        ("request_options_json", "request_options", {}),
+    ):
+        raw = item.pop(source, None)
+        try:
+            item[target] = json.loads(raw or json.dumps(fallback))
+        except (TypeError, json.JSONDecodeError):
+            item[target] = fallback
+    return item
 
 
 def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", evidence_sources=None):
@@ -2861,6 +3656,7 @@ def insert_app_event(conn, level, component, message, details=None):
 
 def reset_dashboard_logs(conn):
     tables = [
+        "ai_comparison_review_history",
         "ai_comparison_votes",
         "ai_comparison_candidates",
         "ai_comparison_runs",
@@ -3982,6 +4778,11 @@ def investigation_detail(conn, detection_id):
         return None
 
     item = without_operational_scores(row)
+    # A detection is visible before the asynchronous AI worker reaches it.
+    # Expose that distinction so the dashboard does not manufacture model
+    # identity, recommendations, or classifications for an unassessed case.
+    item["ai_report_available"] = bool(item.get("ai_created_at"))
+    item["decision_available"] = bool(item.get("response_created_at"))
     if (
         item.get("ai_raw_response")
         and item.get("ai_summary") == "The model response could not be parsed."
@@ -4030,6 +4831,7 @@ def investigation_detail(conn, detection_id):
     item["src_otx"] = latest_threat_intel_for_ip(conn, item.get("src_ip"), "otx")
     item["dest_otx"] = latest_threat_intel_for_ip(conn, item.get("dest_ip"), "otx")
     item["sensor_findings"] = sensor_findings_for_detection(conn, detection_id)
+    item["selected_ai_explanation"] = selected_case_explanation(conn, detection_id)
     item["ai_run_audits"] = ai_run_audits_for_detection(conn, detection_id)
     item["virustotal_verifications"] = virustotal_verifications_for_detection(conn, detection_id)
     item["ai_assessments"] = [
@@ -4404,7 +5206,14 @@ def submit_analyst_review(
     return True
 
 
-def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profile_uid=None):
+def detections_without_ai_reports(
+    conn,
+    limit=50,
+    model_identity=None,
+    ai_profile_uid=None,
+    newest_first=False,
+    minimum_age_seconds=0,
+):
     join_filters = []
     params = []
     if ai_profile_uid:
@@ -4414,6 +5223,11 @@ def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profil
         join_filters.append("AND ai_reports.model_identity = ?")
         params.append(model_identity)
     join_filter = " ".join(join_filters)
+    age_filter = ""
+    if minimum_age_seconds:
+        age_filter = "AND detections.created_at <= datetime('now', ?)"
+        params.append(f"-{max(0, int(minimum_age_seconds))} seconds")
+    order_direction = "DESC" if newest_first else "ASC"
     params.append(limit)
     rows = conn.execute(
         f"""
@@ -4461,7 +5275,8 @@ def detections_without_ai_reports(conn, limit=50, model_identity=None, ai_profil
           ON ai_reports.detection_id = detections.id
           {join_filter}
         WHERE ai_reports.id IS NULL
-        ORDER BY detections.id ASC
+          {age_filter}
+        ORDER BY detections.id {order_direction}
         LIMIT ?
         """,
         params,

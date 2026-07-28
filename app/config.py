@@ -62,7 +62,8 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 90,
         "num_predict": 1024,
         "num_ctx": 8192,
-        "temperature": 0.1,
+        "temperature": 0.0,
+        "seed": 42,
     },
     "threat_intel": {
         "cache_ttl_hours": 24,

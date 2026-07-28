@@ -35,7 +35,7 @@ const els = {
 };
 
 let currentInvestigation = null;
-let findingView = "unique";
+let findingView = "all";
 
 function modelIdentity(candidate) {
   const provider = candidate.model_provider || "unknown provider";
@@ -102,8 +102,8 @@ function renderModelCandidate(candidate, vote) {
       <header>
         <span class="candidate-letter">${escapeHtml(candidate.anonymous_slot)}</span>
         <div>
-          <strong>${escapeHtml(modelIdentity(candidate))}</strong>
-          <small>profile ${escapeHtml(candidate.ai_profile_uid || "unknown")} · ${candidate.elapsed_ms ?? 0}ms</small>
+          <strong>Response ${escapeHtml(candidate.anonymous_slot)}</strong>
+          <small>${candidate.status === "failed" ? "Request failed" : `${candidate.elapsed_ms ?? 0}ms`}</small>
         </div>
         ${selected ? `<span class="status-pill active">selected</span>` : ""}
       </header>
@@ -135,9 +135,33 @@ function renderModelCandidate(candidate, vote) {
           <summary>View complete raw model response</summary>
           <pre class="raw-json">${escapeHtml(candidate.raw_response || "No raw response stored.")}</pre>
         </details>
-        <footer>run ${escapeHtml(candidate.model_run_id || "not recorded")} · prompt ${escapeHtml(candidate.prompt_version || "unknown")}</footer>
+        <footer>Response ${escapeHtml(candidate.anonymous_slot)} · prompt ${escapeHtml(candidate.prompt_version || "unknown")}</footer>
       `}
     </article>
+  `;
+}
+
+function renderComparisonInputProof(detail) {
+  const proof = detail?.input_consistency || {};
+  const fullyVerified = proof.same_prompt_across_candidates
+    && proof.same_evidence_across_candidates
+    && proof.same_generation_options_across_candidates;
+  const matchesInitial = proof.matches_initial_case_prompt
+    && proof.matches_initial_case_evidence;
+  return `
+    <section class="comparison-input-proof ${fullyVerified ? "verified" : "warning"}">
+      <div>
+        <strong>${fullyVerified ? "Verified identical input for A, B, and C" : "Comparison input could not be fully verified"}</strong>
+        <small>${matchesInitial
+          ? "The comparison reuses the exact prompt and evidence snapshot that produced the initial case summary."
+          : "This comparison used a separately prepared case snapshot; differences from the initial summary may reflect changed evidence as well as model behavior."}</small>
+      </div>
+      <details>
+        <summary>View input hashes</summary>
+        <p>Prompt SHA-256: <span class="hash-value">${escapeHtml(proof.prompt_sha256 || "not recorded")}</span></p>
+        <p>Evidence SHA-256: <span class="hash-value">${escapeHtml(proof.evidence_sha256 || "not recorded")}</span></p>
+      </details>
+    </section>
   `;
 }
 
@@ -152,10 +176,11 @@ async function renderComparisonRuns(runs) {
     <div class="comparison-inline-head">
       <div>
         <strong>${escapeHtml(latest.comparison_uid)}</strong>
-        <small>${latest.candidate_count || 0}/3 responses · ${escapeHtml(label(latest.status))}</small>
+        <small>${latest.candidate_count || 0}/3 successful · ${latest.processed_count || 0}/3 attempted · ${escapeHtml(label(latest.status))}</small>
       </div>
       <a class="nav-link" href="/compare?run=${encodeURIComponent(latest.comparison_uid)}&case=${encodeURIComponent(latest.case_uid)}" target="_blank" rel="noopener">Open Comparison Workspace</a>
     </div>
+    ${renderComparisonInputProof(latest)}
     <div class="model-candidate-grid investigation-model-grid">
       ${(latest.candidates || []).map((candidate) => renderModelCandidate(candidate, vote)).join("")}
     </div>
@@ -163,7 +188,7 @@ async function renderComparisonRuns(runs) {
       <details class="previous-comparison-runs">
         <summary>Previous comparison runs (${runs.length - 1})</summary>
         <div class="workbook-list">
-          ${runs.slice(1).map((run) => `<a class="workbook-row investigation-link" href="/compare?run=${encodeURIComponent(run.comparison_uid)}&case=${encodeURIComponent(run.case_uid)}" target="_blank" rel="noopener"><strong>${escapeHtml(run.comparison_uid)}</strong><small>${run.candidate_count || 0}/3 responses · ${escapeHtml(label(run.status))}</small></a>`).join("")}
+          ${runs.slice(1).map((run) => `<a class="workbook-row investigation-link" href="/compare?run=${encodeURIComponent(run.comparison_uid)}&case=${encodeURIComponent(run.case_uid)}" target="_blank" rel="noopener"><strong>${escapeHtml(run.comparison_uid)}</strong><small>${run.candidate_count || 0}/3 successful · ${run.processed_count || 0}/3 attempted · ${escapeHtml(label(run.status))}</small></a>`).join("")}
         </div>
       </details>
     ` : ""}
@@ -417,9 +442,13 @@ function findingRow(group, showEventUid) {
 function renderSensorFindings(data) {
   const findings = [...(data.sensor_findings || [])].sort((left, right) => findingTimestamp(right) - findingTimestamp(left));
   const grouped = uniqueFindings(findings);
-  const visible = findingView === "all"
+  const visibleGroups = findingView === "all"
     ? findings.map((finding) => ({ finding, count: 1, firstSeen: finding.finding_timestamp, lastSeen: finding.finding_timestamp }))
     : grouped;
+  const suricataGroups = visibleGroups.filter((group) => String(group.finding.sensor || "").toLowerCase() === "suricata");
+  const zeekGroups = visibleGroups.filter((group) => String(group.finding.sensor || "").toLowerCase() === "zeek");
+  const suricataCount = findings.filter((finding) => String(finding.sensor || "").toLowerCase() === "suricata").length;
+  const zeekCount = findings.filter((finding) => String(finding.sensor || "").toLowerCase() === "zeek").length;
   els.findingCount.textContent = `${grouped.length} unique · ${findings.length} total`;
   els.findingViewButtons.forEach((button) => {
     const selected = button.dataset.findingView === findingView;
@@ -442,8 +471,31 @@ function renderSensorFindings(data) {
       )}
       ${row("Traffic", `${escapeHtml(data.src_ip || "unknown")}:${data.src_port || ""} -&gt; ${escapeHtml(data.dest_ip || "unknown")}:${data.dest_port || ""}`, escapeHtml(data.protocol || ""))}
     </div>
-    <div class="finding-scroll-list">
-      ${visible.map((group) => findingRow(group, findingView === "all")).join("") || row("Primary Finding", escapeHtml(data.signature || "No finding stored"), `${escapeHtml(data.category || "unknown category")} · priority ${data.priority || "unknown"}`)}
+    <div class="sensor-log-columns">
+      <section class="sensor-log-panel suricata-log-panel">
+        <header>
+          <div>
+            <span class="sensor-badge suricata">SURICATA</span>
+            <h3>Suricata Logs</h3>
+          </div>
+          <span>${suricataCount} event${suricataCount === 1 ? "" : "s"}</span>
+        </header>
+        <div class="sensor-log-scroll">
+          ${suricataGroups.map((group) => findingRow(group, findingView === "all")).join("") || `<div class="empty">No Suricata finding is attached to this case.</div>`}
+        </div>
+      </section>
+      <section class="sensor-log-panel zeek-log-panel">
+        <header>
+          <div>
+            <span class="sensor-badge zeek">ZEEK</span>
+            <h3>Zeek Logs</h3>
+          </div>
+          <span>${zeekCount} event${zeekCount === 1 ? "" : "s"}</span>
+        </header>
+        <div class="sensor-log-scroll">
+          ${zeekGroups.map((group) => findingRow(group, findingView === "all")).join("") || `<div class="empty">No Zeek finding is attached to this case. Supporting Zeek protocol rows may still appear under Related Network Context.</div>`}
+        </div>
+      </section>
     </div>
   `;
 }
@@ -600,21 +652,43 @@ function renderZeekContext(data) {
 
 function render(data) {
   currentInvestigation = data;
+  const promoted = data.selected_ai_explanation || null;
+  const hasAiReport = Boolean(data.ai_report_available || promoted);
+  const hasDecision = Boolean(data.decision_available);
   els.title.textContent = data.case_uid || `${label(data.detection_type)} #${data.detection_id}`;
   if (data.case_uid && !requestedCaseUid) {
     history.replaceState(null, "", `/investigation?case=${encodeURIComponent(data.case_uid)}`);
   }
-  els.decision.textContent = data.final_classification || "No decision";
-  els.action.textContent = data.final_action || "No action";
-  els.aiConfidence.textContent = data.ai_confidence || "None";
-  els.aiClassification.textContent = data.ai_classification || "No AI opinion";
+  els.decision.textContent = hasDecision ? (data.final_classification || "—") : "—";
+  els.action.textContent = hasDecision ? (data.final_action || "—") : "";
+  els.aiConfidence.textContent = hasAiReport
+    ? (promoted?.confidence || data.ai_confidence || "—")
+    : "—";
+  els.aiClassification.textContent = hasAiReport
+    ? (promoted?.classification || data.ai_classification || "—")
+    : "";
   els.sensorState.textContent = label(data.sensor_state || "unknown");
   els.agreementState.textContent = `${label(data.agreement_state || "unknown")} · ${label(data.correlation_method || "none")}`;
   els.timestamp.textContent = displayTimestamp(data.timestamp || data.first_seen);
 
-  const nextSteps = Array.isArray(data.ai_next_steps) ? data.ai_next_steps : [];
-  const aiModel = selectedModelIdentity(data);
-  const aiRun = data.ai_model_run_id || "not recorded";
+  const nextSteps = promoted
+    ? (Array.isArray(promoted.next_steps) ? promoted.next_steps : [])
+    : (Array.isArray(data.ai_next_steps) ? data.ai_next_steps : []);
+  const aiModel = hasAiReport
+    ? promoted
+      ? modelIdentity(promoted)
+      : selectedModelIdentity(data)
+    : "";
+  const aiRun = hasAiReport
+    ? (promoted?.model_run_id || data.ai_model_run_id || "not recorded")
+    : "";
+  const explanationSource = promoted
+    ? `${aiModel} · analyst-selected Response ${promoted.anonymous_slot}`
+    : aiModel;
+  const aiSummary = promoted?.summary || data.ai_summary || data.ai_reason;
+  const aiWhy = promoted?.why_summary || promoted?.summary || data.ai_why || data.ai_reason;
+  const aiAction = promoted?.recommended_action || data.ai_recommended_action;
+  const aiRawResponse = promoted?.raw_response || data.ai_raw_response;
   const sensors = [...new Set(
     (data.sensor_findings || [])
       .map((finding) => label(finding.sensor))
@@ -629,34 +703,38 @@ function render(data) {
   const pythonWhen = `${displayTimestamp(data.first_seen || data.timestamp)} to ${displayTimestamp(data.last_seen || data.timestamp)}`;
   const pythonWhere = `${data.src_ip || "unknown"}:${data.src_port ?? "unknown"} to ${data.dest_ip || "unknown"}:${data.dest_port ?? "unknown"} ${data.protocol || ""}`.trim();
   const pythonHow = `${sensorText} records joined using ${label(data.correlation_method || "single_sensor")}; ${data.sensor_findings?.length || 0} stored finding${data.sensor_findings?.length === 1 ? "" : "s"}.`;
-  els.overview.innerHTML = [
+  const aiOverview = hasAiReport ? [
     row(
-      sourceHeading("AI", "Summary", aiModel),
-      escapeHtml(data.ai_summary || data.ai_reason || "No AI case summary stored yet."),
+      sourceHeading("AI", "Summary", explanationSource),
+      escapeHtml(aiSummary || "No summary was returned."),
       `Model run ${escapeHtml(aiRun)}`
     ),
-    row(sourceHeading("Python", "Who"), escapeHtml(pythonWho), "Derived from normalized source/destination fields and registered IP roles."),
-    row(sourceHeading("Python", "What"), escapeHtml(pythonWhat), "Derived from stored Suricata and Zeek findings."),
-    row(sourceHeading("Python", "When"), escapeHtml(pythonWhen), "Derived from normalized first_seen and last_seen timestamps."),
-    row(sourceHeading("Python", "Where"), escapeHtml(pythonWhere), "Derived from normalized IP, port, and protocol fields."),
     row(
-      sourceHeading("AI", "Why It May Matter", aiModel),
-      escapeHtml(data.ai_why || data.ai_reason || "No AI interpretation stored."),
+      sourceHeading("AI", "Why It May Matter", explanationSource),
+      escapeHtml(aiWhy || "No interpretation was returned."),
       `Model run ${escapeHtml(aiRun)}`
     ),
-    row(sourceHeading("Python", "How It Was Detected"), escapeHtml(pythonHow), "Correlation is performed by Python before the model request."),
     row(
-      sourceHeading("AI", "Recommended Next Steps", aiModel),
-      orderedSteps(nextSteps, data.ai_recommended_action || "Review the evidence and record an analyst decision."),
+      sourceHeading("AI", "Recommended Next Steps", explanationSource),
+      orderedSteps(nextSteps, aiAction),
       `Model run ${escapeHtml(aiRun)}`,
       "overview-recommendations"
     ),
     `
       <details class="summary-raw-response">
-        <summary>View raw AI response from ${escapeHtml(aiModel)}</summary>
-        <pre class="raw-json">${escapeHtml(data.ai_raw_response || "No raw AI response stored.")}</pre>
+        <summary>View raw AI response from ${escapeHtml(explanationSource)}</summary>
+        <pre class="raw-json">${escapeHtml(aiRawResponse || "No raw AI response stored.")}</pre>
       </details>
     `
+  ] : [];
+  els.overview.innerHTML = [
+    ...aiOverview.slice(0, 1),
+    row(sourceHeading("Python", "Who"), escapeHtml(pythonWho), "Derived from normalized source/destination fields and registered IP roles."),
+    row(sourceHeading("Python", "What"), escapeHtml(pythonWhat), "Derived from stored Suricata and Zeek findings."),
+    row(sourceHeading("Python", "When"), escapeHtml(pythonWhen), "Derived from normalized first_seen and last_seen timestamps."),
+    row(sourceHeading("Python", "Where"), escapeHtml(pythonWhere), "Derived from normalized IP, port, and protocol fields."),
+    row(sourceHeading("Python", "How It Was Detected"), escapeHtml(pythonHow), "Correlation is performed by Python before the model request."),
+    ...aiOverview.slice(1)
   ].join("");
 
   renderSensorFindings(data);
@@ -746,6 +824,9 @@ async function runComparison() {
   if (!currentInvestigation?.case_uid) return;
   els.compare.disabled = true;
   setActionStatus("", "Running three AI requests sequentially. This can take several minutes; keep this page open.");
+  const progressTimer = window.setInterval(() => {
+    refreshComparisonOnly().catch(() => {});
+  }, 3000);
   try {
     const result = await sendJson(`/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/ai-comparison`, "POST");
     await refresh();
@@ -753,8 +834,17 @@ async function runComparison() {
   } catch (error) {
     setActionStatus("error", error.message);
   } finally {
+    window.clearInterval(progressTimer);
     els.compare.disabled = false;
   }
+}
+
+async function refreshComparisonOnly() {
+  if (!currentInvestigation?.case_uid) return;
+  const runs = await getJson(
+    `/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/ai-comparisons?limit=10`
+  );
+  await renderComparisonRuns(runs);
 }
 
 async function refreshVirusTotal() {
@@ -786,12 +876,12 @@ async function refresh() {
     const data = await getJson(path);
     render(data);
     if (data.case_uid) {
-      await renderComparisonRuns(await getJson(`/api/cases/${encodeURIComponent(data.case_uid)}/ai-comparisons?limit=10`));
+      await refreshComparisonOnly();
     } else {
       await renderComparisonRuns([]);
     }
   } catch (error) {
-    els.updated.textContent = "Investigation API error";
+    els.updated.textContent = "Case API error";
     els.alert.innerHTML = `<div class="empty">${error.message}</div>`;
   }
 }

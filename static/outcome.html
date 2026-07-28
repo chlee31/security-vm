@@ -3,20 +3,24 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Outcome Workbook</title>
+    <title>Security VM Cases</title>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
     <main class="shell workbook-shell">
       <section class="topbar">
         <div>
-          <p class="eyebrow">Outcome Workbook</p>
-          <h1 id="outcome-title">Loading Outcome</h1>
+          <p class="eyebrow">Cases</p>
+          <h1 id="outcome-title">Loading Cases</h1>
         </div>
         <div class="status">
           <span class="dot"></span>
           <span id="outcome-updated">Waiting for data</span>
           <button id="outcome-refresh" class="toolbar-button" type="button">Refresh</button>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/compare">AI Comparison</a>
         </div>
       </section>
 
@@ -106,6 +110,6 @@
       </section>
     </main>
 
-    <script src="/static/outcome.js?v=20260725-analyst-review"></script>
+    <script src="/static/outcome.js?v=20260727-case-language"></script>
   </body>
 </html>

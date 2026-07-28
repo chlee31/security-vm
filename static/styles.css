@@ -167,16 +167,21 @@ h2 {
   background: rgba(24, 29, 32, 0.94);
 }
 
-#top-detection,
-#system-mode {
-  font-size: 1.35rem;
-}
-
 .insight-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 14px;
   margin-bottom: 14px;
+}
+
+.dashboard-operations-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 850px) {
+  .dashboard-operations-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .grid {
@@ -931,6 +936,65 @@ h2 {
   padding-right: 5px;
 }
 
+.sensor-log-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.sensor-log-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink);
+}
+
+.sensor-log-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.sensor-log-panel > header > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.sensor-log-panel > header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.sensor-log-panel > header > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.sensor-log-scroll {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  height: clamp(360px, 54vh, 620px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px;
+  scrollbar-gutter: stable;
+}
+
+.sensor-log-scroll .finding-row {
+  align-self: start;
+}
+
 .finding-row {
   display: grid;
   gap: 7px;
@@ -1425,6 +1489,10 @@ textarea {
   min-height: 150px;
 }
 
+.unified-alert.pending-assessment {
+  grid-template-columns: minmax(165px, 0.28fr) minmax(280px, 1fr);
+}
+
 .unified-alert > .classification-badge {
   width: 124px;
   min-width: 0;
@@ -1477,6 +1545,18 @@ textarea {
 
 .alert-signature {
   font-size: 1.08rem;
+}
+
+.signature-repeat-count,
+.inline-repeat-count {
+  color: var(--cyan);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.signature-repeat-count {
+  display: inline-block;
+  margin-left: 6px;
 }
 
 .sensor-badges {
@@ -1533,6 +1613,10 @@ textarea {
 .sensor-finding-copy strong,
 .sensor-finding-copy span {
   overflow-wrap: anywhere;
+}
+
+.sensor-finding-copy strong .inline-repeat-count {
+  overflow-wrap: normal;
 }
 
 .sensor-finding-copy span {
@@ -2008,7 +2092,8 @@ time,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .alert {
+  .alert,
+  .unified-alert.pending-assessment {
     grid-template-columns: 1fr;
   }
 
@@ -2024,6 +2109,14 @@ time,
 
   .sensor-finding-row {
     grid-template-columns: 1fr;
+  }
+
+  .sensor-log-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .sensor-log-scroll {
+    height: min(520px, 58vh);
   }
 
   .detail-grid,
@@ -2082,11 +2175,201 @@ time,
   margin-top: 14px;
 }
 
+.runtime-console-panel {
+  min-height: 620px;
+}
+
+.runtime-console-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-console-actions button {
+  width: auto;
+  min-width: 82px;
+}
+
+.runtime-console-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+}
+
+.runtime-components {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  padding: 14px 14px 0;
+}
+
+.runtime-component {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: #0d1417;
+}
+
+.runtime-component div,
+.runtime-component strong,
+.runtime-component small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-component small,
+.runtime-component > span:last-child {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.runtime-component-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.runtime-component.running .runtime-component-dot {
+  background: var(--green);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--green) 55%, transparent);
+}
+
+.runtime-component.exited .runtime-component-dot,
+.runtime-component.stale .runtime-component-dot {
+  background: var(--red);
+}
+
+.runtime-component.stopped .runtime-component-dot {
+  background: var(--amber);
+}
+
+.runtime-console-section {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: #0d1417;
+}
+
+.runtime-console-section > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.runtime-console-section h3 {
+  margin: 0;
+}
+
+.runtime-stream {
+  height: 540px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: 10px;
+}
+
+.runtime-entry {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--muted);
+  background: #111a1e;
+}
+
+.runtime-entry + .runtime-entry {
+  margin-top: 8px;
+}
+
+.runtime-entry.active {
+  border-left-color: var(--cyan);
+}
+
+.runtime-entry.complete,
+.runtime-entry.event-info {
+  border-left-color: var(--green);
+}
+
+.runtime-entry.failed,
+.runtime-entry.event-error {
+  border-left-color: var(--red);
+}
+
+.runtime-entry.event-warning {
+  border-left-color: var(--amber);
+}
+
+.runtime-entry-head,
+.runtime-entry-head > div,
+.runtime-metadata {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-entry-head {
+  justify-content: space-between;
+}
+
+.runtime-entry-head span,
+.runtime-entry-head time,
+.runtime-metadata {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.runtime-entry p {
+  margin: 8px 0;
+}
+
+.runtime-metadata span,
+.runtime-metadata a {
+  padding-right: 8px;
+  border-right: 1px solid var(--line);
+}
+
+.runtime-error,
+.runtime-entry details pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--red);
+  background: #0b1114;
+  border: 1px solid var(--line);
+}
+
+.runtime-entry details summary {
+  color: var(--cyan);
+  cursor: pointer;
+}
+
 .comparison-profile-choices {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-top: 12px;
+}
+
+@media (max-width: 900px) {
+  .runtime-components {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .runtime-console-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-stream {
+    height: 420px;
+  }
 }
 
 .comparison-profile-choice {
@@ -2126,6 +2409,35 @@ time,
 .comparison-run-list {
   max-height: 760px;
   overflow-y: auto;
+}
+
+.comparison-queue-tools {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.comparison-export-actions,
+.comparison-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.comparison-export-actions .toolbar-button {
+  flex: 1;
+  text-align: center;
+}
+
+.comparison-review-actions {
+  justify-content: flex-end;
+}
+
+.winner-identity {
+  color: var(--green);
+  margin-top: 4px;
 }
 
 .comparison-run-button {
@@ -2281,6 +2593,43 @@ time,
 .comparison-inline-head small {
   margin-top: 4px;
   color: var(--muted);
+}
+
+.comparison-input-proof {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  margin: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--amber);
+  background: var(--panel-2);
+}
+
+.comparison-input-proof.verified {
+  border-left-color: var(--green);
+}
+
+.comparison-input-proof strong,
+.comparison-input-proof small {
+  display: block;
+}
+
+.comparison-input-proof small {
+  margin-top: 5px;
+  color: var(--muted);
+}
+
+.comparison-input-proof details {
+  min-width: 190px;
+}
+
+.comparison-input-proof details p {
+  max-width: 520px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .comparison-threat-intel {
@@ -2450,6 +2799,10 @@ time,
   .comparison-inline-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .comparison-input-proof {
+    grid-template-columns: 1fr;
   }
 
   .comparison-provider-matrix {
