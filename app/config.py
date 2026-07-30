@@ -31,13 +31,12 @@ DEFAULT_CONFIG = {
         "include_suricata": True,
         "include_zeek": True,
         "include_threat_intel": True,
-        "include_asset_context": True,
     },
     "ai_comparison": {
         "profile_uids": [],
-        "candidate_count": 3,
         "sequential": True,
     },
+    "ai_experiments": {"worker_poll_seconds": 1.0},
     "correlation": {
         "policy_version": "correlation-v1",
         "sensor_time_tolerance_seconds": 10,

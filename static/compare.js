@@ -25,6 +25,12 @@ const els = {
   selectionSummary: document.querySelector("#cmp-selection-summary"),
   refresh: document.querySelector("#compare-refresh")
 };
+els.newForm = document.querySelector("#cmp-new-form");
+els.newCase = document.querySelector("#cmp-new-case");
+els.profileOptions = document.querySelector("#cmp-profile-options");
+els.selectAll = document.querySelector("#cmp-select-all");
+els.newStatus = document.querySelector("#cmp-new-status");
+els.voteOptions = document.querySelector("#cmp-vote-options");
 
 let state = { runs: [], selected: null, selectionSummary: null, filter: "all" };
 
@@ -72,7 +78,7 @@ function renderRuns() {
   const visible = state.runs.filter((run) => {
     if (state.filter === "all") return true;
     if (state.filter === "pending") return !run.selection && !["failed"].includes(run.status);
-    if (state.filter === "reviewed") return ["A", "B", "C"].includes(run.selection);
+    if (state.filter === "reviewed") return /^R\d+$/.test(run.selection || "") || /^[A-Z]$/.test(run.selection || "");
     if (state.filter === "rejected") return run.selection === "reject_all";
     if (state.filter === "tie") return run.selection === "tie";
     if (state.filter === "failed") return ["failed", "partial"].includes(run.status);
@@ -82,7 +88,7 @@ function renderRuns() {
     <button class="comparison-run-button ${state.selected?.comparison_uid === run.comparison_uid ? "selected" : ""}" type="button" data-run="${escapeHtml(run.comparison_uid)}">
       <span>
         <strong>${escapeHtml(run.case_uid)}</strong>
-        <small>${escapeHtml(run.comparison_uid)} · ${run.candidate_count || 0}/3 successful · ${run.processed_count || 0}/3 attempted</small>
+        <small>${escapeHtml(run.comparison_uid)} · ${run.candidate_count || 0}/${run.expected_candidate_count || run.processed_count || 0} successful · ${run.processed_count || 0}/${run.expected_candidate_count || run.processed_count || 0} attempted</small>
       </span>
       <span class="status-pill ${run.vote_count ? "active" : ""}">${run.selection ? label(run.selection) : label(run.status)}</span>
     </button>
@@ -113,7 +119,7 @@ function renderThreatIntelEvidence(evidence) {
   return `
     <section class="comparison-threat-intel">
       <div class="comparison-inline-head">
-        <div><strong>Shared Threat-Intelligence Evidence</strong><small>Exact sanitized provider results supplied to Responses A, B, and C.</small></div>
+        <div><strong>Shared Threat-Intelligence Evidence</strong><small>Exact sanitized provider results supplied to every response.</small></div>
       </div>
       <div class="comparison-provider-matrix">
         ${(evidence.provider_status || []).map((provider) => {
@@ -168,7 +174,14 @@ function renderCandidates() {
     ? `${vote.analyst_name || "Analyst"} selected Response ${winner.anonymous_slot}: ${winner.model_identity || winner.model_name}`
     : vote
     ? `${vote.analyst_name || "Analyst"} recorded ${label(vote.selection)}`
-    : "Responses are anonymized as A, B, and C";
+    : "Responses use anonymous R labels until review.";
+  const selectable = (detail.candidates || []).filter((candidate) => candidate.status === "complete");
+  els.voteOptions.innerHTML = selectable.map((candidate, index) => `
+    <label><input type="radio" name="selection" value="${escapeHtml(candidate.anonymous_slot)}" ${index === 0 ? "required" : ""}><span>Response ${escapeHtml(candidate.anonymous_slot)}</span></label>
+  `).join("") + `
+    <label><input type="radio" name="selection" value="tie"><span>Tie</span></label>
+    <label><input type="radio" name="selection" value="reject_all"><span>Reject All</span></label>
+  `;
   els.candidates.innerHTML = `
     ${renderThreatIntelEvidence(detail.threat_intel_evidence)}
     ${renderComparisonInputProof(detail)}
@@ -242,7 +255,7 @@ function renderComparisonInputProof(detail) {
   return `
     <section class="comparison-input-proof ${fullyVerified ? "verified" : "warning"}">
       <div>
-        <strong>${fullyVerified ? "Verified identical input for A, B, and C" : "Comparison input could not be fully verified"}</strong>
+        <strong>${fullyVerified ? "Verified identical input for every response" : "Comparison input could not be fully verified"}</strong>
         <small>${matchesInitial
           ? "These responses use the exact prompt and evidence snapshot that produced the initial case summary."
           : "The initial case summary used a different evidence snapshot. Compare the responses as separate assessments."}</small>
@@ -288,7 +301,7 @@ async function submitVote(event) {
   if (!state.selected) return;
   const selection = new FormData(els.voteForm).get("selection");
   if (!selection) {
-    setStatus("error", "Select Response A, B, C, Tie, or Reject All.");
+    setStatus("error", "Select one response, Tie, or Reject All.");
     return;
   }
   try {
@@ -345,7 +358,7 @@ async function useSelectedResponse() {
       "POST",
       {
         analyst_name: els.analyst.value || state.selected.review_outcome.analyst_name || "analyst",
-        notes: els.notes.value || "Promoted from reviewed three-model comparison"
+        notes: els.notes.value || "Promoted from reviewed model comparison"
       }
     );
     renderCandidates();
@@ -378,6 +391,39 @@ async function refresh() {
   }
 }
 
+async function loadComparisonOptions() {
+  const options = await getJson("/api/ai-comparisons/options?limit=200");
+  const active = options.profiles || [];
+  els.profileOptions.innerHTML = active.map((profile) => `
+    <label><input type="checkbox" name="profile_uid" value="${escapeHtml(profile.uid)}" checked>
+      <span>${escapeHtml(profile.name)} · ${escapeHtml(profile.model)}</span>
+    </label>
+  `).join("") || `<div class="empty">No active AI profiles are configured.</div>`;
+  els.newCase.innerHTML = (options.cases || []).map((item) => `
+    <option value="${escapeHtml(item.case_uid)}">${escapeHtml(item.case_uid)} · ${escapeHtml(item.signature || item.detection_type || "case")}</option>
+  `).join("");
+}
+
+async function queueComparison(event) {
+  event.preventDefault();
+  const profileUids = [...els.profileOptions.querySelectorAll("input:checked")].map((input) => input.value);
+  if (!profileUids.length) {
+    els.newStatus.textContent = "Select at least one active profile.";
+    return;
+  }
+  try {
+    const queued = await sendJson(
+      `/api/cases/${encodeURIComponent(els.newCase.value)}/ai-comparison`,
+      "POST",
+      { profile_uids: profileUids }
+    );
+    els.newStatus.textContent = `${queued.comparison_uid} queued. The background worker will run ${queued.expected_candidate_count} requests sequentially.`;
+    await refresh();
+  } catch (error) {
+    els.newStatus.textContent = error.message;
+  }
+}
+
 els.runsList.addEventListener("click", (event) => {
   const button = event.target.closest("[data-run]");
   if (!button) return;
@@ -391,4 +437,8 @@ els.filter.addEventListener("change", () => {
   state.filter = els.filter.value;
   renderRuns();
 });
-refresh();
+els.newForm.addEventListener("submit", queueComparison);
+els.selectAll.addEventListener("click", () => {
+  els.profileOptions.querySelectorAll("input").forEach((input) => { input.checked = true; });
+});
+Promise.all([loadComparisonOptions(), refresh()]).catch((error) => setStatus("error", error.message));

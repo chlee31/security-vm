@@ -37,11 +37,11 @@ These values remain design choices. Experimental work should measure missed corr
 - Python validates the response and maps it to `log_only`, `human_review`, or `escalate`.
 - Missing or invalid classifications, Low-confidence conclusions, and materially disputed sensor findings are forced to Analyst Review Required.
 - Historical score columns and tables may remain only in upgraded SQLite databases so migrations are non-destructive. New installations omit them, and compatibility values in older databases are never exposed through the API or prompt.
-- Removed heuristic MITRE ATT&CK mapping. Investigation context now comes from observed Suricata and Zeek records, registered-IP roles, and threat-intelligence evidence.
+- Removed heuristic MITRE ATT&CK mapping. Investigation context now comes from observed Suricata and Zeek records and threat-intelligence evidence.
 
-## Registered IP Terminology
+## Retired Inventory
 
-- Updated visible dashboard labels to use **registered IP** and **assigned role**.
+- Removed the registered-IP and asset-inventory interface from the active evaluated workflow.
 - Retained the historical SQLite `assets` table name for migration compatibility; numerical importance is no longer collected or used.
 
 ## Legacy and Security Boundaries

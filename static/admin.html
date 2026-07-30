@@ -19,7 +19,6 @@
           <span class="divider"></span>
           <a class="nav-link" href="/outcome?type=all">Cases</a>
           <span class="divider"></span>
-          <a class="nav-link" href="/evaluation">Evaluation Lab</a>
           <span class="divider"></span>
           <a class="nav-link" href="/">Dashboard</a>
         </div>
@@ -40,6 +39,8 @@
             </div>
             <div class="runtime-console-actions">
               <span id="runtime-console-state" class="status-pill">Loading</span>
+              <button id="cancel-all-ai" class="danger-button" type="button">Stop all AI</button>
+              <button id="resume-ai-worker" type="button" hidden>Resume AI</button>
               <button id="refresh-runtime-console" type="button">Refresh</button>
               <button id="pause-runtime-console" type="button">Pause</button>
             </div>
@@ -160,54 +161,6 @@
         <section class="panel" data-admin-tab-panel="settings">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Network Context</p>
-              <h2>Registered IP Addresses</h2>
-            </div>
-          </div>
-          <form id="admin-asset-form" class="form-grid admin-form">
-            <input id="admin-asset-id" name="id" type="hidden">
-            <label class="field">
-              <span>Machine IP address</span>
-              <input id="admin-asset-ip" name="ip_address" type="text" placeholder="Example: 192.168.11.50" required>
-            </label>
-            <label class="field">
-              <span>Machine name</span>
-              <input id="admin-asset-name" name="name" type="text" placeholder="Example: Marino's Desktop" required>
-            </label>
-            <label class="field">
-              <span>Assigned role</span>
-              <select id="admin-asset-type" name="device_type" required></select>
-              <small>Describe the machine's expected function on the internal network.</small>
-            </label>
-            <label class="field">
-              <span>Network interface</span>
-              <input id="admin-asset-interface" name="network_interface" type="text" placeholder="Example: ens37">
-              <small>Use the internal network interface for lab machines.</small>
-            </label>
-            <label class="field">
-              <span>Status</span>
-              <select id="admin-asset-status" name="status">
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Role details</span>
-              <input id="admin-asset-function" name="function" type="text" placeholder="Example: Windows test endpoint">
-            </label>
-            <label class="field wide-field">
-              <span>Notes</span>
-              <textarea id="admin-asset-notes" name="notes" placeholder="Example: Runs Atomic Red Team tests from ens37"></textarea>
-            </label>
-            <button id="admin-asset-submit" class="wide-button" type="submit">Add IP Address</button>
-            <button id="admin-asset-cancel" class="wide-button" type="button">Cancel Edit</button>
-          </form>
-          <div id="admin-assets" class="list admin-list"></div>
-        </section>
-
-        <section class="panel" data-admin-tab-panel="settings">
-          <div class="panel-head">
-            <div>
               <p class="eyebrow">Host Setup</p>
               <h2>Downloaded Tools</h2>
             </div>
@@ -237,6 +190,6 @@
       </section>
     </main>
 
-    <script src="/static/admin.js?v=20260727-runtime-console"></script>
+    <script src="/static/admin.js?v=20260730-stale-ai-reconcile"></script>
   </body>
 </html>

@@ -19,7 +19,6 @@
           <span class="divider"></span>
           <a class="nav-link" href="/outcome?type=all">Cases</a>
           <span class="divider"></span>
-          <a class="nav-link" href="/evaluation">Evaluation Lab</a>
           <span class="divider"></span>
           <a class="nav-link" href="/">Dashboard</a>
         </div>
@@ -27,7 +26,7 @@
 
       <section class="case-actions" aria-label="Case actions">
         <button id="inv-reassess" type="button">Reassess Case</button>
-        <button id="inv-compare" type="button">Run Three-Model Comparison</button>
+        <button id="inv-compare" type="button">Queue Model Comparison</button>
         <button id="inv-refresh-vt" type="button">Refresh VirusTotal</button>
         <button id="inv-refresh" type="button">Refresh Evidence</button>
         <span id="inv-action-status" class="connection-status">Case evidence loaded on request.</span>
@@ -74,7 +73,7 @@
               <p class="eyebrow">AI Comparison</p>
               <h2>All Model Responses</h2>
             </div>
-            <small class="panel-hint">Sequential requests · responses anonymized as A, B, and C</small>
+            <small class="panel-hint">Sequential requests · responses use anonymous research labels</small>
           </summary>
           <div id="inv-comparison"></div>
         </details>
@@ -141,7 +140,7 @@
           <summary class="panel-head">
             <div>
               <p class="eyebrow">Enrichment</p>
-              <h2>Registered IP Roles, Threat Intel &amp; VirusTotal</h2>
+              <h2>Threat Intelligence &amp; VirusTotal</h2>
             </div>
           </summary>
           <div id="inv-intel" class="workbook-list"></div>

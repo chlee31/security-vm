@@ -18,18 +18,6 @@ const els = {
   comparisonProfiles: document.querySelector("#ai-comparison-profiles"),
   comparisonStatus: document.querySelector("#ai-comparison-status"),
   testAiModel: document.querySelector("#test-ai-model-admin"),
-  assetForm: document.querySelector("#admin-asset-form"),
-  assetId: document.querySelector("#admin-asset-id"),
-  assetIp: document.querySelector("#admin-asset-ip"),
-  assetName: document.querySelector("#admin-asset-name"),
-  assetType: document.querySelector("#admin-asset-type"),
-  assetInterface: document.querySelector("#admin-asset-interface"),
-  assetStatus: document.querySelector("#admin-asset-status"),
-  assetFunction: document.querySelector("#admin-asset-function"),
-  assetNotes: document.querySelector("#admin-asset-notes"),
-  assetSubmit: document.querySelector("#admin-asset-submit"),
-  assetCancel: document.querySelector("#admin-asset-cancel"),
-  assets: document.querySelector("#admin-assets"),
   tools: document.querySelector("#admin-tools"),
   pythonPackages: document.querySelector("#admin-python-packages"),
   paths: document.querySelector("#admin-paths"),
@@ -42,12 +30,14 @@ const els = {
   runtimeEvents: document.querySelector("#runtime-event-stream"),
   refreshRuntimeConsole: document.querySelector("#refresh-runtime-console"),
   pauseRuntimeConsole: document.querySelector("#pause-runtime-console"),
+  cancelAllAi: document.querySelector("#cancel-all-ai"),
+  resumeAiWorker: document.querySelector("#resume-ai-worker"),
   runtimeComponents: document.querySelector("#runtime-components"),
   tabButtons: Array.from(document.querySelectorAll("[data-admin-tab-button]")),
   tabPanels: Array.from(document.querySelectorAll("[data-admin-tab-panel]"))
 };
 
-let state = { assets: [], types: [], network: {}, aiProfiles: [], activeProfileUid: "", comparisonProfileUids: [], threatIntelProviders: [] };
+let state = { network: {}, aiProfiles: [], activeProfileUid: "", comparisonProfileUids: [], threatIntelProviders: [] };
 const initialTab = window.location.hash.replace("#", "");
 let activeAdminTab = ["settings", "threat-intel", "runtime"].includes(initialTab) ? initialTab : "settings";
 let runtimeConsoleTimer = null;
@@ -138,6 +128,8 @@ function renderRuntimeConsole(data) {
   const active = Number(data.active_requests || 0);
   els.runtimeConsoleState.className = `status-pill ${active ? "active" : ""}`;
   els.runtimeConsoleState.textContent = active ? `${active} active` : "Idle";
+  els.cancelAllAi.hidden = !active && !data.ai_worker_paused;
+  els.resumeAiWorker.hidden = !data.ai_worker_paused;
   els.runtimeComponents.innerHTML = components.map((item) => `
     <article class="runtime-component ${escapeHtml(item.status)}">
       <span class="runtime-component-dot"></span>
@@ -159,7 +151,7 @@ function renderRuntimeConsole(data) {
       </div>
       <p>${escapeHtml(item.message)}</p>
       <div class="runtime-metadata">
-        ${item.case_uid ? `<a href="/investigation?case=${encodeURIComponent(item.case_uid)}" target="_blank" rel="noopener">${escapeHtml(item.case_uid)}</a>` : ""}
+        ${item.case_uid && item.case_available ? `<a href="/investigation?case=${encodeURIComponent(item.case_uid)}" target="_blank" rel="noopener">${escapeHtml(item.case_uid)}</a>` : item.case_uid ? `<span>${escapeHtml(item.case_uid)} · case no longer stored</span>` : ""}
         ${item.comparison_uid ? `<span>${escapeHtml(item.comparison_uid)}</span>` : ""}
         ${item.prompt_chars != null ? `<span>${Number(item.prompt_chars).toLocaleString()} prompt chars</span>` : ""}
         ${item.estimated_tokens != null ? `<span>~${Number(item.estimated_tokens).toLocaleString()} tokens</span>` : ""}
@@ -167,6 +159,7 @@ function renderRuntimeConsole(data) {
         ${item.parse_status ? `<span>${escapeHtml(label(item.parse_status))}</span>` : ""}
       </div>
       ${item.error_message ? `<pre class="runtime-error">${escapeHtml(item.error_message)}</pre>` : ""}
+      ${item.status === "active" ? `<button type="button" class="runtime-stop" data-cancel-ai="${escapeHtml(item.activity_uid)}">Stop request</button>` : ""}
     </article>
   `).join("") || `<div class="empty">No AI requests have been recorded since this feature was enabled.</div>`;
   els.runtimeEvents.innerHTML = events.map((event) => `
@@ -352,40 +345,6 @@ function renderAiProfiles() {
   `;
 }
 
-function renderAssetTypes(types) {
-  const current = els.assetType.value;
-  els.assetType.innerHTML = types.map((type) => `
-    <option value="${type.value}">
-      ${type.label}
-    </option>
-  `).join("");
-  if (current) els.assetType.value = current;
-}
-
-function renderAssets(payload) {
-  state.assets = payload.items || [];
-  state.types = payload.types || [];
-  renderAssetTypes(state.types);
-
-  els.assets.innerHTML = state.assets.map((asset) => `
-    <div class="list-item asset-item admin-asset ${asset.status === "inactive" ? "inactive" : "active"}">
-      <div class="row tight">
-        <strong>${asset.name}</strong>
-        <span class="status-pill ${asset.status === "inactive" ? "inactive" : "active"}">${asset.status}</span>
-      </div>
-      <p>${asset.ip_address} · ${label(asset.device_type)} · ${asset.network_interface || state.network.internal_interface || "ens37"}</p>
-      <small>${asset.function || "No role details"}${asset.notes ? ` · ${asset.notes}` : ""}</small>
-      <div class="asset-admin-actions">
-        <button class="text-button" type="button" data-edit-asset="${asset.id}">Edit</button>
-        <button class="text-button" type="button" data-toggle-asset="${asset.id}">
-          ${asset.status === "inactive" ? "Reactivate" : "Deactivate"}
-        </button>
-        <button class="text-button danger-button" type="button" data-delete-asset="${asset.id}">Delete</button>
-      </div>
-    </div>
-  `).join("") || `<div class="empty">No IP addresses registered yet.</div>`;
-}
-
 function renderTools(tools) {
   els.tools.innerHTML = tools.map((tool) => `
     <div class="list-item tool-item ${tool.status || (tool.installed ? "ready" : "missing")}">
@@ -518,7 +477,6 @@ async function refresh() {
     const settings = await getJson("/api/admin/settings");
     state.network = settings.network || {};
     renderAiModel(settings);
-    renderAssets(settings.assets || {});
     renderThreatIntel(settings.threat_intel || {});
     renderTools(settings.tools || []);
     renderPythonPackages(settings.python_packages || []);
@@ -528,66 +486,6 @@ async function refresh() {
     els.updated.textContent = "Admin API error";
     setStatus(els.aiModelStatus, "error", error.message);
   }
-}
-
-function assetPayloadFromForm() {
-  return {
-    ip_address: els.assetIp.value,
-    name: els.assetName.value,
-    device_type: els.assetType.value,
-    network_interface: els.assetInterface.value,
-    status: els.assetStatus.value,
-    function: els.assetFunction.value,
-    notes: els.assetNotes.value
-  };
-}
-
-function resetAssetForm() {
-  els.assetForm.reset();
-  els.assetId.value = "";
-  els.assetSubmit.textContent = "Add IP Address";
-  els.assetInterface.placeholder = state.network.internal_interface || "ens37";
-}
-
-function editAsset(assetId) {
-  const asset = state.assets.find((item) => String(item.id) === String(assetId));
-  if (!asset) return;
-  els.assetId.value = asset.id;
-  els.assetIp.value = asset.ip_address || "";
-  els.assetName.value = asset.name || "";
-  els.assetType.value = asset.device_type || "unknown";
-  els.assetInterface.value = asset.network_interface || "";
-  els.assetStatus.value = asset.status || "active";
-  els.assetFunction.value = asset.function || "";
-  els.assetNotes.value = asset.notes || "";
-  els.assetSubmit.textContent = "Save IP Address Changes";
-  els.assetForm.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-async function toggleAssetStatus(assetId) {
-  const asset = state.assets.find((item) => String(item.id) === String(assetId));
-  if (!asset) return;
-  const nextStatus = asset.status === "inactive" ? "active" : "inactive";
-  await sendJson(`/api/admin/assets/${asset.id}`, "PUT", {
-    ip_address: asset.ip_address,
-    name: asset.name,
-    device_type: asset.device_type,
-    network_interface: asset.network_interface,
-    status: nextStatus,
-    function: asset.function || "",
-    notes: asset.notes || ""
-  });
-  await refresh();
-}
-
-async function deleteAsset(assetId) {
-  const asset = state.assets.find((item) => String(item.id) === String(assetId));
-  const name = asset?.name || `IP record ${assetId}`;
-  const confirmed = window.confirm(`Delete ${name} permanently? Use inactive status instead if you need to retain its role history.`);
-  if (!confirmed) return;
-  await sendJson(`/api/admin/assets/${assetId}`, "DELETE");
-  if (els.assetId.value === String(assetId)) resetAssetForm();
-  await refresh();
 }
 
 async function saveAiModel() {
@@ -702,26 +600,6 @@ els.newProfile.addEventListener("click", async () => {
 
 els.comparisonForm.addEventListener("submit", saveComparisonProfiles);
 
-els.assetForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const assetId = els.assetId.value;
-  try {
-    if (assetId) {
-      await sendJson(`/api/admin/assets/${assetId}`, "PUT", assetPayloadFromForm());
-    } else {
-      const payload = assetPayloadFromForm();
-      delete payload.status;
-      await sendJson("/api/admin/assets", "POST", payload);
-    }
-    resetAssetForm();
-    await refresh();
-  } catch (error) {
-    window.alert(error.message);
-  }
-});
-
-els.assetCancel.addEventListener("click", resetAssetForm);
-
 els.threatIntelForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -774,6 +652,31 @@ els.pauseRuntimeConsole.addEventListener("click", () => {
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
+  const cancelActivityUid = event.target.dataset.cancelAi;
+  if (cancelActivityUid) {
+    event.target.disabled = true;
+    sendJson(`/api/admin/ai-requests/${encodeURIComponent(cancelActivityUid)}/cancel`, "POST")
+      .then(refreshRuntimeConsole)
+      .catch((error) => window.alert(error.message))
+      .finally(() => { event.target.disabled = false; });
+    return;
+  }
+  if (event.target === els.cancelAllAi) {
+    event.target.disabled = true;
+    sendJson("/api/admin/ai-requests/cancel-all", "POST")
+      .then(refreshRuntimeConsole)
+      .catch((error) => window.alert(error.message))
+      .finally(() => { event.target.disabled = false; });
+    return;
+  }
+  if (event.target === els.resumeAiWorker) {
+    event.target.disabled = true;
+    sendJson("/api/admin/ai-worker/resume", "POST")
+      .then(refreshRuntimeConsole)
+      .catch((error) => window.alert(error.message))
+      .finally(() => { event.target.disabled = false; });
+    return;
+  }
   const tabButton = event.target.closest("[data-admin-tab-button]");
   if (tabButton) {
     setAdminTab(tabButton.dataset.adminTabButton);
@@ -819,16 +722,6 @@ document.addEventListener("click", (event) => {
       .catch((error) => setStatus(els.threatIntelStatus, "error", error.message))
       .finally(() => { event.target.disabled = false; });
     return;
-  }
-  const assetId = event.target.dataset.editAsset;
-  if (assetId) editAsset(assetId);
-  const toggleId = event.target.dataset.toggleAsset;
-  if (toggleId) {
-    toggleAssetStatus(toggleId).catch((error) => window.alert(error.message));
-  }
-  const deleteId = event.target.dataset.deleteAsset;
-  if (deleteId) {
-    deleteAsset(deleteId).catch((error) => window.alert(error.message));
   }
   const editProfileUid = event.target.dataset.editAiProfile;
   if (editProfileUid) {

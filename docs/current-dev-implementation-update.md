@@ -78,9 +78,9 @@ Comparison requests use temperature `0` and seed `42` to reduce avoidable
 variation. Hashes allow the dashboard and exports to prove whether candidates
 received identical input.
 
-## Three-Model Comparison
+## Multi-Model Comparison
 
-The three model requests run sequentially so multiple local models are not
+The selected model requests run sequentially so multiple local models are not
 loaded simultaneously. A comparison lock prevents overlapping runs.
 
 The application records progress after every candidate attempt and reports:
@@ -91,12 +91,12 @@ The application records progress after every candidate attempt and reports:
 - candidate provenance; and
 - elapsed request time.
 
-Candidates are presented as Response A, B, and C before review. Model identity
-is revealed after the analyst selects a winner.
+Candidates are presented with dynamic labels such as R01 and R02 before review.
+Model identity is revealed after the analyst records a review outcome.
 
 Analysts can:
 
-- select A, B, or C;
+- select any available anonymous response;
 - reject all candidates;
 - record a tie;
 - add review notes;
@@ -133,7 +133,7 @@ classification, confidence, hashes, review history, and timing.
 
 Timing fields include:
 
-- Response A, B, and C milliseconds and seconds;
+- per-response elapsed milliseconds and seconds;
 - selected-response time;
 - total and average successful model time;
 - comparison wall-clock time; and
@@ -235,7 +235,7 @@ assessment so Suricata and Zeek evidence can be stored and checkpointed
 without waiting for a language model. Python constructs a normalized and
 auditable evidence package, compacts repeated findings for model input, and
 validates returned claims against supplied sensor and threat-intelligence
-evidence. A sequential three-model workflow allows analysts to review
+evidence. A sequential multi-model workflow allows analysts to review
 anonymized responses, select or reject candidates, reopen decisions, and
 export response-quality and timing data. A selected response may become the
 visible case explanation while original sensor records, Python-derived facts,

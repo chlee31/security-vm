@@ -70,14 +70,6 @@ class QualitativePolicyTests(unittest.TestCase):
                         "providers": [{"source": "otx", "reputation": "benign"}],
                     }
                 },
-                "asset_context": {
-                    "matched_asset": {
-                        "ip_address": "192.168.11.50",
-                        "name": "Test workstation",
-                        "device_type": "desktop",
-                        "asset_score": 10,
-                    }
-                },
             },
         )
         lower = prompt.lower()
@@ -85,6 +77,7 @@ class QualitativePolicyTests(unittest.TestCase):
         self.assertIn("zeek", lower)
         self.assertIn("threat_intel", lower)
         self.assertNotIn("asset_score", lower)
+        self.assertNotIn("registered_ip_role_context", lower)
         self.assertNotIn("python_initial_score", lower)
         self.assertNotIn("risk_adjustment", lower)
         self.assertNotIn("final_score", lower)

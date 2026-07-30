@@ -26,13 +26,14 @@ from app.config import load_config
 from app.correlator import Correlator
 from app.dashboard import create_app
 from app.database import (
-    asset_context_for_alert,
+    ai_worker_paused,
     connect,
     detection_by_id,
     detections_without_ai_reports,
     find_correlated_detection,
     fuse_detection,
     init_db,
+    interrupt_active_ai_requests,
     insert_alert,
     insert_app_event,
     insert_detection,
@@ -54,7 +55,15 @@ from app.database import (
 )
 from app.decision_engine import decide
 from app.normalizer import detection_type_from_alert, normalize_suricata_event
-from app.ai_client import ask_ai_model, build_prompt_audit, check_ai_model, model_metadata, model_run_id
+from app.ai_client import (
+    AIModelRequestCancelled,
+    ask_ai_model,
+    build_prompt_audit,
+    check_ai_model,
+    model_metadata,
+    model_run_id,
+)
+from app.ai_comparison import run_experiment_worker
 from app.suricata_reader import follow_file, permission_help
 from app.sensor_fusion import suricata_finding, zeek_detection, zeek_finding
 from app.threat_intel import (
@@ -350,18 +359,6 @@ def ensure_ai_report_metadata(config, alert, report):
     return report
 
 
-def apply_asset_context(detection, asset_context):
-    """Attach registered-IP role context to a detection before prompt building."""
-    detection["asset_context"] = asset_context
-    return detection
-
-
-def attach_asset_context(detection, asset_context):
-    """Compatibility alias for attaching registered-IP role context."""
-    detection["asset_context"] = asset_context
-    return detection
-
-
 def assess_detection(conn, config_path, alert, detection, alert_id, detection_id):
     """Run the complete initial assessment for one correlated detection.
 
@@ -417,6 +414,15 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
                 "model_run_id": ai_report.get("model_run_id"),
             },
         )
+    except AIModelRequestCancelled:
+        insert_app_event(
+            conn,
+            "warning",
+            "ai_model",
+            f"AI analysis cancelled for detection {detection_id}",
+            {"detection_id": detection_id, "case_uid": detection.get("case_uid")},
+        )
+        return None
     except requests.RequestException as exc:
         prompt_audit = getattr(exc, "audit", None)
         if not prompt_audit:
@@ -545,9 +551,22 @@ def run_ingest(config_path):
             continue
 
         alert_id = insert_alert(conn, alert)
-        if alert.get("_duplicate") and sensor_finding_detection_id(conn, "suricata", alert_id):
-            record.acknowledge()
-            continue
+        linked_detection_id = sensor_finding_detection_id(
+            conn, "suricata", alert_id
+        )
+        if alert.get("_duplicate") and linked_detection_id:
+            if detection_by_id(conn, linked_detection_id):
+                record.acknowledge()
+                continue
+            conn.execute(
+                """
+                DELETE FROM sensor_findings
+                WHERE detection_id = ? AND sensor = 'suricata'
+                  AND sensor_event_id = ?
+                """,
+                (linked_detection_id, alert_id),
+            )
+            conn.commit()
         alert["alert_id"] = alert_id
         alert["detection_type"] = detection_type_from_alert(alert)
         match, method, confidence = find_correlated_detection(
@@ -562,10 +581,26 @@ def run_ingest(config_path):
             detection_id = match["id"]
             insert_sensor_finding(conn, detection_id, suricata_finding(alert_id, alert))
             detection = fuse_detection(conn, detection_id, alert, method, confidence)
-            detection = attach_asset_context(detection, asset_context_for_alert(conn, alert))
+            if detection is None:
+                # A dashboard reset can remove a matched case between lookup
+                # and fusion. Recreate the case so this durable alert is not
+                # acknowledged with an orphaned sensor-finding link.
+                conn.execute(
+                    """
+                    DELETE FROM sensor_findings
+                    WHERE detection_id = ? AND sensor = 'suricata'
+                      AND sensor_event_id = ?
+                    """,
+                    (detection_id, alert_id),
+                )
+                conn.commit()
+                detection = correlator.correlate(alert, alert_id)
+                detection_id = insert_detection(conn, detection)
+                insert_sensor_finding(
+                    conn, detection_id, suricata_finding(alert_id, alert)
+                )
         else:
             detection = correlator.correlate(alert, alert_id)
-            detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
             detection_id = insert_detection(conn, detection)
             insert_sensor_finding(conn, detection_id, suricata_finding(alert_id, alert))
         # The required AI worker picks up this durable, unassessed case. Keeping
@@ -638,13 +673,13 @@ def run_zeek_ingest(config_path):
             if not event.get(key) and flow.get(key) is not None:
                 event[key] = flow[key]
         runtime_config = load_config(config_path)
-        alert, detection = zeek_detection(
+        alert, initial_detection = zeek_detection(
             event,
             single_sensor_strength=runtime_config.get("correlation", {})
             .get("strengths", {})
             .get("single_sensor", 0.5),
         )
-        event["detection_type"] = detection.get("detection_type")
+        event["detection_type"] = initial_detection.get("detection_type")
         match, method, confidence = find_correlated_detection(
             conn,
             event,
@@ -657,9 +692,23 @@ def run_zeek_ingest(config_path):
             detection_id = match["id"]
             insert_sensor_finding(conn, detection_id, zeek_finding(event_id, event))
             detection = fuse_detection(conn, detection_id, event, method, confidence)
-            detection = attach_asset_context(detection, asset_context_for_alert(conn, alert))
+            if detection is None:
+                conn.execute(
+                    """
+                    DELETE FROM sensor_findings
+                    WHERE detection_id = ? AND sensor = 'zeek'
+                      AND sensor_event_id = ?
+                    """,
+                    (detection_id, event_id),
+                )
+                conn.commit()
+                detection = initial_detection
+                detection_id = insert_detection(conn, detection)
+                insert_sensor_finding(
+                    conn, detection_id, zeek_finding(event_id, event)
+                )
         else:
-            detection = apply_asset_context(detection, asset_context_for_alert(conn, alert))
+            detection = initial_detection
             detection_id = insert_detection(conn, detection)
             insert_sensor_finding(conn, detection_id, zeek_finding(event_id, event))
         insert_app_event(
@@ -770,8 +819,14 @@ def run_all(
     config = load_config(config_path)
     database_path = config.get("database", {}).get("path", "security_vm.db")
     schema_conn = init_db(database_path)
+    interrupted_requests = interrupt_active_ai_requests(schema_conn)
     schema_conn.close()
     print(f"[+] Database schema ready: {database_path}", flush=True)
+    if interrupted_requests:
+        print(
+            f"[+] Reconciled {interrupted_requests} AI request(s) interrupted by the previous shutdown",
+            flush=True,
+        )
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         eve_path = Path(config.get("suricata", {}).get("eve_json_path", "/var/log/suricata/eve.json"))
         try:
@@ -820,6 +875,11 @@ def run_all(
     commands.append((
         "ai-worker",
         [sys.executable, "-m", "app.main", "ai-worker", "--config", config_path],
+        True,
+    ))
+    commands.append((
+        "experiment-worker",
+        [sys.executable, "-m", "app.main", "experiment-worker", "--config", config_path],
         True,
     ))
     threat_worker_enabled = any(
@@ -1045,7 +1105,6 @@ def run_ai_backfill(config_path, limit):
             "time_window_seconds": row.get("time_window_seconds"),
             "status": row.get("status"),
         }
-        detection = attach_asset_context(detection, asset_context_for_alert(conn, alert))
         evidence_context = build_ai_evidence_context(
             conn,
             config,
@@ -1185,7 +1244,7 @@ def assessment_inputs_from_row(conn, row):
         "status": row.get("status"),
         "case_uid": row.get("case_uid"),
     }
-    return alert, attach_asset_context(detection, asset_context_for_alert(conn, alert))
+    return alert, detection
 
 
 def run_ai_worker(config_path, poll_seconds=1.0, correlation_delay_seconds=5):
@@ -1202,13 +1261,12 @@ def run_ai_worker(config_path, poll_seconds=1.0, correlation_delay_seconds=5):
     )
     try:
         while True:
-            runtime_config = load_config(config_path)
-            metadata = model_metadata(runtime_config)
+            if ai_worker_paused(conn):
+                time.sleep(max(0.1, poll_seconds))
+                continue
             rows = detections_without_ai_reports(
                 conn,
                 limit=1,
-                model_identity=metadata["model_identity"],
-                ai_profile_uid=metadata.get("ai_profile_uid"),
                 minimum_age_seconds=correlation_delay_seconds,
             )
             if not rows:
@@ -1259,6 +1317,11 @@ def main():
     ai_backfill.add_argument("--limit", default=50, type=int)
     ai_worker = sub.add_parser("ai-worker", help="Assess queued cases without blocking sensor ingestion")
     ai_worker.add_argument("--config", default="config.yaml")
+    experiment_worker = sub.add_parser(
+        "experiment-worker",
+        help="Run queued baseline comparisons and controlled LLM experiments",
+    )
+    experiment_worker.add_argument("--config", default="config.yaml")
 
     args = parser.parse_args()
     if args.command == "ingest":
@@ -1276,6 +1339,8 @@ def main():
         run_ai_backfill(args.config, args.limit)
     elif args.command == "ai-worker":
         run_ai_worker(args.config)
+    elif args.command == "experiment-worker":
+        run_experiment_worker(args.config)
     elif args.command == "zeek-ingest":
         run_zeek_ingest(args.config)
     elif args.command == "zeek-status":

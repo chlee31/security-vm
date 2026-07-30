@@ -113,11 +113,9 @@ function profileRow(title, body, meta = "") {
 
 function renderProfile(data) {
   const profile = data.profile || {};
-  const asset = data.asset;
   const providers = data.threat_intel || [];
   els.profile.innerHTML = [
     profileRow("Local classification", `${profile.location || "unknown"} · ${profile.scope || "unknown"}`, profile.reason || ""),
-    profileRow("Registered role", asset ? `${asset.name} · ${label(asset.device_type)}` : "No registered role", asset ? `${asset.function || "No role details"} · ${asset.network_interface || "unknown interface"}` : "Register this internal IP address in Admin if it needs role context."),
     ...providers.map((provider) => profileRow(
       provider.label || label(provider.name),
       provider.result === "not_active" ? "Not active" : provider.result === "matched" ? `${provider.match_count} matching indicator${provider.match_count === 1 ? "" : "s"}` : "Active · no match",

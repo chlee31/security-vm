@@ -400,12 +400,23 @@ def model_run_id(metadata, alert):
             str(alert.get("signature") or ""),
         ]
     )
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(utf8_safe_text(seed).encode("utf-8")).hexdigest()[:16]
 
 
 def text_sha256(value):
     """Hash text exactly as Python saw it for later integrity comparison."""
-    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+    return hashlib.sha256(utf8_safe_text(value).encode("utf-8")).hexdigest()
+
+
+def utf8_safe_text(value):
+    """Replace isolated Unicode surrogates that cannot be sent as UTF-8.
+
+    Sensor records can contain malformed text copied from packet metadata.
+    Replacement is deterministic and happens before hashing, byte counting,
+    storage, and transmission so the audit remains proof of the exact prompt
+    delivered to the model.
+    """
+    return str(value or "").encode("utf-8", errors="replace").decode("utf-8")
 
 
 def _evidence_source_map(package):
@@ -479,7 +490,6 @@ def _evidence_source_map(package):
             "source": "threat_intel_sources, threat_intel_indicators, threat_intel_lookups, and threat_intel_usage",
             "matched_records": intel_records,
         },
-        "registered_ip_role_context": {"source": "registered IP role records in assets"},
     }
 
 
@@ -495,14 +505,6 @@ def _build_prompt_components(alert, detection, evidence_context=None):
     Returns the final text plus the package, omission manifest, and source map
     so the database can prove what was sent and where each value originated.
     """
-    asset_context = detection.get("asset_context") or {}
-    role_fields = ("ip_address", "name", "device_type", "network_interface", "function", "notes")
-
-    def role_context(value):
-        if not isinstance(value, dict):
-            return None
-        return {key: value.get(key) for key in role_fields if value.get(key) not in (None, "")}
-
     # Encryption is inferred only to set visibility expectations. It never
     # claims that payload decryption occurred.
     encrypted_ports = {22, 443, 853, 8443, 1194, 500, 4500, 51820}
@@ -545,11 +547,6 @@ def _build_prompt_components(alert, detection, evidence_context=None):
             "correlation_rule_strength": detection.get("correlation_confidence", 0.5),
             "community_id": detection.get("community_id"),
             "repeated_activity": model_evidence.get("repeated_activity", {}),
-        },
-        "registered_ip_role_context": {
-            "match": asset_context.get("asset_match", "none"),
-            "source_ip_role": role_context(asset_context.get("src_asset")),
-            "destination_ip_role": role_context(asset_context.get("dest_asset")),
         },
         "encrypted_traffic_context": {
             "likely_encrypted_or_tunneled": likely_encrypted,
@@ -602,17 +599,12 @@ Allowed values:
 
 Classification guidance:
 - Safe: evidence supports benign or routine activity with Medium or High confidence. Usually recommend log_only.
-- Analyst Review Required: suspicious, ambiguous, incomplete context, Low confidence, or activity involving important assets. Usually recommend human_review.
+- Analyst Review Required: suspicious, ambiguous, incomplete context, or Low confidence. Usually recommend human_review.
 - Dangerous: high-confidence malicious behavior, clear attack pattern, or severe risk to a high-value asset. Recommend escalate.
 - A Low-confidence conclusion must always be Analyst Review Required. Never return Safe or Dangerous with Low confidence.
 - Safe and Dangerous require concrete supporting records or fields named in evidence_review.evidence_used. If the evidence does not support either conclusion, choose Analyst Review Required.
 - Never classify traffic as Dangerous merely because it is encrypted, unfamiliar, repeated, or absent from threat-intelligence feeds.
 - Never classify traffic as Safe merely because threat-intelligence providers returned no match.
-
-Asset guidance:
-- registered_ip_role_context comes from analyst-defined SQLite inventory.
-- Use the registered name, device type, function, interface, and notes as descriptive business context.
-- A registered role may affect what behavior is expected, but it is not a numerical input and cannot prove maliciousness by itself.
 
 Evidence rules:
 - sensor_fusion in evidence_context is authoritative about which sensors produced findings. Evaluate every finding independently and then explain whether they support the same security conclusion.
@@ -622,7 +614,7 @@ Evidence rules:
 - correlation_rule_strength is a configured matching value, not a calibrated probability, risk score, or model confidence.
 - Compatible findings can describe different layers of the same behavior, such as a Suricata C2 signature plus a Zeek certificate anomaly. Name both sensors and their findings in the reason.
 - Treat zeek_context notice rows as policy findings. Treat conn, dns, ssl, http, files, ssh, and x509 rows as supporting metadata. A weird row alone is generally context, not proof of malicious activity.
-- If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence, asset context, or Zeek metadata, choose Analyst Review Required and describe the disputed evidence.
+- If findings are materially inconsistent and the conflict cannot be resolved with threat intelligence or Zeek metadata, choose Analyst Review Required and describe the disputed evidence.
 - Treat observed DNS tunneling, port scans, repeated connections, or many destination ports according to the supplied sensor evidence.
 - Treat common update traffic, local/private broadcast noise, and known routine client behavior as lower risk unless correlated volume is high.
 - Use threat_intel in evidence_context when present. provider_status describes whether each source was active and refreshed; each observable's providers list describes matched, no_match, not_active, or unavailable results. Treat matches from independent sources as corroborating evidence and consider confidence, category, and freshness.
@@ -631,11 +623,11 @@ Evidence rules:
 - VirusTotal is post-AI verification. During an initial comparison it will normally be not requested; state that clearly and do not imply it was checked. During reassessment, interpret only the stored VirusTotal evidence supplied by Python.
 - The explanation must explicitly cover who, what, when, where, why, and how. Distinguish observed facts from interpretations and uncertainty.
 - Make next_steps specific to this case and order them by investigative value. Each step must name the evidence or observable to inspect and what question the analyst should answer. Do not return generic advice such as only "monitor traffic" or "investigate further."
-- Good next steps include checking a named Zeek log field, validating a named Suricata signature, reviewing a specific IP/domain/certificate/hash in the supplied threat-intelligence evidence, comparing recurrence within the supplied time window, or validating whether the named registered IP role normally produces this behavior.
+- Good next steps include checking a named Zeek log field, validating a named Suricata signature, reviewing a specific IP/domain/certificate/hash in the supplied threat-intelligence evidence, or comparing recurrence within the supplied time window.
 - Use repeated_activity and zeek_context.summary to explain recurrence, duration, byte counts, DNS repetition, TLS server names, and periodicity only when those fields contain evidence.
 - Do not claim access to decrypted payloads, endpoint processes, users, files, or host activity unless the supplied evidence explicitly contains that information.
-- If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, asset context, correlation, and sensor metadata.
-- For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, unusual for the asset, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent but uncertainty remains, prefer Analyst Review Required. Use Safe only when supplied evidence supports routine activity with at least Medium confidence.
+- If encrypted_traffic_context.likely_encrypted_or_tunneled is true, do not claim to inspect decrypted payloads. Reason from observable metadata: source/destination, ports, DNS/TLS hints, timing, volume, reputation, correlation, and sensor metadata.
+- For possible VPN/C2 tunnels, raise concern when encrypted traffic is long-lived, repetitive, high-volume, uses VPN-like ports, goes to untrusted infrastructure, or has suspicious threat intel. If those signals are absent but uncertainty remains, prefer Analyst Review Required. Use Safe only when supplied evidence supports routine activity with at least Medium confidence.
 - If context is missing, prefer Analyst Review Required with Low or Medium confidence instead of guessing.
 - Do not use generic placeholders such as "Analyst", "Automated system", "Network traffic", or "Unknown" when a source, destination, timestamp, protocol, sensor, event UID, or finding name is present in the supplied package. Copy the supplied observable instead.
 - Do not identify, advertise, or speculate about the model or provider that produced the response. Python records model identity separately.
@@ -682,6 +674,7 @@ def build_prompt_audit(config, alert, detection, evidence_context=None):
     prompt, package, omissions, source_map = _build_prompt_components(
         alert, detection, evidence_context
     )
+    prompt = utf8_safe_text(prompt)
     package_text = json.dumps(package, sort_keys=True, separators=(",", ":"))
     return prompt, {
         **metadata,
@@ -718,7 +711,7 @@ def rebuild_prompt_audit(config, alert, snapshot):
     remain unique, while the prompt/evidence hashes remain identical.
     """
     metadata = model_metadata(config)
-    prompt = str(snapshot.get("prompt_text") or "")
+    prompt = utf8_safe_text(snapshot.get("prompt_text"))
     if not prompt:
         raise ValueError("Stored AI request snapshot has no prompt text")
     package = snapshot.get("evidence_package")
@@ -1176,6 +1169,10 @@ class AIModelRequestError(requests.RequestException):
         self.audit = audit
 
 
+class AIModelRequestCancelled(AIModelRequestError):
+    """The operator cancelled an in-flight model request."""
+
+
 def ask_ai_model(
     config,
     alert,
@@ -1200,6 +1197,10 @@ def ask_ai_model(
         except Exception:
             # Request observability must never alter the model decision path.
             return
+
+    def cancellation_requested():
+        checker = getattr(progress_callback, "cancellation_requested", None)
+        return bool(checker and checker())
 
     ai_model = config.get("ai_model", {})
     progress("preparing")
@@ -1235,7 +1236,7 @@ def ask_ai_model(
     estimated_input_budget = max(0, options["num_ctx"] - options["num_predict"])
     audit["audit_request_options"] = {
         "transport": "POST /api/generate",
-        "stream": False,
+        "stream": True,
         "structured_output": True,
         "response_schema_sha256": text_sha256(
             json.dumps(AI_RESPONSE_SCHEMA, sort_keys=True, separators=(",", ":"))
@@ -1274,16 +1275,42 @@ def ask_ai_model(
             json={
                 "model": model,
                 "prompt": prompt,
-                "stream": False,
+                "stream": True,
                 "format": AI_RESPONSE_SCHEMA,
                 "options": options,
             },
             timeout=timeout,
+            stream=True,
         )
         response.raise_for_status()
-        response_payload = response.json()
+        response_payload = {}
+        response_parts = []
+        streamed = False
+        for line in response.iter_lines():
+            streamed = True
+            if cancellation_requested():
+                response.close()
+                raise AIModelRequestCancelled("AI request cancelled by user", audit)
+            if not line:
+                continue
+            chunk = json.loads(line.decode("utf-8") if isinstance(line, bytes) else line)
+            response_parts.append(chunk.get("response", ""))
+            response_payload.update({key: value for key, value in chunk.items() if key != "response"})
+            if chunk.get("done"):
+                break
+        if streamed:
+            response_payload["response"] = "".join(response_parts)
+        else:
+            # Compatibility for tests and non-streaming OpenAI-compatible relays.
+            response_payload = response.json()
         if response_payload.get("error"):
             raise requests.RequestException(response_payload["error"])
+        if cancellation_requested():
+            response.close()
+            raise AIModelRequestCancelled("AI request cancelled by user", audit)
+    except AIModelRequestCancelled:
+        progress("cancelled", {"status": "cancelled"})
+        raise
     except (requests.RequestException, ValueError) as exc:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         audit["audit_status"] = "failed"

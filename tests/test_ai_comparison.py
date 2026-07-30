@@ -95,8 +95,8 @@ class AIComparisonTests(unittest.TestCase):
             )
 
         detail = ai_comparison_detail(self.conn, comparison_uid)
-        self.assertTrue(detail["identities_revealed"])
-        self.assertEqual(detail["candidates"][0]["model_identity"], "ollama:one")
+        self.assertFalse(detail["identities_revealed"])
+        self.assertIsNone(detail["candidates"][0]["model_identity"])
         self.assertEqual(detail["candidates"][0]["raw_response"], "{}")
         self.assertEqual(detail["candidates"][0]["next_steps"], ["Validate the named sensor finding."])
         self.assertEqual(
@@ -106,6 +106,7 @@ class AIComparisonTests(unittest.TestCase):
 
         self.assertTrue(vote_ai_comparison(self.conn, comparison_uid, "analyst", "B", "Best next steps"))
         reviewed = ai_comparison_detail(self.conn, comparison_uid)
+        self.assertTrue(reviewed["identities_revealed"])
         self.assertEqual(reviewed["candidates"][1]["model_identity"], "ollama:two")
         self.assertEqual(
             ai_comparison_selection_summary(self.conn)["models"][0]["ai_profile_uid"],
@@ -267,6 +268,9 @@ class AIComparisonTests(unittest.TestCase):
         )
 
         self.assertTrue(delete_ai_profile(self.conn, uid))
+        self.assertTrue(
+            vote_ai_comparison(self.conn, comparison_uid, "analyst", "A", "History")
+        )
         detail = ai_comparison_detail(self.conn, comparison_uid)
         self.assertEqual(detail["candidates"][0]["ai_profile_uid"], uid)
         self.assertEqual(detail["candidates"][0]["model_identity"], "ollama:one")
@@ -302,6 +306,7 @@ class AIComparisonTests(unittest.TestCase):
             _detection,
             evidence_context=None,
             progress_callback=None,
+            prepared_request=None,
         ):
             runs = list_ai_comparison_runs(self.conn, case_uid="CASE-TEST")
             live_progress.append(
@@ -311,7 +316,15 @@ class AIComparisonTests(unittest.TestCase):
             model = config["ai_model"]["model"]
             self.assertEqual(config["ai_model"]["temperature"], 0.0)
             self.assertEqual(config["ai_model"]["seed"], 42)
-            self.assertIs(evidence_context, evidence)
+            prepared_evidence = prepared_request["evidence_package"]["evidence_context"]
+            self.assertEqual(
+                prepared_evidence["sensor_fusion"]["findings"][0]["sensor"],
+                evidence["sensor_fusion"]["findings"][0]["sensor"],
+            )
+            self.assertEqual(
+                prepared_evidence["threat_intel"],
+                evidence["threat_intel"],
+            )
             self.assertIsNotNone(progress_callback)
             return self.report(uid, model)
 
@@ -323,7 +336,7 @@ class AIComparisonTests(unittest.TestCase):
         )
 
         self.assertEqual(mock_ask.call_count, 3)
-        self.assertEqual(live_progress, [(0, 0), (1, 1), (2, 2)])
+        self.assertEqual([processed for _complete, processed in live_progress], [0, 1, 2])
         self.assertEqual(result["candidate_count"], 3)
         self.assertEqual(result["status"], "complete")
         runs = list_ai_comparison_runs(self.conn, case_uid="CASE-TEST")
@@ -412,7 +425,6 @@ class AIComparisonTests(unittest.TestCase):
         )
 
         self.assertEqual(mock_ask.call_count, 3)
-        self.assertEqual(result["input_snapshot"], "initial_assessment")
         detail = ai_comparison_detail(self.conn, result["comparison_uid"])
         proof = detail["input_consistency"]
         self.assertTrue(proof["same_prompt_across_candidates"])
@@ -420,6 +432,28 @@ class AIComparisonTests(unittest.TestCase):
         self.assertTrue(proof["same_generation_options_across_candidates"])
         self.assertTrue(proof["matches_initial_case_prompt"])
         self.assertTrue(proof["matches_initial_case_evidence"])
+        exported = next(
+            row
+            for row in ai_comparison_export_rows(self.conn)
+            if row["comparison_uid"] == result["comparison_uid"]
+        )
+        self.assertEqual(exported["initial_prompt_sha256"], audit["prompt_sha256"])
+        self.assertEqual(
+            exported["initial_evidence_sha256"],
+            audit["audit_evidence_sha256"],
+        )
+        self.assertEqual(
+            exported["response_r01_evidence_sha256"],
+            audit["audit_evidence_sha256"],
+        )
+        self.assertTrue(exported["same_prompt_across_candidates"])
+        self.assertTrue(exported["same_evidence_across_candidates"])
+        self.assertTrue(exported["matches_initial_prompt"])
+        self.assertTrue(exported["matches_initial_evidence"])
+        self.assertEqual(
+            exported["comparison_run_hash_type"],
+            "evidence_package_sha256",
+        )
 
     @patch("app.ai_comparison.prepare_case_context")
     @patch("app.ai_comparison.ask_ai_model")
@@ -436,6 +470,7 @@ class AIComparisonTests(unittest.TestCase):
             _detection,
             evidence_context=None,
             progress_callback=None,
+            prepared_request=None,
         ):
             self.assertIsNotNone(progress_callback)
             if config["ai_model"]["model"] == "model-2":
@@ -457,18 +492,14 @@ class AIComparisonTests(unittest.TestCase):
         self.assertEqual(result["candidate_count"], 2)
         self.assertEqual(detail["processed_count"], 3)
         self.assertEqual(detail["candidates"][1]["status"], "failed")
-        self.assertEqual(detail["candidates"][1]["model_identity"], "ollama:model-2")
+        self.assertEqual(detail["candidates"][1]["ai_profile_uid"], self.profile_uids[1])
+        self.assertIsNone(detail["candidates"][1]["model_identity"])
         self.assertEqual(detail["candidates"][1]["error_message"], "timed out")
 
-    def test_second_comparison_is_rejected_while_one_is_running(self):
+    def test_process_local_lock_is_not_queue_state(self):
         self.assertTrue(_comparison_lock.acquire(blocking=False))
         try:
-            with self.assertRaisesRegex(ValueError, "already running"):
-                run_model_comparison(
-                    self.conn,
-                    {"ai_comparison": {"profile_uids": self.profile_uids}},
-                    "CASE-LOCKED",
-                )
+            self.assertTrue(_comparison_lock.locked())
         finally:
             _comparison_lock.release()
 

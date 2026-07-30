@@ -82,7 +82,7 @@ flowchart TB
         PAGE --> BLIND
     end
 
-    subgraph EVALUATION[Sequential Three-Model Evaluation]
+    subgraph EVALUATION[Sequential Multi-Model Evaluation]
         A[Model Response A]
         B[Model Response B]
         C[Model Response C]
@@ -144,7 +144,6 @@ Security VM does not calculate an operational risk score. The model returns a qu
 | Zeek `weird.log` | Context by default | Protocol anomaly that needs corroboration |
 | Cached threat intelligence | No | Supporting indicator evidence supplied to the model |
 | VirusTotal | No | Post-AI verification for Dangerous classifications |
-| Registered IP roles | No | Analyst-defined business impact and traffic direction |
 
 ## Evidence Boundaries
 

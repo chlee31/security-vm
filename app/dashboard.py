@@ -32,8 +32,12 @@ from pydantic import BaseModel
 from app.config import load_config, save_config
 from app.database import (
     ai_comparison_detail,
-    ai_comparison_export_rows,
+    cancel_ai_request,
+    cancel_all_ai_requests,
+    ai_comparison_candidate_export_rows,
     ai_comparison_selection_summary,
+    ai_experiment_detail,
+    ai_experiment_export_rows,
     ai_model_comparison,
     asset_summary,
     case_workspace,
@@ -71,6 +75,7 @@ from app.database import (
     latest_zeek_events,
     list_ai_profiles,
     list_ai_comparison_runs,
+    list_ai_experiment_runs,
     list_all_assets,
     list_evaluation_scenarios,
     list_review_queue,
@@ -78,7 +83,9 @@ from app.database import (
     public_ips_for_enrichment,
     promote_ai_comparison_winner,
     reset_dashboard_logs,
+    set_ai_worker_paused,
     reopen_ai_comparison_review,
+    review_ai_experiment_result,
     submit_analyst_review,
     upsert_threat_intel_lookup,
     upsert_asset,
@@ -110,7 +117,11 @@ from app.threat_intel import (
     zeek_context_threat_intel,
 )
 from app.ai_client import check_ai_model, model_metadata
-from app.ai_comparison import run_model_comparison
+from app.ai_comparison import (
+    queue_missing_evidence_experiment,
+    queue_model_comparison,
+    queue_stability_experiment,
+)
 from app.case_assessment import reassess_case, refresh_case_virustotal
 from app.security import redact_secrets
 from app.zeek_inventory import zeek_status
@@ -166,6 +177,46 @@ class AIComparisonVoteRequest(BaseModel):
     analyst_name: str = "analyst"
     selection: str
     notes: str = ""
+
+
+class AIComparisonQueueRequest(BaseModel):
+    profile_uids: List[str] = []
+
+
+class StabilitySettingRequest(BaseModel):
+    label: str = ""
+    temperature: float
+    seed: int
+
+
+class StabilityExperimentRequest(BaseModel):
+    comparison_uid: str
+    settings: List[StabilitySettingRequest]
+
+
+class MissingEvidenceVariantRequest(BaseModel):
+    label: str = ""
+    mask: List[str]
+
+
+class MissingEvidenceExperimentRequest(BaseModel):
+    comparison_uid: str
+    variants: List[MissingEvidenceVariantRequest]
+
+
+class AIExperimentReviewRequest(BaseModel):
+    grounding_score: Optional[int] = None
+    completeness_score: Optional[int] = None
+    next_step_quality_score: Optional[int] = None
+    uncertainty_score: Optional[int] = None
+    usefulness_score: Optional[int] = None
+    supported_claims: Optional[int] = None
+    unsupported_claims: Optional[int] = None
+    contradicted_claims: Optional[int] = None
+    undecidable_claims: Optional[int] = None
+    missing_evidence_acknowledged: bool = False
+    reviewer_name: str = "analyst"
+    reviewer_notes: str = ""
 
 
 class AIComparisonPromotionRequest(BaseModel):
@@ -598,6 +649,11 @@ def create_app(config_path):
     def ai_comparison_workbook():
         return static_page("compare.html")
 
+    @app.get("/experiments/stability")
+    @app.get("/experiments/missing-evidence")
+    def ai_experiment_workbook():
+        return static_page("experiments.html")
+
     @app.get("/zeek")
     def zeek_telemetry_workbook():
         return static_page("zeek.html")
@@ -614,14 +670,6 @@ def create_app(config_path):
     def admin_controls():
         return static_page("admin.html")
 
-    @app.get("/evaluation")
-    @app.get("/evaluation/scenarios")
-    @app.get("/evaluation/correlation")
-    @app.get("/evaluation/models")
-    def evaluation_lab():
-        return static_page("evaluation.html")
-
-    @app.get("/api/evaluation/overview")
     def api_evaluation_overview():
         conn = connect(db_path)
         try:
@@ -629,7 +677,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/evaluation/cases")
     def api_evaluation_cases(limit: int = 250):
         conn = connect(db_path)
         try:
@@ -637,7 +684,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/evaluation/scenarios")
     def api_evaluation_scenarios(limit: int = 200, experiment_type: str = None):
         conn = connect(db_path)
         try:
@@ -649,7 +695,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.post("/api/evaluation/scenarios")
     def api_create_evaluation_scenario(payload: EvaluationScenarioRequest):
         try:
             scenario = normalize_scenario(payload.dict())
@@ -664,7 +709,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/evaluation/scenarios/{scenario_uid}")
     def api_evaluation_scenario(scenario_uid: str):
         conn = connect(db_path)
         try:
@@ -675,7 +719,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/evaluation/scenarios/{scenario_uid}/candidates")
     def api_evaluation_candidates(scenario_uid: str, limit: int = 5000):
         conn = connect(db_path)
         try:
@@ -688,7 +731,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/evaluation/scenarios/{scenario_uid}/correlation-metrics")
     def api_evaluation_correlation_metrics(scenario_uid: str):
         conn = connect(db_path)
         try:
@@ -699,7 +741,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.put("/api/evaluation/scenarios/{scenario_uid}")
     def api_update_evaluation_scenario(
         scenario_uid: str, payload: EvaluationScenarioRequest
     ):
@@ -716,7 +757,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.delete("/api/evaluation/scenarios/{scenario_uid}")
     def api_delete_evaluation_scenario(scenario_uid: str):
         conn = connect(db_path)
         try:
@@ -726,7 +766,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.post("/api/evaluation/scenarios/{scenario_uid}/cases")
     def api_link_evaluation_case(
         scenario_uid: str, payload: EvaluationCaseLinkRequest
     ):
@@ -747,7 +786,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.delete("/api/evaluation/scenarios/{scenario_uid}/cases/{case_uid}")
     def api_unlink_evaluation_case(scenario_uid: str, case_uid: str):
         conn = connect(db_path)
         try:
@@ -759,7 +797,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.post("/api/evaluation/scenarios/{scenario_uid}/events")
     def api_label_evaluation_event(
         scenario_uid: str, payload: EvaluationEventLabelRequest
     ):
@@ -818,9 +855,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.delete(
-        "/api/evaluation/scenarios/{scenario_uid}/events/{event_sensor}/{event_uid}"
-    )
     def api_delete_evaluation_event_label(
         scenario_uid: str, event_sensor: str, event_uid: str
     ):
@@ -834,7 +868,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/evaluation/export")
     def api_export_evaluation(format: str = "json", scenario_uid: str = None):
         export_format = format.lower()
         if export_format not in {"json", "csv"}:
@@ -892,7 +925,9 @@ def create_app(config_path):
                 },
                 "ai_comparison": {
                     "profile_uids": config.get("ai_comparison", {}).get("profile_uids", []),
-                    "candidate_count": 3,
+                    "candidate_count": len(
+                        config.get("ai_comparison", {}).get("profile_uids", [])
+                    ),
                     "sequential": True,
                 },
                 "network": {
@@ -902,11 +937,6 @@ def create_app(config_path):
                     "zeek_log_directory": config.get("zeek", {}).get("log_directory", ""),
                 },
                 "host_os": zeek_os_recommendation(detect_os_release()),
-                "assets": {
-                    "types": default_asset_types(config),
-                    "summary": asset_summary(conn),
-                    "items": list_all_assets(conn, limit),
-                },
                 "threat_intel": {
                     "providers": sanitized_provider_status(config, conn),
                 },
@@ -932,7 +962,37 @@ def create_app(config_path):
                 "components": latest_runtime_components(conn),
                 "ai_requests": activities,
                 "events": events,
+                "ai_worker_paused": bool(
+                    conn.execute("SELECT paused FROM ai_worker_control WHERE id = 1").fetchone()["paused"]
+                ),
             }
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/ai-requests/{activity_uid}/cancel")
+    def api_cancel_ai_request(activity_uid: str):
+        conn = connect(db_path)
+        try:
+            if not cancel_ai_request(conn, activity_uid):
+                raise HTTPException(status_code=404, detail="Active AI request not found")
+            return {"ok": True, "activity_uid": activity_uid}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/ai-requests/cancel-all")
+    def api_cancel_all_ai_requests():
+        conn = connect(db_path)
+        try:
+            return {"ok": True, "cancelled": cancel_all_ai_requests(conn), "paused": True}
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/ai-worker/resume")
+    def api_resume_ai_worker():
+        conn = connect(db_path)
+        try:
+            set_ai_worker_paused(conn, False)
+            return {"ok": True, "paused": False}
         finally:
             conn.close()
 
@@ -966,8 +1026,8 @@ def create_app(config_path):
     @app.put("/api/admin/ai-comparison")
     def api_admin_ai_comparison(payload: AIComparisonSettingsRequest):
         profile_uids = list(dict.fromkeys(uid.strip() for uid in payload.profile_uids if uid.strip()))
-        if len(profile_uids) != 3:
-            raise HTTPException(status_code=400, detail="Select exactly three different AI profiles")
+        if not profile_uids:
+            raise HTTPException(status_code=400, detail="Select at least one active AI profile")
         conn = connect(db_path)
         try:
             for uid in profile_uids:
@@ -977,7 +1037,7 @@ def create_app(config_path):
                 if profile.get("status") != "active":
                     raise HTTPException(status_code=400, detail=f"AI profile {uid} is inactive")
             config.setdefault("ai_comparison", {})["profile_uids"] = profile_uids
-            config["ai_comparison"]["candidate_count"] = 3
+            config["ai_comparison"]["candidate_count"] = len(profile_uids)
             config["ai_comparison"]["sequential"] = True
             save_config(config, config_path)
             insert_app_event(
@@ -985,7 +1045,7 @@ def create_app(config_path):
                 "info",
                 "ai_comparison",
                 "Updated AI comparison profiles",
-                {"profile_count": 3, "sequential": True},
+                {"profile_count": len(profile_uids), "sequential": True},
             )
             return {"status": "saved", "profile_uids": profile_uids, "sequential": True}
         finally:
@@ -1306,6 +1366,36 @@ def create_app(config_path):
         finally:
             conn.close()
 
+    @app.get("/api/ai-comparisons/options")
+    def api_ai_comparison_options(limit: int = 200):
+        conn = connect(db_path)
+        try:
+            cases = conn.execute(
+                """
+                SELECT case_uid, detection_type, first_seen AS timestamp,
+                       src_ip, dest_ip,
+                       COALESCE((
+                         SELECT finding_name FROM sensor_findings
+                         WHERE detection_id = detections.id
+                         ORDER BY id LIMIT 1
+                       ), detection_type) AS signature
+                FROM detections
+                WHERE case_uid IS NOT NULL
+                ORDER BY id DESC LIMIT ?
+                """,
+                (max(1, min(limit, 1000)),),
+            ).fetchall()
+            return {
+                "cases": [dict(row) for row in cases],
+                "profiles": [
+                    profile
+                    for profile in list_ai_profiles(conn, 500)
+                    if profile.get("status") == "active"
+                ],
+            }
+        finally:
+            conn.close()
+
     @app.get("/api/ai-comparisons/selection-summary")
     def api_ai_comparison_selection_summary():
         conn = connect(db_path)
@@ -1318,7 +1408,7 @@ def create_app(config_path):
     def api_ai_comparison_export(format: str = "csv"):
         conn = connect(db_path)
         try:
-            rows = ai_comparison_export_rows(conn)
+            rows = ai_comparison_candidate_export_rows(conn)
         finally:
             conn.close()
         if format.lower() == "json":
@@ -1326,7 +1416,7 @@ def create_app(config_path):
                 {
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "record_count": len(rows),
-                    "comparisons": rows,
+                    "candidates": rows,
                 },
                 indent=2,
                 default=str,
@@ -1356,6 +1446,138 @@ def create_app(config_path):
                 "Content-Disposition": 'attachment; filename="ai-comparison-results.csv"'
             },
         )
+
+    @app.get("/api/ai-experiments")
+    def api_ai_experiments(
+        limit: int = 100,
+        experiment_type: Optional[str] = None,
+    ):
+        conn = connect(db_path)
+        try:
+            return list_ai_experiment_runs(
+                conn,
+                experiment_type=experiment_type,
+                limit=max(1, min(limit, 500)),
+            )
+        finally:
+            conn.close()
+
+    @app.get("/api/ai-experiments/export")
+    def api_ai_experiment_export(
+        format: str = "csv",
+        experiment_type: Optional[str] = None,
+    ):
+        conn = connect(db_path)
+        try:
+            rows = ai_experiment_export_rows(conn, experiment_type)
+        finally:
+            conn.close()
+        if format.lower() == "json":
+            return Response(
+                content=json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "record_count": len(rows),
+                        "experiment_type": experiment_type,
+                        "results": rows,
+                    },
+                    indent=2,
+                    default=str,
+                ),
+                media_type="application/json",
+                headers={
+                    "Content-Disposition": 'attachment; filename="llm-experiment-results.json"'
+                },
+            )
+        if format.lower() != "csv":
+            raise HTTPException(status_code=400, detail="format must be csv or json")
+        fieldnames = []
+        for row in rows:
+            for key in row:
+                if key not in fieldnames:
+                    fieldnames.append(key)
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames or ["experiment_uid"])
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="llm-experiment-results.csv"'
+            },
+        )
+
+    @app.get("/api/ai-experiments/{experiment_uid}")
+    def api_ai_experiment_detail(experiment_uid: str):
+        conn = connect(db_path)
+        try:
+            detail = ai_experiment_detail(conn, experiment_uid)
+            if not detail:
+                raise HTTPException(status_code=404, detail="Experiment not found")
+            return detail
+        finally:
+            conn.close()
+
+    @app.post("/api/ai-experiment-results/{result_uid}/review")
+    def api_review_ai_experiment_result(
+        result_uid: str,
+        payload: AIExperimentReviewRequest,
+    ):
+        conn = connect(db_path)
+        try:
+            review = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            try:
+                saved = review_ai_experiment_result(conn, result_uid, review)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            if not saved:
+                raise HTTPException(status_code=404, detail="Experiment result not found")
+            return {"result_uid": result_uid, "status": "reviewed"}
+        finally:
+            conn.close()
+
+    @app.post("/api/ai-experiments/stability", status_code=202)
+    def api_queue_stability_experiment(payload: StabilityExperimentRequest):
+        conn = connect(db_path)
+        try:
+            settings = [
+                item.model_dump() if hasattr(item, "model_dump") else item.dict()
+                for item in payload.settings
+            ]
+            experiment_uid = queue_stability_experiment(
+                conn,
+                load_config(config_path),
+                payload.comparison_uid,
+                settings,
+            )
+            return {"experiment_uid": experiment_uid, "status": "queued"}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            conn.close()
+
+    @app.post("/api/ai-experiments/missing-evidence", status_code=202)
+    def api_queue_missing_evidence_experiment(
+        payload: MissingEvidenceExperimentRequest,
+    ):
+        conn = connect(db_path)
+        try:
+            variants = [
+                item.model_dump() if hasattr(item, "model_dump") else item.dict()
+                for item in payload.variants
+            ]
+            experiment_uid = queue_missing_evidence_experiment(
+                conn,
+                load_config(config_path),
+                payload.comparison_uid,
+                variants,
+            )
+            return {"experiment_uid": experiment_uid, "status": "queued"}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            conn.close()
 
     @app.get("/api/ai-comparisons/{comparison_uid}")
     def api_ai_comparison_detail(comparison_uid: str):
@@ -1794,11 +2016,19 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.post("/api/cases/{case_uid}/ai-comparison")
-    def api_run_case_ai_comparison(case_uid: str):
+    @app.post("/api/cases/{case_uid}/ai-comparison", status_code=202)
+    def api_run_case_ai_comparison(
+        case_uid: str,
+        payload: Optional[AIComparisonQueueRequest] = None,
+    ):
         conn = connect(db_path)
         try:
-            return run_model_comparison(conn, load_config(config_path), case_uid)
+            return queue_model_comparison(
+                conn,
+                load_config(config_path),
+                case_uid,
+                (payload.profile_uids if payload else None),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         finally:
@@ -2068,7 +2298,6 @@ def create_app(config_path):
             ).fetchone()["count"]
             total_alerts = suricata_alerts + zeek_detection_findings
             total_detections = conn.execute("SELECT COUNT(*) AS count FROM detections").fetchone()["count"]
-            total_assets = conn.execute("SELECT COUNT(*) AS count FROM assets WHERE status = 'active'").fetchone()["count"]
             zeek_counts = zeek_event_counts(conn)
             zeek_notice_count = zeek_counts.get("notice", 0)
             zeek_weird_count = zeek_counts.get("weird", 0)
@@ -2107,7 +2336,6 @@ def create_app(config_path):
             return {
                 "total_alerts": total_alerts,
                 "total_detections": total_detections,
-                "total_assets": total_assets,
                 "zeek_notice_count": zeek_notice_count,
                 "zeek_weird_count": zeek_weird_count,
                 "zeek_event_counts": zeek_counts,

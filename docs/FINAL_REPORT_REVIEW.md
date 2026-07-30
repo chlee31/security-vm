@@ -28,7 +28,7 @@ The draft should be revised in the areas below before submission. These are prim
 
 ### 1. Use the Current Asset Terminology
 
-Replace **asset inventory** with **registered IP role context**, **registered machine context**, or **analyst-defined IP context**. The current interface keeps a small list of internal IP addresses, names, roles, and notes in the Admin page. It does not provide a separate enterprise asset-inventory application or endpoint coverage.
+The evaluated workflow does not provide endpoint inventory, endpoint telemetry, or enterprise asset management. Describe it as network-sensor evidence correlated into investigation cases.
 
 Suggested objective wording:
 
@@ -83,7 +83,7 @@ Security VM no longer calculates a deterministic or AI-adjusted risk score. The 
 
 Python validates this structure and maps it to `log_only`, `human_review`, or `escalate`. Missing or invalid classifications, Low-confidence conclusions, and materially disputed Suricata and Zeek findings are routed to Analyst Review Required. Describe confidence as the model's qualitative assessment, not a calibrated probability.
 
-### 7. Add the Three-Model Comparison Experiment
+### 7. Add the Multi-Model Comparison Experiment
 
 The implementation now supports a useful secondary experiment that is missing from the draft. Three active AI profiles receive the same frozen evidence package in sequential requests. The dashboard displays all answers, records latency and parsing status, and lets an analyst select the most useful response. Candidate responses do not alter the official assessment.
 

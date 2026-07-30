@@ -71,10 +71,8 @@ function orderedSteps(steps, fallback) {
   `;
 }
 
-function endpointIdentity(ip, registeredRole) {
-  if (!registeredRole) return ip || "Unknown endpoint";
-  const role = registeredRole.name || registeredRole.device_type || "Registered IP";
-  return `${role} (${ip || registeredRole.ip_address || "unknown IP"})`;
+function endpointIdentity(ip) {
+  return ip || "Unknown endpoint";
 }
 
 const threatIntelProviders = [
@@ -151,7 +149,7 @@ function renderComparisonInputProof(detail) {
   return `
     <section class="comparison-input-proof ${fullyVerified ? "verified" : "warning"}">
       <div>
-        <strong>${fullyVerified ? "Verified identical input for A, B, and C" : "Comparison input could not be fully verified"}</strong>
+        <strong>${fullyVerified ? "Verified identical input for every response" : "Comparison input could not be fully verified"}</strong>
         <small>${matchesInitial
           ? "The comparison reuses the exact prompt and evidence snapshot that produced the initial case summary."
           : "This comparison used a separately prepared case snapshot; differences from the initial summary may reflect changed evidence as well as model behavior."}</small>
@@ -167,16 +165,17 @@ function renderComparisonInputProof(detail) {
 
 async function renderComparisonRuns(runs) {
   if (!runs?.length) {
-    els.comparison.innerHTML = `<div class="empty comparison-empty">No three-model comparison has been run for this case.</div>`;
+    els.comparison.innerHTML = `<div class="empty comparison-empty">No model comparison has been run for this case.</div>`;
     return;
   }
   const latest = await getJson(`/api/ai-comparisons/${encodeURIComponent(runs[0].comparison_uid)}`);
   const vote = latest.votes?.[0];
+  const expected = latest.expected_candidate_count || latest.selected_profile_uids?.length || 0;
   els.comparison.innerHTML = `
     <div class="comparison-inline-head">
       <div>
         <strong>${escapeHtml(latest.comparison_uid)}</strong>
-        <small>${latest.candidate_count || 0}/3 successful · ${latest.processed_count || 0}/3 attempted · ${escapeHtml(label(latest.status))}</small>
+        <small>${latest.candidate_count || 0}/${expected} successful · ${latest.processed_count || 0}/${expected} attempted · ${escapeHtml(label(latest.status))}</small>
       </div>
       <a class="nav-link" href="/compare?run=${encodeURIComponent(latest.comparison_uid)}&case=${encodeURIComponent(latest.case_uid)}" target="_blank" rel="noopener">Open Comparison Workspace</a>
     </div>
@@ -188,7 +187,10 @@ async function renderComparisonRuns(runs) {
       <details class="previous-comparison-runs">
         <summary>Previous comparison runs (${runs.length - 1})</summary>
         <div class="workbook-list">
-          ${runs.slice(1).map((run) => `<a class="workbook-row investigation-link" href="/compare?run=${encodeURIComponent(run.comparison_uid)}&case=${encodeURIComponent(run.case_uid)}" target="_blank" rel="noopener"><strong>${escapeHtml(run.comparison_uid)}</strong><small>${run.candidate_count || 0}/3 successful · ${run.processed_count || 0}/3 attempted · ${escapeHtml(label(run.status))}</small></a>`).join("")}
+          ${runs.slice(1).map((run) => {
+            const runExpected = run.expected_candidate_count || 0;
+            return `<a class="workbook-row investigation-link" href="/compare?run=${encodeURIComponent(run.comparison_uid)}&case=${encodeURIComponent(run.case_uid)}" target="_blank" rel="noopener"><strong>${escapeHtml(run.comparison_uid)}</strong><small>${run.candidate_count || 0}/${runExpected} successful · ${run.processed_count || 0}/${runExpected} attempted · ${escapeHtml(label(run.status))}</small></a>`;
+          }).join("")}
         </div>
       </details>
     ` : ""}
@@ -268,14 +270,11 @@ function row(title, body, meta = "", className = "") {
   `;
 }
 
-function intelEndpointRow(title, profile, asset) {
+function intelEndpointRow(title, profile) {
   return `
     <div class="workbook-row">
       <strong>${title}</strong>
       <p>${profile?.ip_address || "unknown"} · ${profile?.location || "No local profile"} · ${profile?.scope || "unknown"}</p>
-      <small>
-        ${asset ? `Registered role: ${asset.name} (${label(asset.device_type)})` : "No registered role"}
-      </small>
     </div>
   `;
 }
@@ -696,8 +695,8 @@ function render(data) {
   )];
   const sensorText = sensors.length ? sensors.join(" and ") : label(data.sensor_state || "unknown sensor");
   const pythonWho = [
-    `Source: ${endpointIdentity(data.src_ip, data.src_asset)}`,
-    `Destination: ${endpointIdentity(data.dest_ip, data.dest_asset)}`
+    `Source: ${endpointIdentity(data.src_ip)}`,
+    `Destination: ${endpointIdentity(data.dest_ip)}`
   ].join(" · ");
   const pythonWhat = `${data.signature || label(data.detection_type) || "Network sensor activity"} · observed by ${sensorText}`;
   const pythonWhen = `${displayTimestamp(data.first_seen || data.timestamp)} to ${displayTimestamp(data.last_seen || data.timestamp)}`;
@@ -729,7 +728,7 @@ function render(data) {
   ] : [];
   els.overview.innerHTML = [
     ...aiOverview.slice(0, 1),
-    row(sourceHeading("Python", "Who"), escapeHtml(pythonWho), "Derived from normalized source/destination fields and registered IP roles."),
+    row(sourceHeading("Python", "Who"), escapeHtml(pythonWho), "Derived from normalized source and destination fields."),
     row(sourceHeading("Python", "What"), escapeHtml(pythonWhat), "Derived from stored Suricata and Zeek findings."),
     row(sourceHeading("Python", "When"), escapeHtml(pythonWhen), "Derived from normalized first_seen and last_seen timestamps."),
     row(sourceHeading("Python", "Where"), escapeHtml(pythonWhere), "Derived from normalized IP, port, and protocol fields."),
@@ -746,8 +745,8 @@ function render(data) {
     `malicious ${item.malicious_count || 0} · suspicious ${item.suspicious_count || 0} · ${displayTimestamp(item.checked_at)}`
   )).join("");
   els.intel.innerHTML = [
-    intelEndpointRow("Source IP", data.src_ip_profile, data.src_asset),
-    intelEndpointRow("Destination IP", data.dest_ip_profile, data.dest_asset),
+    intelEndpointRow("Source IP", data.src_ip_profile),
+    intelEndpointRow("Destination IP", data.dest_ip_profile),
     renderCaseThreatIntel(data),
     renderZeekThreatIntel(data),
     row(
@@ -823,14 +822,14 @@ async function reassess() {
 async function runComparison() {
   if (!currentInvestigation?.case_uid) return;
   els.compare.disabled = true;
-  setActionStatus("", "Running three AI requests sequentially. This can take several minutes; keep this page open.");
+  setActionStatus("", "The model comparison is being queued for sequential background processing.");
   const progressTimer = window.setInterval(() => {
     refreshComparisonOnly().catch(() => {});
   }, 3000);
   try {
     const result = await sendJson(`/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/ai-comparison`, "POST");
     await refresh();
-    setActionStatus("ok", `${result.candidate_count || 0}/3 model responses completed and are displayed below.`);
+    setActionStatus("ok", `Comparison ${result.comparison_uid} queued with ${result.expected_candidate_count || 0} model requests.`);
   } catch (error) {
     setActionStatus("error", error.message);
   } finally {

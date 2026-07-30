@@ -22,10 +22,33 @@
           <span class="divider"></span>
           <a class="nav-link" href="/outcome?type=all">Cases</a>
           <span class="divider"></span>
-          <a class="nav-link" href="/evaluation">Evaluation Lab</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/experiments/stability">Experiments</a>
           <span class="divider"></span>
           <a class="nav-link" href="/admin">Admin</a>
         </div>
+      </section>
+
+      <section class="panel wide-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Experiment 1</p>
+            <h2>New Model Comparison</h2>
+          </div>
+          <button id="cmp-select-all" class="toolbar-button" type="button">Select All Active Models</button>
+        </div>
+        <form id="cmp-new-form" class="form-grid">
+          <label class="field wide-field">
+            <span>Stored case</span>
+            <select id="cmp-new-case" required></select>
+          </label>
+          <fieldset class="wide-field">
+            <legend>Active AI profiles</legend>
+            <div id="cmp-profile-options" class="comparison-vote-options"></div>
+          </fieldset>
+          <button class="wide-button" type="submit">Queue Model Comparison</button>
+        </form>
+        <div id="cmp-new-status" class="connection-status">Select a case and one or more active profiles.</div>
       </section>
 
       <section class="workbook-metrics">
@@ -96,7 +119,7 @@
               <h2 id="cmp-case-title">Select a Comparison</h2>
             </div>
             <div class="comparison-review-actions">
-              <small id="cmp-model-state" class="panel-hint">Responses anonymized as A, B, and C</small>
+              <small id="cmp-model-state" class="panel-hint">Responses use anonymous R labels until review.</small>
               <a id="cmp-open-case" class="toolbar-button" href="/outcome?type=all" hidden>Open Case</a>
               <button id="cmp-use-response" class="toolbar-button" type="button" hidden>Use Selected Response on Case</button>
               <button id="cmp-reopen-review" class="toolbar-button" type="button" hidden>Reopen Review</button>
@@ -106,10 +129,7 @@
           <form id="cmp-vote-form" class="comparison-vote-form" hidden>
             <fieldset>
               <legend>Which response gives the best evidence-grounded case summary and next steps?</legend>
-              <div class="comparison-vote-options">
-                <label><input type="radio" name="selection" value="A" required><span>Response A</span></label>
-                <label><input type="radio" name="selection" value="B"><span>Response B</span></label>
-                <label><input type="radio" name="selection" value="C"><span>Response C</span></label>
+              <div id="cmp-vote-options" class="comparison-vote-options">
                 <label><input type="radio" name="selection" value="tie"><span>Tie</span></label>
                 <label><input type="radio" name="selection" value="reject_all"><span>Reject All</span></label>
               </div>

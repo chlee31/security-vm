@@ -122,6 +122,14 @@ class AiWorkerTests(unittest.TestCase):
             7,
             42,
         )
+        first_query = pending_rows.call_args_list[0]
+        self.assertEqual(
+            first_query.kwargs,
+            {
+                "limit": 1,
+                "minimum_age_seconds": 0,
+            },
+        )
         conn.close.assert_called_once_with()
 
 

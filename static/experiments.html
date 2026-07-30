@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security VM LLM Experiments</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260730-experiments">
+  </head>
+  <body>
+    <main class="shell workbook-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Controlled Evaluation</p>
+          <h1>LLM Experiments</h1>
+        </div>
+        <div class="status">
+          <span class="dot"></span>
+          <span id="experiment-updated">Loading</span>
+          <button id="experiment-refresh" class="toolbar-button" type="button">Refresh</button>
+          <span class="divider"></span>
+          <a class="nav-link" href="/compare">Comparisons</a>
+          <span class="divider"></span>
+          <a class="nav-link" href="/">Dashboard</a>
+        </div>
+      </section>
+
+      <nav class="evaluation-tabs" aria-label="Experiment type">
+        <a href="/experiments/stability">Temperature and Seed Stability</a>
+        <a href="/experiments/missing-evidence">Missing-Evidence Robustness</a>
+      </nav>
+
+      <section class="panel wide-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow" id="experiment-number">Experiment</p>
+            <h2 id="experiment-title">Configure Experiment</h2>
+          </div>
+          <div class="comparison-export-actions">
+            <a id="experiment-csv" class="toolbar-button" href="/api/ai-experiments/export?format=csv">Export CSV</a>
+            <a id="experiment-json" class="toolbar-button" href="/api/ai-experiments/export?format=json">Export JSON</a>
+          </div>
+        </div>
+
+        <form id="experiment-form" class="form-grid">
+          <label class="field wide-field">
+            <span>Analyst-selected baseline response</span>
+            <select id="experiment-baseline" required></select>
+            <small>Only the response selected as the winner on the LLM comparison page is used as the experiment control.</small>
+          </label>
+          <div id="experiment-controls" class="wide-field"></div>
+          <button class="wide-button" type="submit">Queue Experiment</button>
+        </form>
+        <div id="experiment-status" class="connection-status">Experiments run sequentially in the background.</div>
+      </section>
+
+      <section class="panel wide-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Durable Queue</p>
+            <h2>Experiment Runs</h2>
+          </div>
+          <small class="panel-hint">Progress survives browser and dashboard restarts</small>
+        </div>
+        <div id="experiment-runs" class="workbook-list"></div>
+      </section>
+
+      <section class="panel wide-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Results</p>
+            <h2 id="experiment-detail-title">Select a Run</h2>
+          </div>
+        </div>
+        <div id="experiment-detail" class="workbook-list"></div>
+      </section>
+    </main>
+    <script src="/static/experiments.js?v=20260730-experiments"></script>
+  </body>
+</html>

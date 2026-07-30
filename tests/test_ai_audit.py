@@ -151,6 +151,23 @@ class AIAuditTests(unittest.TestCase):
         )
         self.assertNotIn("prompt", phases[1][1])
 
+    def test_invalid_sensor_unicode_is_replaced_before_hashing_and_transport(self):
+        alert = dict(self.alert)
+        alert["signature"] = "Malformed sensor text \ud802"
+        prompt, audit = build_prompt_audit(
+            self.config,
+            alert,
+            self.detection,
+            {"sensor_fusion": {"findings": []}},
+        )
+        encoded = prompt.encode("utf-8")
+        self.assertNotIn("\ud802", prompt)
+        self.assertEqual(audit["audit_prompt_bytes"], len(encoded))
+        self.assertEqual(
+            audit["prompt_sha256"],
+            hashlib.sha256(encoded).hexdigest(),
+        )
+
     def test_python_rejects_unsupported_threat_intel_and_placeholder_verdict(self):
         report = {
             "classification": "Dangerous",

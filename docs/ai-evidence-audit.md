@@ -4,7 +4,7 @@ Security VM records proof of every new AI request in SQLite. The authoritative r
 
 ## Context and Input Policy
 
-Security VM does not send files directly to an Ollama-compatible model and does not rely on a 4 KB file limit. Python reads locally stored Suricata, Zeek, correlation, registered-IP, and threat-intelligence records; selects the records relevant to the case; normalizes them into structured JSON text; and embeds that bounded package in the model prompt. Raw packet captures, complete database files, API keys, and passwords are not sent.
+Security VM does not send files directly to an Ollama-compatible model and does not rely on a 4 KB file limit. Python reads locally stored Suricata, Zeek, correlation, and threat-intelligence records; selects the records relevant to the case; normalizes them into structured JSON text; and embeds that bounded package in the model prompt. Raw packet captures, complete database files, API keys, and passwords are not sent.
 
 The operative limit is the configured token context. The default `num_ctx` is 8,192 tokens and includes both input and generated output. The default `num_predict` reserves up to 1,024 tokens for the response, leaving an estimated input budget of approximately 7,168 tokens. These deployment settings remain in effect even when a model advertises a much larger maximum context, such as approximately 131,072 tokens for Llama 3.1/3.2 or 1,048,576 tokens in the currently installed Nemotron metadata.
 

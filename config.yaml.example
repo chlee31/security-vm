@@ -34,11 +34,11 @@ ai_reassessment:
   include_suricata: true
   include_zeek: true
   include_threat_intel: true
-  include_asset_context: true
 ai_comparison:
   profile_uids: []
-  candidate_count: 3
   sequential: true
+ai_experiments:
+  worker_poll_seconds: 1.0
 correlation:
   policy_version: correlation-v1
   sensor_time_tolerance_seconds: 10

@@ -488,6 +488,7 @@ CREATE TABLE IF NOT EXISTS ai_request_activity (
   elapsed_ms INTEGER,
   parse_status TEXT,
   error_message TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -496,6 +497,19 @@ CREATE INDEX IF NOT EXISTS idx_ai_request_activity_recent
   ON ai_request_activity(id DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_request_activity_status
   ON ai_request_activity(status, id DESC);
+
+CREATE TABLE IF NOT EXISTS ai_worker_control (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  paused INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_cancelled_detections (
+  detection_id INTEGER PRIMARY KEY,
+  activity_uid TEXT,
+  cancelled_at TEXT NOT NULL,
+  FOREIGN KEY (detection_id) REFERENCES detections(id)
+);
 
 CREATE TABLE IF NOT EXISTS runtime_components (
   component TEXT PRIMARY KEY,

@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
+import time
 
 
 ZEEK_BINARY_CANDIDATES = {
@@ -60,9 +61,23 @@ def running_zeek_pids(zeekctl_path):
     for pid_path in pid_paths:
         try:
             pid = int(pid_path.read_text(encoding="utf-8").strip())
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
         except (FileNotFoundError, PermissionError, ValueError, OSError):
             continue
+        cmdline = ""
+        for attempt in range(3):
+            try:
+                cmdline = (
+                    Path(f"/proc/{pid}/cmdline")
+                    .read_bytes()
+                    .replace(b"\x00", b" ")
+                    .decode("utf-8", "replace")
+                )
+            except (FileNotFoundError, PermissionError, OSError):
+                break
+            if cmdline:
+                break
+            if attempt < 2:
+                time.sleep(0.01)
         if "zeek" in cmdline.lower():
             running.append(pid)
     return running

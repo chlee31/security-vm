@@ -1,6 +1,6 @@
 # Security VM
 
-Security VM is an AI-assisted network security monitoring and investigation research prototype. It combines Suricata findings and Zeek network metadata into centralized cases, adds registered-IP and threat-intelligence context, and asks locally configured AI models to explain the evidence and recommend investigation steps.
+Security VM is an AI-assisted network security monitoring and investigation research prototype. It combines Suricata findings and Zeek network metadata into centralized cases, adds threat-intelligence context, and asks locally configured AI models to explain the evidence and recommend investigation steps.
 
 Python retains control of correlation, final action mapping, data handling, and safety boundaries. AI output is advisory and receives bounded structured evidence without API keys or raw packet captures.
 
@@ -19,7 +19,8 @@ Security VM currently provides:
 - deterministic case construction and evidence-preserving SQLite storage;
 - cached threat-intelligence enrichment and post-AI VirusTotal verification;
 - qualitative AI-assisted classification, evidence summaries, and human review controls;
-- sequential three-model comparison using one frozen evidence package.
+- sequential multi-model comparison using one frozen evidence package;
+- controlled temperature/seed stability and missing-evidence experiments.
 
 The project is an **analysis platform**. It is not an endpoint agent, decrypted-payload inspection system, production firewall, autonomous response engine, or replacement for analyst judgment. The intended deployment uses copied traffic from a SPAN or mirror port.
 
@@ -38,7 +39,7 @@ Mirrored network traffic
  Deterministic correlation and case construction
              |
              v
- Registered IP + cached threat-intelligence enrichment
+ Cached threat-intelligence enrichment
              |
              v
  Bounded qualitative AI explanation and classification
@@ -50,7 +51,7 @@ Mirrored network traffic
  Centralized investigation + analyst review
              |
              v
- Optional sequential three-model comparison
+ Optional sequential multi-model comparison
 ```
 
 See [SECURITY_VM_WORKFLOW.md](docs/SECURITY_VM_WORKFLOW.md) for the detailed
@@ -97,7 +98,6 @@ This JSON is the API message envelope, not an attached JSON file. Tailscale prov
 - Conservative same-sensor grouping for scans, DNS tunneling, beaconing, brute force, and repeated identical findings
 - Bounded Zeek context from `conn`, `dns`, `http`, `ssl`, `notice`, `weird`, `files`, `ssh`, and `x509` logs
 - Zeek-derived IPs, DNS answers, domains, URLs, TLS/certificate fingerprints, JA3 values, file hashes, and SSH host keys matched against active cached threat-intelligence feeds with source-log and endpoint provenance
-- Admin-managed IP addresses and assigned roles
 - Cached threat-intelligence providers plus post-AI VirusTotal verification
 - Evidence-grounded AI explanation of who, what, when, where, why, how, and next steps
 - Exact per-request AI audit records with prompt/evidence/response hashes, source lineage, and an explicit omission manifest
@@ -110,38 +110,19 @@ This JSON is the API message envelope, not an attached JSON file. Tailscale prov
 
 ![Security VM dashboard overview](docs/images/dashboard-overview.png?raw=1)
 
-The dashboard summarizes sensor findings, centralized cases, outcome queues, encrypted-traffic metadata, model activity, and Zeek health. Data changes only when the analyst selects **Refresh**.
+The dashboard summarizes sensor findings, centralized cases, outcome queues, encrypted-traffic metadata, combined alerts, and Zeek health. Data changes only when the analyst selects **Refresh**.
 
 ### Case Investigation
 
 ![Centralized case investigation](docs/images/case-investigation.png?raw=1)
 
-Each case has a stable UID and brings together timestamps, sensor findings, network endpoints, registered-IP context, threat intelligence, AI explanations, reassessment, and analyst feedback. Expandable sensor records show the original Suricata or Zeek JSON, parsed endpoints and ports, source table/row, event UID, field lineage, and raw-record hash.
+Each case has a stable UID and brings together timestamps, sensor findings, network endpoints, threat intelligence, AI explanations, reassessment, and analyst feedback. Expandable sensor records show the original Suricata or Zeek JSON, parsed endpoints and ports, source table/row, event UID, field lineage, and raw-record hash.
 
-### Zeek Telemetry
-
-![Zeek telemetry and ingestion health](docs/images/zeek-telemetry.png?raw=1)
-
-The Zeek workspace shows sensor state, ingestion checkpoints, log volumes, and protocol metadata from connection, DNS, HTTP, TLS, file, notice, weird, SSH, and X.509 records.
-
-### AI Model Comparison
-
-![Three-model case summary comparison](docs/images/ai-comparison.png?raw=1)
-
-Three configured models receive the same frozen evidence sequentially. Their complete responses and threat-intelligence inputs remain visible for direct analyst evaluation.
-
-<details>
-<summary><strong>Administration and threat-intelligence screenshots</strong></summary>
-
-![Threat-intelligence provider status and controls](docs/images/threat-intelligence.png?raw=1)
-
-![AI model and registered IP administration](docs/images/admin-controls.png?raw=1)
-
-</details>
+The dashboard also links to Zeek telemetry, where sensor state, ingestion checkpoints, log volumes, and protocol metadata from connection, DNS, HTTP, TLS, file, notice, weird, SSH, and X.509 records can be reviewed.
 
 ## Classification Policy
 
-The model reviews bounded Suricata, Zeek, correlation, registered-IP role, and threat-intelligence evidence and returns one of three qualitative classifications:
+The model reviews bounded Suricata, Zeek, correlation, and threat-intelligence evidence and returns one of three qualitative classifications:
 
 - `Safe`
 - `Analyst Review Required`
@@ -306,37 +287,59 @@ Every case receives a UID such as `CASE-20260717-000123`. Its investigation page
 - correlation method, configured rule strength, and Community ID when available;
 - bounded Zeek connection/protocol context;
 - repeated-activity and periodicity summary;
-- registered IP role and traffic-direction context;
 - provider-by-provider threat-intelligence results;
 - qualitative classification, confidence, and evidence-based explanation;
 - AI case explanation and evidence boundaries;
-- optional side-by-side responses from three configured AI profiles;
+- optional side-by-side responses from any selected active AI profiles;
 - VirusTotal verification records;
 - analyst review history and controls.
 
 The **Reassess Case** button makes one explicit AI request using the latest stored evidence. **Refresh VirusTotal** refreshes eligible global IPs only and does not automatically trigger another AI call.
 
-### Three-Model Comparison
+### Controlled LLM Experiments
 
-Create at least three active AI profiles under `/admin`, then choose exactly three in **Comparison profiles**. From a case investigation, select **Run Three-Model Comparison**. When the initial request audit exists, Python reuses the exact prompt and evidence snapshot that produced the case summary. It sends that immutable input to the three profiles sequentially, waiting for each response before starting the next request.
+Open `/compare` to queue a baseline comparison for a stored case. Select any
+number of active AI profiles, or select all active profiles. The API returns a
+comparison UID immediately; the `experiment-worker` started by `run-all`
+executes requests sequentially in the background. Responses use dynamic blind
+labels such as `R01`, `R02`, and `R03`. Model identities remain hidden until a
+winner, tie, or reject-all review is recorded.
 
-Comparison requests use `temperature: 0` and seed `42` to reduce sampling variation. The dashboard verifies the prompt hash, evidence hash, and generation options across A, B, and C. Different model architectures can still interpret identical evidence differently; disagreement is an evaluation result rather than proof that the inputs differed.
+Baseline requests use `temperature: 0`, seed `42`, `num_ctx: 8192`, and
+`num_predict: 1024`. Python freezes the exact prompt, normalized evidence,
+generation settings, selected profile order, and Ollama model digest before
+execution. The dashboard verifies prompt, evidence, and generation-option
+equality across every successful response.
 
 For cases with repeated sensor events, Python keeps every raw finding in SQLite and the case evidence view but sends the models a bounded recurrence summary. Repeated rows are grouped by sensor, finding name/type, endpoints, destination port, and protocol. The model receives occurrence counts, first/last timestamps, and representative event UIDs, which prevents dozens of duplicate alerts from obscuring distinct evidence.
 
-All three anonymized responses appear directly on the case investigation page with summaries, six-part explanations, ordered investigation steps, and expandable raw responses. Open the run in `/compare` to select the most useful response, mark a tie, or reject all responses. After a winner is recorded, the workspace reveals the selected model identity. Select **Use Selected Response on Case** to make that immutable response the case's displayed AI explanation. The original AI report, candidate, request audit, Python facts, sensor evidence, and final analyst decision remain unchanged. Reviews can be reopened without losing the prior selection from review history, and the queue can be filtered to reviewed, rejected, tied, pending, or failed runs.
+All successful anonymized responses appear on the case page and `/compare`.
+After review, the workspace reveals the selected model identity. **Use Selected
+Response on Case** changes only the displayed explanation; it does not overwrite
+the original AI report, candidate, request audit, sensor evidence, or analyst
+decision.
 
-The comparison workspace exports CSV or JSON research records containing case and comparison UIDs, review outcomes, selected response/model, candidate status, classification, confidence, request hashes, and timing measurements. Timing fields include milliseconds and seconds for A, B, and C, the selected response duration, total and average successful model-request time, and the full comparison wall-clock duration. Summary cards report reviewed cases, pending runs, rejected comparisons, ties, and model selection counts.
+The comparison export contains one CSV/JSON row per model candidate, including
+model build metadata, request controls, hashes, token metrics, timing, parsed
+response fields, raw response, and review outcome.
+
+Use `/experiments/stability` to rerun every successful baseline candidate with
+controlled temperature and seed combinations. Use
+`/experiments/missing-evidence` after selecting a baseline winner to test that
+winner against explicit evidence-removal masks. Both pages queue durable
+background jobs, show control and variant responses together, accept manual
+evaluation scores, and export one research row per experimental response.
+
+Run the worker separately only when `run-all` is not being used:
+
+```bash
+python -m app.main experiment-worker --config config.yaml
+```
+
+See [docs/llm-experiments.md](docs/llm-experiments.md) for the experimental
+controls, database records, workflow, and CSV columns.
 
 Model comparison is an evaluation feature. Promoting a winner changes only which AI explanation is presented on the case page. Candidate classifications do not replace the official case assessment and do not alter Python's recorded action.
-
-## Evaluation Lab
-
-Open `/evaluation` for the separate research workspace. Phase 1 supports analyst-defined scenarios, links to existing case UIDs, manual event-membership labels, correlation precision/recall/F1, and JSON/CSV export.
-
-Evaluation records use dedicated SQLite tables and never overwrite official case correlation, classifications, model responses, or analyst reviews. Ground truth must come from the controlled experiment and reviewer, not from Security VM's own output.
-
-See [docs/evaluation-lab.md](docs/evaluation-lab.md) for routes, tables, and the evaluation procedure.
 
 ## Threat Intelligence
 
@@ -365,7 +368,7 @@ Profiles are retained for repeatable model experiments. Each AI report stores pr
 
 Every new model request also creates an `ai_run_audits` row containing the exact prompt, exact normalized evidence package, full response, safe request settings, source-record map, byte/character counts, SHA-256 values, and every Python omission or truncation. The investigation page exposes this proof under **AI Request and Data Lineage**. See [docs/ai-evidence-audit.md](docs/ai-evidence-audit.md) for the complete data path and review procedure.
 
-Saved profiles can be deleted from `/admin`. Historical reports and comparison results keep their recorded model identity. Deleting a comparison profile removes it from future three-model runs, and deleting the selected runtime profile automatically selects another active profile. The final saved profile cannot be deleted until a replacement exists.
+Saved profiles can be deleted from `/admin`. Historical reports and comparison results keep their recorded model identity. Deleting a comparison profile removes it from future comparison runs, and deleting the selected runtime profile automatically selects another active profile. The final saved profile cannot be deleted until a replacement exists.
 
 Every AI response must also return two to five ordered next steps. Each step should name the observable or sensor evidence to inspect and the question the analyst should answer; generic advice such as only "investigate further" is rejected by the prompt contract.
 
@@ -405,7 +408,7 @@ Suggested evaluation scenarios:
 1. Repeated Suricata-only scan activity
 2. Suricata-Zeek Community ID correlation
 3. Zeek DNS/HTTP/TLS context retrieval
-4. Registered IP and threat-intelligence enrichment
+4. Threat-intelligence enrichment
 5. AI factual accuracy and unsupported-claim rate
 
 ## Security Notes

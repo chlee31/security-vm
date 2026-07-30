@@ -137,7 +137,6 @@ class SuricataIngestTests(unittest.TestCase):
         self.assertEqual(first["event_fingerprint"], second["event_fingerprint"])
 
     @patch("app.main.assess_detection")
-    @patch("app.main.asset_context_for_alert", return_value=None)
     @patch("app.main.insert_sensor_finding")
     @patch("app.main.insert_detection", return_value=22)
     @patch("app.main.find_correlated_detection", return_value=(None, None, None))
@@ -156,7 +155,6 @@ class SuricataIngestTests(unittest.TestCase):
         _find_correlated_detection,
         _insert_detection,
         _insert_sensor_finding,
-        _asset_context,
         assess_detection,
     ):
         record = MagicMock()

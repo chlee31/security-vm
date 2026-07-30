@@ -10,7 +10,6 @@ import json
 from app.ai_activity import ai_activity_callback
 from app.ai_client import ask_ai_model
 from app.database import (
-    asset_context_for_alert,
     case_workspace,
     insert_ai_assessment,
     insert_ai_report,
@@ -211,7 +210,6 @@ def prepare_case_context(conn, config, case_uid, assessment_type="reassessment")
             "status",
         }
     }
-    detection["asset_context"] = asset_context_for_alert(conn, alert)
     findings = sensor_findings_for_detection(conn, detection_id)
     evidence = build_reassessment_evidence(
         conn,

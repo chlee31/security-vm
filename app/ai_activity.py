@@ -1,6 +1,10 @@
 """Sanitized progress callbacks for observable AI request lifecycles."""
 
-from app.database import create_ai_request_activity, update_ai_request_activity
+from app.database import (
+    ai_request_cancel_requested,
+    create_ai_request_activity,
+    update_ai_request_activity,
+)
 from app.security import redact_secrets
 
 
@@ -34,4 +38,11 @@ def ai_activity_callback(
             # console path must never suppress sensor evidence or an AI result.
             return
 
+    def cancellation_requested():
+        try:
+            return ai_request_cancel_requested(conn, activity_uid)
+        except Exception:
+            return False
+
+    progress.cancellation_requested = cancellation_requested
     return activity_uid, progress

@@ -492,7 +492,7 @@ async function checkAiModel() {
 }
 
 async function resetLogs() {
-  const confirmText = window.prompt("Type RESET to clear dashboard logs, cases, AI reports, reviews, and cached threat intelligence. Registered IP roles are kept.");
+  const confirmText = window.prompt("Type RESET to clear dashboard logs, cases, AI reports, reviews, and cached threat intelligence.");
   if (confirmText !== "RESET") return;
   await sendJson("/api/reset-logs", "POST", { confirm: confirmText });
   selectedDetectionType = null;

@@ -22,7 +22,7 @@ decisions; this document provides the end-to-end map.
    endpoint/time flow, shared observable, and repeated-behavior correlation in
    descending order of strength.
 7. `app/main.py::build_ai_evidence_context` selects normalized Suricata/Zeek
-   findings, bounded Zeek context, recurrence, registered-IP role context, and
+   findings, bounded Zeek context, recurrence, and
    pre-AI threat-intelligence results.
 8. `app/ai_client.py` filters that evidence, builds one JSON-containing text
    prompt, sends it to an Ollama-compatible endpoint, validates the structured
@@ -46,7 +46,6 @@ Python creates a dictionary containing:
 - source and destination IP addresses and ports;
 - protocol, signature, first seen, and last seen;
 - sensor state and correlation method;
-- registered-IP role context;
 - encrypted-traffic visibility limitations; and
 - selected sensor, Zeek, recurrence, and threat-intelligence evidence.
 
@@ -219,7 +218,6 @@ confidence. Model failure cannot silently classify a case as safe.
 | `app/ai_comparison.py` | Sequential multi-model comparison |
 | `app/decision_engine.py` | Python-controlled qualitative action policy |
 | `app/dashboard.py` | FastAPI pages and management/read APIs |
-| `app/evaluation.py` | Offline correlation and model-quality experiments |
 | `app/security.py` | Credential redaction |
 
 ## Short Demonstration Explanation
