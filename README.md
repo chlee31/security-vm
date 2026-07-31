@@ -59,6 +59,9 @@ data flow and [CODE_WALKTHROUGH.md](docs/CODE_WALKTHROUGH.md) for a
 module-by-module explanation of prompt construction, context budgeting, request
 auditing, and response handling.
 
+For a professor-facing map of every major module and the settings that are safe
+to customize, see [CODE_AND_CONFIGURATION_GUIDE.md](docs/CODE_AND_CONFIGURATION_GUIDE.md).
+
 ## AI Data Transfer: Prompt, Not File Upload
 
 Security VM does **not** upload Suricata files, Zeek files, SQLite databases, packet captures, or threat-intelligence datasets to the AI service. Those records remain on the Security VM.
