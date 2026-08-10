@@ -113,13 +113,13 @@ This JSON is the API message envelope, not an attached JSON file. Tailscale prov
 
 ### Dashboard Overview
 
-![Security VM dashboard overview](docs/images/dashboard-overview.png?raw=1)
+![Current Security VM dashboard with activity, model, Zeek, and alert views](docs/images/dashboard-overview.png?raw=1)
 
-The dashboard summarizes sensor findings, centralized cases, outcome queues, encrypted-traffic metadata, combined alerts, and Zeek health. Data changes only when the analyst selects **Refresh**.
+The cleaned dashboard focuses on the activity timeline, selected-model snapshot, Zeek sensor health, and the combined Suricata and Zeek alert stream. Data changes only when the analyst selects **Refresh**.
 
 ### Case Investigation
 
-![Centralized case investigation](docs/images/case-investigation.png?raw=1)
+![Current multi-sensor case investigation and AI explanation](docs/images/case-investigation.png?raw=1)
 
 Each case has a stable UID and brings together timestamps, sensor findings, network endpoints, threat intelligence, AI explanations, reassessment, and analyst feedback. Expandable sensor records show the original Suricata or Zeek JSON, parsed endpoints and ports, source table/row, event UID, field lineage, and raw-record hash.
 
