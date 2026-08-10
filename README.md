@@ -80,10 +80,10 @@ export SECURITY_VM_ADMIN_USER=admin
 read -rsp "Security VM admin password: " SECURITY_VM_ADMIN_PASSWORD
 export SECURITY_VM_ADMIN_PASSWORD
 echo
-python -m app.main run-all --config config.yaml --host 192.168.57.134 --port 8000
+python -m app.main run-all 
 ```
 
-Then open `http://192.168.57.134:8000`. Replace the address with the Security VM's management IP. Avoid `0.0.0.0` unless the lab network is isolated because it exposes the dashboard on every interface.
+Then open a browser and head over to http://127.0.0.1:8000, unless you have specified the --config, --host, or --port. 
 
 ## Confirm It Is Working
 
