@@ -1,16 +1,9 @@
+// Main dashboard controller. It requests already-correlated cases and Zeek
+// telemetry from FastAPI, then renders a read-only operational overview.
+// Collection, correlation, enrichment, and AI analysis remain Python jobs.
 const els = {
-  totalAlerts: document.querySelector("#total-alerts"),
-  totalDetections: document.querySelector("#total-detections"),
-  safeCount: document.querySelector("#safe-count"),
-  reviewCount: document.querySelector("#review-count"),
-  dangerCount: document.querySelector("#danger-count"),
-  zeekNoticeCount: document.querySelector("#zeek-notice-count"),
-  zeekWeirdCount: document.querySelector("#zeek-weird-count"),
-  investigationsReady: document.querySelector("#investigations-ready"),
-  summaryIpPie: document.querySelector("#summary-ip-pie"),
   summaryTimeline: document.querySelector("#summary-timeline"),
   summaryModels: document.querySelector("#summary-models"),
-  summaryEncrypted: document.querySelector("#summary-encrypted"),
   summaryZeek: document.querySelector("#summary-zeek"),
   mode: document.querySelector("#mode"),
   updated: document.querySelector("#updated"),
@@ -21,54 +14,13 @@ const els = {
   refresh: document.querySelector("#refresh")
 };
 
-let selectedDetectionType = null;
-let selectedOutcome = null;
 let selectedSensorFilter = "all";
-
-function readHashFilters() {
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-  selectedDetectionType = params.get("type");
-  selectedOutcome = params.get("outcome");
-}
-
-function writeHashFilters() {
-  const params = new URLSearchParams();
-  if (selectedDetectionType) params.set("type", selectedDetectionType);
-  if (selectedOutcome) params.set("outcome", selectedOutcome);
-  const hash = params.toString();
-  if (hash) {
-    window.location.hash = hash;
-  } else {
-    history.replaceState(null, "", window.location.pathname);
-  }
-}
-
-function filteredDashboardUrl(outcome) {
-  const params = new URLSearchParams();
-  if (selectedDetectionType) params.set("type", selectedDetectionType);
-  if (outcome) params.set("outcome", outcome);
-  const hash = params.toString();
-  return `${window.location.pathname}${hash ? `#${hash}` : ""}`;
-}
-
-function outcomeWorkbookUrl(outcome) {
-  const params = new URLSearchParams();
-  if (outcome) params.set("type", outcome);
-  if (selectedDetectionType) params.set("detection_type", selectedDetectionType);
-  return `/outcome?${params.toString()}`;
-}
 
 function investigationUrl(detectionId, caseUid = "") {
   return caseUid
     ? `/investigation?case=${encodeURIComponent(caseUid)}`
     : `/investigation?id=${encodeURIComponent(detectionId)}`;
 }
-
-function ipWorkbookUrl(ipAddress) {
-  return `/ip?address=${encodeURIComponent(ipAddress)}`;
-}
-
-readHashFilters();
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -125,43 +77,6 @@ function detectionLabel(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function renderPie(container, rows, labelFn, valueFn, emptyText) {
-  const top = rows.slice(0, 6);
-  const total = top.reduce((sum, item) => sum + Number(valueFn(item) || 0), 0);
-  if (!total) {
-    container.innerHTML = `<div class="empty">${emptyText}</div>`;
-    return;
-  }
-
-  const colors = [cssVar("--green"), cssVar("--cyan"), cssVar("--amber"), cssVar("--red"), "#a78bfa", "#94a3b8"];
-  let cursor = 0;
-  const segments = top.map((item, index) => {
-    const start = cursor;
-    const size = (Number(valueFn(item) || 0) / total) * 360;
-    cursor += size;
-    return `${colors[index]} ${start}deg ${cursor}deg`;
-  });
-
-  container.innerHTML = `
-    <div class="pie-layout dashboard-pie">
-      <div class="pie-chart compact-pie" style="background: conic-gradient(${segments.join(", ")});"></div>
-      <div class="legend-list compact-legend">
-        ${top.map((item, index) => `
-          <div>
-            <span class="legend-dot" style="background:${colors[index]}"></span>
-            <a class="inline-link strong-link" href="${ipWorkbookUrl(labelFn(item))}" target="_blank" rel="noopener">${labelFn(item)}</a>
-            <small>${valueFn(item)} seen</small>
-          </div>
-        `).join("")}
-      </div>
-    </div>
-  `;
-}
-
 function renderBars(container, rows, labelFn, valueFn, emptyText) {
   const max = Math.max(1, ...rows.map((row) => Number(valueFn(row) || 0)));
   container.innerHTML = `
@@ -182,21 +97,12 @@ function renderBars(container, rows, labelFn, valueFn, emptyText) {
 function renderSummary(summary) {
   if (summary._error) {
     const message = `${summary._error}. Restart the dashboard backend to enable this summary.`;
-    els.summaryIpPie.innerHTML = `<div class="empty">${message}</div>`;
     els.summaryTimeline.innerHTML = `<div class="empty">${message}</div>`;
     els.summaryModels.innerHTML = `<div class="empty">${message}</div>`;
-    els.summaryEncrypted.innerHTML = `<div class="empty">${message}</div>`;
     els.summaryZeek.innerHTML = `<div class="empty">${message}</div>`;
     return;
   }
 
-  renderPie(
-    els.summaryIpPie,
-    summary.top_ips || [],
-    (item) => item.ip_address,
-    (item) => item.count,
-    "No IP activity yet."
-  );
   renderBars(
     els.summaryTimeline,
     summary.timeline || [],
@@ -263,39 +169,6 @@ function renderSummary(summary) {
     </div>
   `;
 
-  const encrypted = summary.encrypted_traffic || {};
-  const portRows = encrypted.ports || [];
-  const ipRows = encrypted.ips || [];
-  els.summaryEncrypted.innerHTML = `
-    <div class="summary-stack encrypted-summary">
-      <div class="summary-cardline">
-        <strong>${encrypted.candidate_count || 0} candidates</strong>
-        <span>metadata only</span>
-      </div>
-      <small>${encrypted.not_visible || "Encrypted payload contents are not visible."}</small>
-      <div class="mini-list dense">
-        <div>
-          <strong>Visible signals</strong>
-          <small>${(encrypted.visible || []).join(" · ") || "IPs · ports · timing · reputation"}</small>
-        </div>
-      </div>
-      <div class="split-mini-list">
-        <div>
-          <strong>Top ports</strong>
-          ${(portRows.slice(0, 4).map((item) => `
-            <small>${item.protocol || "unknown"}/${item.port || "unknown"} · ${item.count || 0}</small>
-          `).join("")) || `<small>No encrypted candidates yet.</small>`}
-        </div>
-        <div>
-          <strong>Top IPs</strong>
-          ${(ipRows.slice(0, 4).map((item) => `
-            <small><a class="inline-link" href="${ipWorkbookUrl(item.ip_address)}" target="_blank" rel="noopener">${item.ip_address}</a> · ${item.count || 0}</small>
-          `).join("")) || `<small>No IPs yet.</small>`}
-        </div>
-      </div>
-    </div>
-  `;
-
   const zeek = summary.zeek || {};
   const zeekCounts = zeek.event_counts || {};
   const zeekLogs = zeek.logs || [];
@@ -324,23 +197,6 @@ function renderSummary(summary) {
       <a class="telemetry-open-link" href="/zeek" target="_blank" rel="noopener">Open Zeek Telemetry</a>
     </div>
   `;
-}
-
-function renderMetrics(metrics) {
-  els.totalAlerts.textContent = metrics.total_alerts ?? 0;
-  els.totalDetections.textContent = metrics.total_detections ?? 0;
-  els.safeCount.textContent = metrics.outcome_counts?.safe ?? 0;
-  els.reviewCount.textContent = metrics.outcome_counts?.human_review ?? 0;
-  els.dangerCount.textContent = metrics.outcome_counts?.dangerous ?? 0;
-  els.zeekNoticeCount.textContent = metrics.zeek_notice_count ?? 0;
-  els.zeekWeirdCount.textContent = metrics.zeek_weird_count ?? 0;
-  els.investigationsReady.textContent = metrics.total_detections ?? 0;
-  els.mode.textContent = "analysis";
-  document.querySelectorAll("[data-outcome-filter]").forEach((card) => {
-    card.classList.toggle("selected", card.dataset.outcomeFilter === selectedOutcome);
-  });
-  document.querySelector("[data-outcome-all]")?.classList.toggle("selected", !selectedOutcome);
-
 }
 
 function dashboardFindingGroups(findings) {
@@ -453,13 +309,12 @@ async function refresh(options = {}) {
     els.refresh.disabled = true;
     els.refresh.textContent = "Refreshing";
     const summaryRequest = getJson("/api/dashboard-summary?limit=12").catch((error) => ({ _error: error.message }));
-    const [metrics, summary, alerts, events] = await Promise.all([
-      getJson("/api/metrics"),
+    const [summary, alerts, events] = await Promise.all([
       summaryRequest,
       getJson(`/api/latest-alerts?limit=50&sensor=${encodeURIComponent(selectedSensorFilter)}`),
       getJson("/api/events?limit=40")
     ]);
-    renderMetrics(metrics);
+    els.mode.textContent = "analysis";
     renderSummary(summary);
     renderAlerts(alerts);
     renderEvents(events);
@@ -468,10 +323,8 @@ async function refresh(options = {}) {
     els.updated.textContent = "Dashboard API error";
     els.alerts.innerHTML = `<div class="empty">${error.message}</div>`;
     els.events.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.summaryIpPie.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryTimeline.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryModels.innerHTML = `<div class="empty">${error.message}</div>`;
-    els.summaryEncrypted.innerHTML = `<div class="empty">${error.message}</div>`;
     els.summaryZeek.innerHTML = `<div class="empty">${error.message}</div>`;
   } finally {
     els.refresh.disabled = false;
@@ -495,13 +348,10 @@ async function resetLogs() {
   const confirmText = window.prompt("Type RESET to clear dashboard logs, cases, AI reports, reviews, and cached threat intelligence.");
   if (confirmText !== "RESET") return;
   await sendJson("/api/reset-logs", "POST", { confirm: confirmText });
-  selectedDetectionType = null;
-  selectedOutcome = null;
-  writeHashFilters();
   refresh();
 }
 
-async function handleDashboardClick(event) {
+function handleDashboardClick(event) {
   const sensorFilterButton = event.target.closest ? event.target.closest("[data-sensor-filter]") : null;
   if (sensorFilterButton) {
     selectedSensorFilter = sensorFilterButton.dataset.sensorFilter || "all";
@@ -509,22 +359,7 @@ async function handleDashboardClick(event) {
       button.classList.toggle("selected", button === sensorFilterButton);
     });
     refresh({ preserveScroll: true });
-    return;
   }
-
-  const outcomeAll = event.target.closest ? event.target.closest("[data-outcome-all]") : null;
-  if (outcomeAll) {
-    window.open(outcomeWorkbookUrl("all"), "_blank", "noopener");
-    return;
-  }
-
-  const outcomeCard = event.target.closest ? event.target.closest("[data-outcome-filter]") : null;
-  const outcome = outcomeCard ? outcomeCard.dataset.outcomeFilter : null;
-  if (outcome) {
-    window.open(outcomeWorkbookUrl(outcome), "_blank", "noopener");
-    return;
-  }
-
 }
 
 els.refresh.addEventListener("click", refresh);

@@ -1,4 +1,12 @@
-"""Locate Zeek tools, inspect runtime state, and report configured log access."""
+"""Locate Zeek tools and describe the health of the required Zeek sensor.
+
+This is more extensive than the inline Suricata service check in ``main.py``.
+Suricata is managed as one systemd service that writes one configured EVE file.
+Zeek deployments may place three tools in different prefixes, use ZeekControl
+state and PID files, load community packages, and write many independently
+rotated logs.  Keeping those discovery and permission checks here prevents the
+launcher and dashboard from duplicating Zeek-specific operating-system logic.
+"""
 
 from pathlib import Path
 import os
@@ -88,7 +96,12 @@ def running_zeek_pids(zeekctl_path):
 
 
 def zeek_status(config):
-    """Report whether Zeek is installed, running, and writing logs."""
+    """Report binaries, process state, management access, and log readability.
+
+    The result serves both startup validation and the Zeek Telemetry page.  It
+    reports observation only; ingestion checkpoints and stored event counts
+    remain in SQLite and are handled by ``zeek_ingest.py``/``database.py``.
+    """
     zeek_config = config.get("zeek", {})
     zeek = resolve_binary("zeek")
     zeekctl = resolve_binary("zeekctl")

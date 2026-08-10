@@ -1,7 +1,9 @@
 """Perform optional post-AI VirusTotal verification for Dangerous cases.
 
 VirusTotal is stored as separate corroboration evidence. A clean, unavailable,
-or failed result never lowers the AI/Python classification.
+or failed result never lowers the AI/Python classification. It runs only after
+Dangerous model output or an explicit analyst refresh, uses fresh cache entries
+when possible, and never contributes a numerical score.
 """
 
 import ipaddress
@@ -66,7 +68,9 @@ def verify_dangerous(
 ):
     """Verify eligible IPs only after an AI classification of Dangerous.
 
-    Fresh cached results are reused unless an analyst requests a refresh. Every
+    Source and destination candidates are filtered locally so private and other
+    ineligible addresses never reach the API. Fresh cached results are reused
+    unless an analyst requests a refresh. Every
     attempted, skipped, cached, failed, or unavailable result is stored so the
     absence of a lookup is explainable. This function never changes the case
     classification.

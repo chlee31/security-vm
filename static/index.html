@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Security VM</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260727-grouped-sensor-logs">
+    <link rel="stylesheet" href="/static/styles.css?v=20260810-dashboard-cleanup">
   </head>
   <body>
     <main class="shell">
@@ -24,65 +24,11 @@
           <span class="divider"></span>
           <a class="nav-link" href="/compare" target="_blank" rel="noopener">AI Comparison</a>
           <span class="divider"></span>
-          <span class="divider"></span>
           <a class="nav-link" href="/admin" target="_blank" rel="noopener">Admin</a>
         </div>
       </section>
 
-      <section class="metrics">
-        <article class="metric">
-          <span>Sensor Findings</span>
-          <strong id="total-alerts">0</strong>
-          <small>Suricata alerts + Zeek notices</small>
-        </article>
-        <article class="metric" data-outcome-all="true" role="button" tabindex="0" title="Open all decision outcomes in a new tab">
-          <span>Detections</span>
-          <strong id="total-detections">0</strong>
-          <small>Open all outcomes</small>
-        </article>
-        <article class="metric outcome safe" data-outcome-filter="safe" role="button" tabindex="0" title="Open safe decisions in a new tab">
-          <span>Safe</span>
-          <strong id="safe-count">0</strong>
-          <small>Open safe decisions</small>
-        </article>
-        <article class="metric outcome review" data-outcome-filter="human_review" role="button" tabindex="0" title="Open analyst-review decisions in a new tab">
-          <span>Analyst Review</span>
-          <strong id="review-count">0</strong>
-          <small>Open review queue</small>
-        </article>
-        <article class="metric outcome danger" data-outcome-filter="dangerous" role="button" tabindex="0" title="Open dangerous decisions in a new tab">
-          <span>Dangerous</span>
-          <strong id="danger-count">0</strong>
-          <small>Open dangerous decisions</small>
-        </article>
-        <article class="metric sensor-metric">
-          <span>Zeek Notices</span>
-          <strong id="zeek-notice-count">0</strong>
-          <small>Alert-like Zeek events</small>
-        </article>
-        <article class="metric sensor-metric">
-          <span>Zeek Weirds</span>
-          <strong id="zeek-weird-count">0</strong>
-          <small>Protocol anomalies</small>
-        </article>
-        <article class="metric sensor-metric">
-          <span>Cases</span>
-          <strong id="investigations-ready">0</strong>
-          <small>Centralized investigations</small>
-        </article>
-      </section>
-
-      <section class="insight-grid">
-        <section class="panel">
-          <div class="panel-head compact">
-            <div>
-              <p class="eyebrow">Indicators</p>
-              <h2>Top IP Share</h2>
-            </div>
-          </div>
-          <div id="summary-ip-pie" class="chart-panel compact-chart"></div>
-        </section>
-
+      <section class="insight-grid dashboard-summary-grid">
         <section class="panel">
           <div class="panel-head compact">
             <div>
@@ -101,16 +47,6 @@
             </div>
           </div>
           <div id="summary-models" class="chart-panel compact-chart"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head compact">
-            <div>
-              <p class="eyebrow">Encrypted Traffic</p>
-              <h2>Metadata View</h2>
-            </div>
-          </div>
-          <div id="summary-encrypted" class="chart-panel compact-chart"></div>
         </section>
 
         <section class="panel">
@@ -177,6 +113,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260727-grouped-sensor-logs"></script>
+    <script src="/static/app.js?v=20260810-dashboard-cleanup"></script>
   </body>
 </html>

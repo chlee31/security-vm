@@ -40,7 +40,10 @@ def decide(conn, config, alert, detection, ai_report=None):
 
     ``conn``, ``config``, and ``alert`` are retained in the signature for
     compatibility with existing callers. The current policy depends only on
-    model classification plus sensor-dispute state.
+    model classification plus sensor-dispute state. Low confidence, an explicit
+    forced-review marker, or unresolved sensor disagreement always overrides a
+    model's Safe/Dangerous label to analyst review. This is the final control
+    point between model text and the application's stored action.
     """
     report = ai_report or {}
     classification = normalize_classification(report.get("classification"))

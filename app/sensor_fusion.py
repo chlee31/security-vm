@@ -1,7 +1,10 @@
-"""Convert Suricata alerts and Zeek notices into common sensor findings.
+"""Convert Suricata alerts and Zeek notices into common case findings.
 
 The common shape allows both sensors to initiate or support a case while
 retaining sensor-specific IDs, severity, Community ID, and original evidence.
+It is deliberately a link layer rather than another copy of each source row:
+``alerts`` and ``zeek_events`` remain authoritative, while ``sensor_findings``
+records which of those rows belong to a unified detection.
 """
 
 import json
@@ -28,7 +31,12 @@ def zeek_notice_priority(event):
 
 
 def zeek_notice_to_alert(event):
-    """Adapt a Zeek notice to the shared alert fields used by case creation."""
+    """Adapt a Zeek notice to the case-creation fields used by the correlator.
+
+    The historical correlator accepts an alert-shaped dictionary.  This adapter
+    lets a required Zeek notice initiate a case without pretending it came from
+    Suricata; the resulting sensor state and finding link still identify Zeek.
+    """
     priority = zeek_notice_priority(event)
     return {
         "suricata_event_id": "",
@@ -81,7 +89,7 @@ def zeek_detection(event, single_sensor_strength=0.5):
 
 
 def suricata_finding(alert_id, alert):
-    """Represent a Suricata signature as a source-linked common finding."""
+    """Create the lightweight case link back to one stored Suricata alert."""
     try:
         priority = int(alert.get("priority") or 3)
     except (TypeError, ValueError):
@@ -99,7 +107,7 @@ def suricata_finding(alert_id, alert):
 
 
 def zeek_finding(zeek_event_id, event):
-    """Represent a Zeek notice as a source-linked common finding."""
+    """Create the lightweight case link back to one stored Zeek notice."""
     priority = zeek_notice_priority(event)
     return {
         "sensor": "zeek",

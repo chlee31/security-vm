@@ -1,4 +1,12 @@
-"""Normalize Zeek JSON logs while preserving log-specific fields and lineage."""
+"""Normalize Zeek JSON logs while preserving protocol detail and provenance.
+
+Zeek writes a separate JSON log for each protocol or policy stream.  Common
+network fields are lifted into columns so SQLite can correlate by time, UID,
+Community ID, and endpoints.  Log-specific values such as DNS queries, TLS
+server names, byte counts, certificates, and file hashes remain available as a
+bounded detail map.  The complete original Zeek object is always retained in
+SQLite and is never replaced by this summary.
+"""
 
 from datetime import datetime, timezone
 import json
@@ -8,6 +16,10 @@ import json
 # context and may later corroborate a Suricata or Zeek-initiated case.
 ALERT_LIKE_LOGS = {"notice"}
 
+# These allowlists keep the AI/UI evidence useful and explainable.  They select
+# fields that answer protocol-specific investigation questions without sending
+# an entire raw log row or allowing one unusually large value to consume the
+# model context window.
 ZEEK_EVIDENCE_FIELDS = {
     "conn": (
         "service", "duration", "orig_bytes", "resp_bytes", "conn_state",
@@ -184,7 +196,14 @@ def load_zeek_json_line(line):
 
 
 def normalize_zeek_record(raw, log_type):
-    """Map log-specific Zeek fields into the common stored event shape."""
+    """Map one protocol-specific Zeek row into the common stored event shape.
+
+    Equivalent Zeek field names are resolved into shared source/destination
+    columns for SQL correlation.  ``zeek_uid`` links Zeek protocol rows from the
+    same connection, and ``community_id`` can link that connection to Suricata.
+    Human-readable message fields support the dashboard, while ``raw_json``
+    keeps the original evidence for audit and future parsing improvements.
+    """
     log_type = str(log_type or "unknown")
     if log_type.endswith(".log"):
         log_type = log_type[:-4]

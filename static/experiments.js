@@ -1,3 +1,6 @@
+// Controlled-experiment page for temperature/seed and missing-evidence tests.
+// Jobs are queued through FastAPI and run durably in the background; this file
+// only configures experiments and displays their saved results.
 const isMissingEvidence = window.location.pathname.includes("missing-evidence");
 const type = isMissingEvidence ? "missing_evidence" : "sampling_stability";
 const els = {

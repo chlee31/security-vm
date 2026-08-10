@@ -1,4 +1,15 @@
-"""Durable, sequential multi-model comparisons and controlled experiments."""
+"""Run reproducible model comparisons and controlled prompt experiments.
+
+Comparison requests freeze one exact initial prompt/evidence snapshot, then send
+it to selected profiles sequentially to avoid loading several large local models
+at once. Candidate identities are hidden behind research labels until review.
+Prompt and evidence hashes prove that candidates received identical input.
+
+Experiment tasks reuse an analyst-selected baseline and change only documented
+generation settings or evidence masks. Jobs and progress live in SQLite, so a
+browser may close without losing the queue. These research results never alter
+sensor evidence or automatically control an operational case.
+"""
 
 from copy import deepcopy
 import json

@@ -1,4 +1,11 @@
-"""Redact configured credentials before errors or status reach logs and APIs."""
+"""Redact configured credentials before errors or status reach logs and APIs.
+
+Provider libraries can include request headers or query values in exception
+messages. This module removes both known configured secret values and common
+credential-shaped fields before those messages enter SQLite, terminal output,
+or dashboard responses. It is a display/storage guard, not encryption or a
+replacement for protecting config.yaml permissions.
+"""
 
 import re
 
@@ -10,7 +17,7 @@ SECRET_PATTERN = re.compile(
 
 
 def configured_secrets(config):
-    """Collect credential values that must be removed from displayed text."""
+    """Collect non-empty provider keys solely for exact-value replacement."""
     secrets = set()
     threat_intel = (config or {}).get("threat_intel", {})
     for key, value in threat_intel.items():
@@ -24,7 +31,7 @@ def configured_secrets(config):
 
 
 def redact_secrets(value, config=None):
-    """Mask known credential patterns and configured secret values."""
+    """Return safe display text with exact and pattern-shaped credentials masked."""
     text = str(value or "")
     for secret in configured_secrets(config):
         text = text.replace(secret, "***")

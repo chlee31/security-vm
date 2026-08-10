@@ -1,4 +1,15 @@
-"""Normalize Suricata EVE records and assign broad behavior labels."""
+"""Turn Suricata EVE alerts into stable, queryable application records.
+
+Suricata's EVE stream contains many event types and deeply nested fields.  The
+case pipeline needs a small, consistent set of fields for correlation and SQL
+queries, so this module accepts only ``event_type=alert`` records and extracts
+their time, endpoints, protocol, signature, severity, Flow ID, and Community
+ID.  It also retains the complete original JSON for later audit.
+
+The behavior labels below are navigation aids, not security verdicts.  They let
+the dashboard group recognizable rule names while unfamiliar signatures remain
+``unknown`` instead of being forced into an unsupported category.
+"""
 
 import json
 import re
@@ -54,7 +65,17 @@ DETECTION_TYPE_PATTERNS = (
 
 
 def normalize_suricata_event(event):
-    """Extract the alert fields used by persistence and sensor fusion."""
+    """Extract the Suricata fields needed for storage and cross-sensor matching.
+
+    Endpoint fields and timestamps support flow/time correlation.  ``flow_id``
+    is useful inside Suricata, while ``community_id`` can independently link the
+    same flow to Zeek.  Signature and severity preserve what the sensor decided.
+    ``raw_json`` preserves everything Python did not normalize, allowing the
+    investigation page to prove each field against the original EVE record.
+
+    Non-alert EVE records return ``None`` because Zeek supplies the supporting
+    protocol telemetry used by the active case workflow.
+    """
     if event.get("event_type") != "alert":
         return None
 
@@ -79,7 +100,12 @@ def normalize_suricata_event(event):
 
 
 def detection_type_from_alert(alert):
-    """Apply the small documented keyword map and default to ``unknown``."""
+    """Group explicit signature text into a small set of dashboard categories.
+
+    This function does not infer intent and does not classify traffic as safe or
+    malicious.  It only searches the sensor-provided signature and category for
+    documented terms; the conservative fallback is ``unknown``.
+    """
     text = f"{alert.get('signature', '')} {alert.get('category', '')}".lower()
     for detection_type, patterns in DETECTION_TYPE_PATTERNS:
         if any(re.search(pattern, text) for pattern in patterns):

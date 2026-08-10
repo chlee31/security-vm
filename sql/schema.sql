@@ -1,3 +1,7 @@
+-- SENSOR INPUT AND RESUME STATE
+-- Keep searchable Suricata fields beside the original JSON. The checkpoint is
+-- advanced only after a record is committed so a restart favors replay over
+-- silently losing evidence.
 CREATE TABLE IF NOT EXISTS alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_uid TEXT UNIQUE,
@@ -27,6 +31,10 @@ CREATE TABLE IF NOT EXISTS suricata_ingest_checkpoints (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- CASES AND SENSOR FUSION
+-- A detection is the case-level grouping presented to the analyst. Individual
+-- Suricata and Zeek records remain linked through sensor_findings so the case
+-- can be reconstructed and audited without flattening away source evidence.
 CREATE TABLE IF NOT EXISTS detections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   case_uid TEXT UNIQUE,
@@ -72,6 +80,11 @@ CREATE INDEX IF NOT EXISTS idx_sensor_findings_detection
   ON sensor_findings(detection_id);
 CREATE INDEX IF NOT EXISTS idx_sensor_findings_event
   ON sensor_findings(sensor, sensor_event_id);
+
+-- THREAT-INTELLIGENCE CACHE AND PROVENANCE
+-- Indicators are reusable local feed data; usage rows prove which exact match
+-- was consulted for a case. Source rows record refresh health without storing
+-- provider credentials.
 CREATE TABLE IF NOT EXISTS threat_intel_lookups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   alert_id INTEGER,
@@ -136,6 +149,9 @@ CREATE INDEX IF NOT EXISTS idx_threat_intel_source
 CREATE INDEX IF NOT EXISTS idx_threat_intel_usage_source
   ON threat_intel_usage(source, used_at);
 
+-- REGISTERED IP ROLE CONTEXT
+-- Retained for schema compatibility and optional analyst context. These rows
+-- describe expected machine roles; they are not endpoint telemetry.
 CREATE TABLE IF NOT EXISTS assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip_address TEXT NOT NULL UNIQUE,
@@ -178,6 +194,10 @@ CREATE TABLE IF NOT EXISTS zeek_ingest_checkpoints (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- AI OUTPUT AND REQUEST AUDIT
+-- ai_reports stores parsed model conclusions for normal dashboard use. The
+-- audit table preserves the exact prompt, normalized evidence, omissions,
+-- options, hashes, and raw response needed to prove what was exchanged.
 CREATE TABLE IF NOT EXISTS ai_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,
@@ -250,6 +270,9 @@ CREATE TABLE IF NOT EXISTS ai_run_audits (
 CREATE INDEX IF NOT EXISTS idx_ai_run_audits_detection
   ON ai_run_audits(detection_id, id DESC);
 
+-- MANUAL EVALUATION LABELS
+-- These tables attach research ground truth and reviewer scores to existing
+-- cases. They never alter sensor ingestion or operational classifications.
 CREATE TABLE IF NOT EXISTS evaluation_scenarios (
   scenario_uid TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -319,6 +342,9 @@ CREATE TABLE IF NOT EXISTS evaluation_model_reviews (
   UNIQUE(comparison_run_uid, profile_uid)
 );
 
+-- REASSESSMENT AND POST-AI VERIFICATION
+-- Assessments retain historical model passes. VirusTotal is separate evidence
+-- and therefore cannot silently add or subtract from a model classification.
 CREATE TABLE IF NOT EXISTS ai_assessments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER NOT NULL,
@@ -355,6 +381,10 @@ CREATE TABLE IF NOT EXISTS virustotal_verifications (
   FOREIGN KEY (ai_report_id) REFERENCES ai_reports(id)
 );
 
+-- MODEL PROFILES AND BLIND COMPARISON RESEARCH
+-- Profiles identify callable model endpoints. Each comparison freezes one
+-- evidence snapshot, anonymizes candidate slots, and records votes separately
+-- so model identity can be revealed only after review.
 CREATE TABLE IF NOT EXISTS ai_profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   uid TEXT NOT NULL UNIQUE,
@@ -470,6 +500,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_case_explanation_promotions_detection
 CREATE INDEX IF NOT EXISTS idx_ai_case_explanation_promotions_run
   ON ai_case_explanation_promotions(comparison_run_id, id DESC);
 
+-- RUNTIME OBSERVABILITY AND WORKER CONTROL
+-- These rows make request progress, cancellation, and process health visible
+-- across browser or service restarts; they are not the case evidence itself.
 CREATE TABLE IF NOT EXISTS ai_request_activity (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   activity_uid TEXT NOT NULL UNIQUE,
@@ -521,6 +554,10 @@ CREATE TABLE IF NOT EXISTS runtime_components (
   heartbeat_at TEXT NOT NULL
 );
 
+-- FINAL RESPONSE AND HUMAN REVIEW RECORDS
+-- Keep automated outcomes, tuning labels, application events, and analyst
+-- decisions separate so later review can distinguish machine output from a
+-- human override.
 CREATE TABLE IF NOT EXISTS responses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,
@@ -566,6 +603,9 @@ CREATE TABLE IF NOT EXISTS analyst_reviews (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- QUERY INDEXES
+-- These cover the time, UID, relationship, and lookup paths used most often by
+-- ingestion workers and dashboard endpoints.
 CREATE INDEX IF NOT EXISTS idx_zeek_events_time
 ON zeek_events(timestamp);
 

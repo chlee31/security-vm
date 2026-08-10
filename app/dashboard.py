@@ -1,8 +1,15 @@
 """FastAPI application exposing dashboard pages and JSON management endpoints.
 
 Routes in this module translate HTTP requests into database/service operations.
-Sensor ingestion and AI processing remain in worker modules, which keeps the
-dashboard from becoming the source of security evidence.
+Read routes assemble already stored case, sensor, AI, and threat-intelligence
+rows for presentation. Write routes represent explicit operator actions such as
+starting a comparison, recording feedback, changing settings, or cancelling a
+request. Sensor ingestion and automatic AI processing remain in worker modules,
+which keeps a browser refresh from creating or changing security evidence.
+
+The HTML/JavaScript frontend is intentionally a view over SQLite rather than an
+independent analysis engine. Facts labelled as Python come from normalized
+database fields; model interpretations come from stored AI reports and audits.
 """
 
 from pathlib import Path
@@ -137,6 +144,8 @@ def static_page(filename):
 
 
 class AnalystReviewRequest(BaseModel):
+    """Validate an analyst's explicit decision and optional case notes."""
+
     action: str
     analyst_name: str = ""
     notes: str = ""
@@ -145,6 +154,8 @@ class AnalystReviewRequest(BaseModel):
 
 
 class AssetRequest(BaseModel):
+    """Compatibility payload for registering descriptive IP-role context."""
+
     ip_address: str
     name: str
     device_type: str
@@ -154,10 +165,14 @@ class AssetRequest(BaseModel):
 
 
 class AdminAssetRequest(AssetRequest):
+    """Extend a registered IP-role payload with its active/inactive state."""
+
     status: str = "active"
 
 
 class AIModelConfigRequest(BaseModel):
+    """Validate connection settings for one Ollama-compatible model endpoint."""
+
     host: str
     model: str
     provider: str = ""
@@ -165,47 +180,65 @@ class AIModelConfigRequest(BaseModel):
 
 
 class AIProfileRequest(AIModelConfigRequest):
+    """Describe a reusable model profile without exposing its runtime output."""
+
     name: str
     status: str = "active"
     notes: str = ""
 
 
 class AIComparisonSettingsRequest(BaseModel):
+    """Select which saved model profiles participate in future comparisons."""
+
     profile_uids: List[str]
 
 
 class AIComparisonVoteRequest(BaseModel):
+    """Record a blind response selection or reject-all comparison decision."""
+
     analyst_name: str = "analyst"
     selection: str
     notes: str = ""
 
 
 class AIComparisonQueueRequest(BaseModel):
+    """Optionally choose profiles when adding a case to the durable queue."""
+
     profile_uids: List[str] = []
 
 
 class StabilitySettingRequest(BaseModel):
+    """Define one controlled temperature-and-seed experiment variation."""
+
     label: str = ""
     temperature: float
     seed: int
 
 
 class StabilityExperimentRequest(BaseModel):
+    """Run configured generation variations against one frozen comparison."""
+
     comparison_uid: str
     settings: List[StabilitySettingRequest]
 
 
 class MissingEvidenceVariantRequest(BaseModel):
+    """Name one experiment variation and the evidence sections it removes."""
+
     label: str = ""
     mask: List[str]
 
 
 class MissingEvidenceExperimentRequest(BaseModel):
+    """Run evidence-removal variants against one reviewed comparison input."""
+
     comparison_uid: str
     variants: List[MissingEvidenceVariantRequest]
 
 
 class AIExperimentReviewRequest(BaseModel):
+    """Capture manual quality ratings without changing operational decisions."""
+
     grounding_score: Optional[int] = None
     completeness_score: Optional[int] = None
     next_step_quality_score: Optional[int] = None
@@ -221,41 +254,57 @@ class AIExperimentReviewRequest(BaseModel):
 
 
 class AIComparisonPromotionRequest(BaseModel):
+    """Identify the analyst promoting a selected response to the case view."""
+
     analyst_name: str = "analyst"
     notes: str = ""
 
 
 class ResetLogsRequest(BaseModel):
+    """Require an explicit confirmation phrase before deleting operational rows."""
+
     confirm: str
 
 
 class ThreatIntelConfigRequest(BaseModel):
+    """Compatibility payload for the original OTX-only settings form."""
+
     otx_enabled: bool = False
     otx_api_key: str = ""
     cache_ttl_hours: int = 24
 
 
 class ThreatIntelProviderRequest(BaseModel):
+    """Validate enablement, credential, and refresh settings for one provider."""
+
     enabled: bool = False
     api_key: str = ""
     refresh_hours: int = 24
 
 
 class ThreatIntelAdminRequest(BaseModel):
+    """Update the configured threat-intelligence providers as one operation."""
+
     providers: Dict[str, ThreatIntelProviderRequest]
 
 
 class OtxLookupRequest(BaseModel):
+    """Limit and scope a manual OTX lookup initiated from the dashboard."""
+
     limit: int = 5
     scope: str = "top5"
     detection_type: Optional[str] = None
 
 
 class OtxStatusRequest(BaseModel):
+    """Supply an optional OTX key for a connection test without returning it."""
+
     otx_api_key: str = ""
 
 
 class EvaluationScenarioRequest(BaseModel):
+    """Describe labelled ground truth used only by the research evaluation API."""
+
     scenario_uid: str
     name: str
     experiment_type: str
@@ -275,6 +324,8 @@ class EvaluationScenarioRequest(BaseModel):
 
 
 class EvaluationCaseLinkRequest(BaseModel):
+    """Record the expected relationship between a labelled scenario and case."""
+
     case_uid: str
     relationship_status: str = "expected_related"
     analyst_confirmed: bool = False
@@ -282,6 +333,8 @@ class EvaluationCaseLinkRequest(BaseModel):
 
 
 class EvaluationEventLabelRequest(BaseModel):
+    """Record whether one sensor event was attached to the expected case."""
+
     event_uid: str
     event_sensor: str
     expected_case_uid: str = ""

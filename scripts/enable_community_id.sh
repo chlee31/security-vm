@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# Configure Suricata and Zeek to calculate the same Community ID flow hash.
+# Matching seeds let Python correlate records from both sensors without using
+# payload contents. Paths and the seed may be overridden with environment
+# variables; the script validates inputs and creates timestamped backups first.
+
 set -euo pipefail
 
 SURICATA_CONFIG="${SURICATA_CONFIG:-/etc/suricata/suricata.yaml}"

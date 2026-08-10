@@ -1,9 +1,23 @@
-"""SQLite persistence, migrations, correlation queries, and dashboard read models.
+"""SQLite persistence, migrations, correlation queries, and dashboard reads.
 
-This is the authoritative local evidence store. Sensor records are retained
-with stable IDs and raw-record hashes; normalized findings, AI audits, analyst
-actions, and enrichment results reference those source rows rather than
-replacing them.
+SQLite is the authoritative local evidence store. The schema separates four
+concerns so that each stage can be explained and independently verified:
+
+* ``alerts`` and ``zeek_events`` retain normalized sensor fields plus original
+  JSON. Normal columns make correlation/querying practical; raw JSON preserves
+  evidence that was not selected by today's normalizers.
+* ``detections`` is the unified case record. ``sensor_findings`` is a many-to-
+  one link from original sensor rows to that case, avoiding copied or flattened
+  evidence when Suricata and Zeek corroborate one another.
+* ``ai_reports`` provides the current readable explanation, while
+  ``ai_assessments`` and ``ai_run_audits`` preserve history and exact request/
+  response proof. A changed model opinion does not overwrite its source data.
+* threat-intelligence, analyst-review, response, checkpoint, and runtime tables
+  record enrichment, human decisions, processing progress, and service health.
+
+Stable SUR-, ZEK-, and CASE- identifiers are presentation/audit identities;
+integer primary keys remain efficient relational links. Migrations are
+forward-only and preserve existing research data.
 """
 
 import sqlite3
@@ -26,7 +40,12 @@ SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
 # ---------------------------------------------------------------------------
 
 def connect(db_path):
-    """Open a row-addressable SQLite connection tolerant of worker contention."""
+    """Open a row-addressable connection shared safely by independent workers.
+
+    Ingestion, AI processing, threat-intelligence refresh, and dashboard reads
+    can overlap. WAL allows readers during writes, and the busy timeout waits
+    for short write transactions rather than failing immediately.
+    """
     # WAL permits dashboard readers while ingestion writes. busy_timeout makes a
     # caller wait briefly instead of immediately raising "database is locked".
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
@@ -36,7 +55,12 @@ def connect(db_path):
 
 
 def init_db(db_path):
-    """Open the database, apply the base schema, and migrate legacy databases."""
+    """Open the configured database and make its schema current without reset.
+
+    ``CREATE IF NOT EXISTS`` supplies the base layout. Idempotent migrations
+    then add fields introduced by newer versions, preserving rows collected by
+    earlier demonstrations instead of requiring a new database.
+    """
     conn = connect(db_path)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
@@ -598,7 +622,12 @@ def table_columns(conn, table_name):
 
 
 def ensure_suricata_ingest_tables(conn):
-    """Create or update Suricata checkpoints and duplicate tracking."""
+    """Create Suricata restart checkpoints and content-based deduplication.
+
+    The inode/offset identifies where the file reader stopped. The fingerprint
+    protects against replay when a rotated or copied EVE file presents the same
+    alert at another offset.
+    """
     alert_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()
     }
@@ -731,7 +760,12 @@ def ensure_ai_report_columns(conn, table_name):
 
 
 def ensure_ai_run_audit_table(conn):
-    """Create the proof table containing exact AI requests and responses."""
+    """Create the proof table containing exact AI requests and responses.
+
+    This table is intentionally separate from the readable ``ai_reports`` row:
+    it records prompt/evidence text, hashes, source lineage, omissions, request
+    options, token metrics, parse status, and raw output for reproducibility.
+    """
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS ai_run_audits (
@@ -785,7 +819,12 @@ def ensure_ai_run_audit_table(conn):
 
 
 def ensure_zeek_tables(conn):
-    """Create or update the tables used for Zeek logs and checkpoints."""
+    """Create Zeek source rows and one checkpoint per protocol log.
+
+    Zeek rotates conn, DNS, TLS, notice, and other logs independently. A single
+    global offset would therefore skip or repeat evidence, so each ``log_type``
+    owns its path/inode/offset state.
+    """
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS zeek_events (
@@ -843,7 +882,13 @@ def ensure_zeek_tables(conn):
 
 
 def ensure_sensor_fusion_tables(conn):
-    """Create or update the tables that join Suricata and Zeek findings."""
+    """Create the many-to-one links that join sensor rows into cases.
+
+    ``detections`` stores case-level time, endpoint, and correlation state.
+    ``sensor_findings`` identifies the exact Suricata or Zeek row supporting
+    that case. This preserves sensor disagreement and allows multiple findings
+    without duplicating their complete raw JSON in the case table.
+    """
     alert_columns = {row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
     if "community_id" not in alert_columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN community_id TEXT")
@@ -3151,7 +3196,13 @@ def alert_content_fingerprint(alert):
 
 
 def insert_alert(conn, alert):
-    """Persist one normalized Suricata alert and assign its stable event UID."""
+    """Persist normalized and raw Suricata evidence under a stable event UID.
+
+    Queryable endpoint/signature columns support case correlation and display.
+    ``raw_json`` remains the authoritative original event. The canonical
+    fingerprint makes replay idempotent, while the readable SUR UID gives the
+    analyst a durable reference independent of a timestamp alone.
+    """
     fingerprint = alert_content_fingerprint(alert)
     cur = conn.cursor()
     cur.execute(
@@ -3202,7 +3253,12 @@ def insert_alert(conn, alert):
 
 
 def insert_detection(conn, detection):
-    """Persist a new unified case and assign its stable CASE UID."""
+    """Persist a unified case shell and assign its stable CASE UID.
+
+    A detection is not another sensor alert. It is the parent record that
+    carries the correlation window, representative endpoints, sensor state,
+    and lifecycle status for one or many linked findings.
+    """
     cur = conn.cursor()
     cur.execute(
         """
@@ -3248,7 +3304,12 @@ def insert_detection(conn, detection):
 
 
 def insert_ai_report(conn, detection_id, report):
-    """Store the normalized human-readable model explanation for a case."""
+    """Store the normalized model explanation used by the current case view.
+
+    Structured columns make summary, confidence, recommendations, and evidence
+    acknowledgement easy to display. The exact prompt and raw request proof go
+    to ``ai_run_audits``; historical opinions go to ``ai_assessments``.
+    """
     def sqlite_value(value):
         """Convert a Python value into a representation SQLite can store safely."""
         if isinstance(value, (dict, list)):
@@ -3314,8 +3375,6 @@ def upsert_ai_run_audit(conn, detection_id, report, ai_report_id=None, assessmen
     request options, measured model metrics, and raw response are stored here.
     Credentials are removed before these values reach this function.
     """
-    """Persist the authoritative local record of an AI request and response."""
-
     def encoded(value, fallback):
         """Encode one CSV field without allowing spreadsheet formula execution."""
         return json.dumps(value if value is not None else fallback, sort_keys=True)
@@ -3465,7 +3524,12 @@ def initial_ai_request_snapshot(conn, detection_id):
 
 
 def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", evidence_sources=None):
-    """Append a historical assessment without replacing earlier model opinions."""
+    """Append a historical opinion without replacing earlier model results.
+
+    Initial analysis, reassessment, comparison, and experiment records may all
+    discuss the same case. Append-only history makes those changes measurable
+    instead of silently replacing the first response.
+    """
     cur = conn.execute(
         """
         INSERT INTO ai_assessments (
@@ -3542,7 +3606,12 @@ def virustotal_verifications_for_detection(conn, detection_id):
 
 
 def insert_zeek_event(conn, event):
-    """Persist one normalized Zeek row while retaining its original JSON text."""
+    """Persist one normalized Zeek row while retaining its original JSON text.
+
+    Shared endpoint/UID/Community ID columns make correlation efficient across
+    log types and sensors. Protocol-specific fields remain in ``raw_json`` and
+    are selected later by ``zeek_evidence_details`` when a case needs context.
+    """
     cur = conn.execute(
         """
         INSERT OR IGNORE INTO zeek_events (
@@ -3620,7 +3689,12 @@ def zeek_flow_for_uid(conn, zeek_uid):
 
 
 def insert_sensor_finding(conn, detection_id, finding):
-    """Link a source sensor record to a unified detection exactly once."""
+    """Link one authoritative sensor row to a unified detection exactly once.
+
+    The unique sensor/event pair prevents one source event from being attached
+    twice. ``raw_event`` is convenient lineage evidence, while the sensor name
+    and record ID remain the canonical path back to ``alerts``/``zeek_events``.
+    """
     raw_event = finding.get("raw_event")
     if isinstance(raw_event, (dict, list)):
         raw_event = json.dumps(raw_event, sort_keys=True)
@@ -6213,7 +6287,15 @@ def detections_without_ai_reports(
     newest_first=False,
     minimum_age_seconds=0,
 ):
-    """Return the next durable queue items that still need initial AI reports."""
+    """Return durable cases for which the selected model has no AI report.
+
+    No placeholder row is inserted into ``ai_reports`` when a case is created.
+    Instead, this LEFT JOIN finds a detection whose matching report is absent.
+    Ordering by detection ID provides a stable oldest-first queue by default;
+    once the worker stores a report, the next query naturally excludes it. A
+    Zeek-only case can have no ``alerts`` row, hence the COALESCE fallbacks to
+    case fields and its first linked sensor finding.
+    """
     join_filters = []
     params = []
     if ai_profile_uid:

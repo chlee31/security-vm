@@ -1,3 +1,6 @@
+// Admin-page controller for saved AI profiles, threat-intelligence settings,
+// tool status, and the runtime console. It calls protected API endpoints; the
+// browser never performs sensor collection or stores credentials itself.
 const els = {
   updated: document.querySelector("#admin-updated"),
   aiModelForm: document.querySelector("#ai-model-form"),

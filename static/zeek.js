@@ -1,3 +1,6 @@
+// Zeek telemetry page. It visualizes ingested log/checkpoint statistics and
+// protocol metadata so operators can verify that the required sensor is
+// producing evidence; it does not read /opt/zeek directly from the browser.
 const els = {
   dot: document.querySelector("#zeek-dot"),
   updated: document.querySelector("#zeek-updated"),

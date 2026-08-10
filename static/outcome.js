@@ -1,3 +1,5 @@
+// Outcome workbook for reviewing cases by their stored final classification.
+// Charts and counts are presentation-only summaries of API data.
 const params = new URLSearchParams(window.location.search);
 const outcomeType = params.get("type") || "all";
 const detectionType = params.get("detection_type") || "";
