@@ -10,6 +10,7 @@ Python retains control of correlation, final action mapping, data handling, and 
 > The installed Llama 3.1 and Llama 3.2 models advertise context windows of approximately 131,072 tokens, while the current NVIDIA Nemotron model metadata advertises 1,048,576 tokens. Security VM intentionally configures a much smaller `num_ctx: 8192` operational window to control VRAM/RAM use, latency, and request size. The 8,192-token window includes both input and generated output; with `num_predict: 1024`, Python reserves up to 1,024 tokens for the response and budgets approximately 7,168 for the prompt. Model-advertised limits are capabilities, not the limits selected for this deployment.
 >
 > Every new request records the exact prompt, normalized evidence, omissions, configured context, and Ollama's measured `prompt_eval_count` in SQLite so an analyst can verify what was actually submitted and processed.
+> Contact: chlee31@myseneca.ca (ChaeHyeon Lee or Marino Lee)
 
 ## Current Scope
 
