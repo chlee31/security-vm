@@ -11,7 +11,7 @@ Python retains control of correlation, final action mapping, data handling, and 
 >
 > Every new request records the exact prompt, normalized evidence, omissions, configured context, and Ollama's measured `prompt_eval_count` in SQLite so an analyst can verify what was actually submitted and processed.
 > 
-> Contact: chlee31@myseneca.ca (ChaeHyeon Lee or Marino Lee)
+> For any questions and inqueries Contact: chlee31@myseneca.ca (ChaeHyeon Lee or Marino Lee)
 
 ## Current Scope
 
