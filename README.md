@@ -51,6 +51,8 @@ If Community ID was not enabled during bootstrap, run:
 sudo ./scripts/enable_community_id.sh
 ```
 
+This helps set up the Community ID on Suricata and Zeek to be the same. 
+
 ## Start The Prototype
 
 Activate the environment and start every required worker:
