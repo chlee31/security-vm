@@ -328,51 +328,6 @@ Every case receives a UID such as `CASE-20260717-000123`. Its investigation page
 
 The **Reassess Case** button makes one explicit AI request using the latest stored evidence. **Refresh VirusTotal** refreshes eligible global IPs only and does not automatically trigger another AI call.
 
-### Controlled LLM Experiments
-
-Open `/compare` to queue a baseline comparison for a stored case. Select any
-number of active AI profiles, or select all active profiles. The API returns a
-comparison UID immediately; the `experiment-worker` started by `run-all`
-executes requests sequentially in the background. Responses use dynamic blind
-labels such as `R01`, `R02`, and `R03`. Model identities remain hidden until a
-winner, tie, or reject-all review is recorded.
-
-Baseline requests use `temperature: 0`, seed `42`, `num_ctx: 8192`, and
-`num_predict: 1024`. Python freezes the exact prompt, normalized evidence,
-generation settings, selected profile order, and Ollama model digest before
-execution. The dashboard verifies prompt, evidence, and generation-option
-equality across every successful response.
-
-For cases with repeated sensor events, Python keeps every raw finding in SQLite and the case evidence view but sends the models a bounded recurrence summary. Repeated rows are grouped by sensor, finding name/type, endpoints, destination port, and protocol. The model receives occurrence counts, first/last timestamps, and representative event UIDs, which prevents dozens of duplicate alerts from obscuring distinct evidence.
-
-All successful anonymized responses appear on the case page and `/compare`.
-After review, the workspace reveals the selected model identity. **Use Selected
-Response on Case** changes only the displayed explanation; it does not overwrite
-the original AI report, candidate, request audit, sensor evidence, or analyst
-decision.
-
-The comparison export contains one CSV/JSON row per model candidate, including
-model build metadata, request controls, hashes, token metrics, timing, parsed
-response fields, raw response, and review outcome.
-
-Use `/experiments/stability` to rerun every successful baseline candidate with
-controlled temperature and seed combinations. Use
-`/experiments/missing-evidence` after selecting a baseline winner to test that
-winner against explicit evidence-removal masks. Both pages queue durable
-background jobs, show control and variant responses together, accept manual
-evaluation scores, and export one research row per experimental response.
-
-Run the worker separately only when `run-all` is not being used:
-
-```bash
-python -m app.main experiment-worker --config config.yaml
-```
-
-See [docs/llm-experiments.md](docs/llm-experiments.md) for the experimental
-controls, database records, workflow, and CSV columns.
-
-Model comparison is an evaluation feature. Promoting a winner changes only which AI explanation is presented on the case page. Candidate classifications do not replace the official case assessment and do not alter Python's recorded action.
-
 ## Threat Intelligence
 
 Configure providers under `/admin` in the Threat Intelligence tab. Supported cached/bulk sources include ThreatFox, URLhaus, SSLBL, Spamhaus DROP, OpenPhish Community, IPsum, Feodo Tracker, and cached OTX results.
