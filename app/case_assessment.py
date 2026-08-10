@@ -122,7 +122,13 @@ def _primary_alert(workspace):
 
 
 def build_reassessment_evidence(conn, config, workspace, alert, detection, assessment_type="reassessment"):
-    """Build a fresh package while preserving historical evidence and feedback."""
+    """Build fresh evidence from stored rows without rewriting the original case.
+
+    Reassessment can include newly refreshed cached intelligence, current Zeek
+    context, prior assessments, analyst feedback, and any existing post-AI
+    VirusTotal verification. Model comparisons omit prior opinions so candidates
+    assess sensor evidence rather than copy another model's conclusion.
+    """
     zeek_context = workspace.get("zeek_context") or {"items": []}
     active_sources = _active_sources(config)
     return {
@@ -178,7 +184,12 @@ def build_reassessment_evidence(conn, config, workspace, alert, detection, asses
 
 
 def prepare_case_context(conn, config, case_uid, assessment_type="reassessment"):
-    """Load one case and return the normalized inputs required by the AI client."""
+    """Reconstruct the alert-shaped anchor, case fields, and bounded AI evidence.
+
+    Suricata cases use their first stored alert as the anchor. Zeek-only cases
+    synthesize the same field shape from a Zeek finding so ``ai_client`` can use
+    one request-building interface for both sensor paths.
+    """
     workspace = case_workspace(conn, case_uid)
     if not workspace:
         raise ValueError("Case not found")

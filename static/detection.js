@@ -1,3 +1,6 @@
+// Detection-type workbook. This page groups stored cases by one normalized
+// behavior label so an analyst can inspect trends without reclassifying data
+// in the browser.
 const params = new URLSearchParams(window.location.search);
 const detectionType = params.get("type") || "unknown";
 

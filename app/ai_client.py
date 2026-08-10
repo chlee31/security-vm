@@ -1,9 +1,16 @@
 """Build, send, validate, and audit requests to an Ollama-compatible AI service.
 
 This module is the boundary between Security VM's trusted Python pipeline and an
-external language model. Python, not the model, decides which evidence is
-included, removes sensitive/raw fields, enforces size limits, records hashes,
-and validates the returned structure.
+external language model. Earlier workers have already converted sensor records
+into a case and joined relevant threat-intelligence and Zeek context. This file
+does not discover alerts or query the database itself. It receives that selected
+case evidence, removes fields that must remain local, bounds its size, turns it
+into one text prompt, and sends one audited HTTP request.
+
+Python, not the model, controls the evidence and final application behavior.
+The model can explain and classify only the supplied package. Python records the
+exact request, validates the response shape, and converts failures or ambiguous
+output into analyst review instead of silently trusting free-form model text.
 
 High-level request path:
 
@@ -193,8 +200,16 @@ def _compact_ai_evidence(value, key="", path="$", depth=0, omissions=None):
     * nesting is capped at eight levels;
     * lists and strings are capped at 25 items and 2,000 characters.
 
+    These limits exist because one case can contain hundreds of repeated sensor
+    rows. Sending every duplicate would consume the context window without
+    adding equivalent investigative value. Representative rows and recurrence
+    counts preserve the useful pattern, while the complete rows remain in
+    SQLite for analyst inspection.
+
     Every exclusion is added to ``omissions`` so truncation is visible in the
-    audit record instead of silently changing what the model receives.
+    audit record instead of silently changing what the model receives. This
+    also gives the report a defensible answer when asked which evidence was not
+    sent to the model.
     """
     omissions = omissions if omissions is not None else []
     if depth > MAX_EVIDENCE_NESTING_DEPTH:
@@ -521,8 +536,15 @@ def _build_prompt_components(alert, detection, evidence_context=None):
     2. a normalized JSON evidence package built from the current case; and
     3. a JSON Schema reminder defining the only accepted response shape.
 
+    ``event_context`` supplies the basic who/where/when network observables.
+    ``correlation`` explains recurrence and why separate sensor rows belong to
+    one case. ``encrypted_traffic_context`` prevents claims that encrypted
+    payloads were inspected. ``evidence_context`` supplies representative
+    Suricata/Zeek findings, protocol metadata, and threat-intelligence results.
+
     Returns the final text plus the package, omission manifest, and source map
-    so the database can prove what was sent and where each value originated.
+    so the database can prove what was sent and trace each selected value back
+    to the locally stored evidence.
     """
     # Encryption is inferred only to set visibility expectations. It never
     # claims that payload decryption occurred.
@@ -684,6 +706,12 @@ def build_prompt(alert, detection, evidence_context=None):
 
 def build_prompt_audit(config, alert, detection, evidence_context=None):
     """Build the prompt and the local proof record prepared before transmission.
+
+    This record is created before the network request so a failed or cancelled
+    call still leaves evidence of what Python intended to send. The prompt hash
+    covers the complete instruction-plus-evidence text; the evidence hash covers
+    the normalized package alone. Matching hashes across comparison responses
+    prove that those models received identical inputs from this application.
 
     Character/byte counts and SHA-256 hashes prove the exact payload. They are
     not token counts. The model server's ``prompt_eval_count``, when returned,
@@ -1205,11 +1233,18 @@ def ask_ai_model(
 ):
     """Send one audited request and return a normalized qualitative report.
 
+    The request contains text, not uploaded files: fixed instructions followed
+    by serialized JSON evidence and a response schema. Tailscale may transport
+    the HTTP request, but it does not change its contents.
+
     ``num_ctx`` is the total token window allocated by Ollama for this request.
     ``num_predict`` is the maximum generated output within that same window.
     Their difference is therefore the approximate input budget. Security VM
     supplies both values explicitly, so they apply even when the remote Ollama
-    app has a different default context-length slider.
+    app has a different default context-length slider. Temperature and seed are
+    also read from ``config.yaml`` here; changing those values and restarting
+    the workers affects initial analysis, reassessment, and ordinary comparison
+    requests unless a controlled experiment deliberately overrides them.
     """
     def progress(phase, details=None):
         """Publish request lifecycle state without changing request behavior."""

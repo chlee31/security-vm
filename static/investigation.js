@@ -1,3 +1,6 @@
+// Case investigation workspace. It combines Python-derived facts, stored
+// Suricata/Zeek findings, enrichment, AI reports, and analyst feedback without
+// recalculating the evidence in JavaScript.
 const params = new URLSearchParams(window.location.search);
 const detectionId = params.get("id");
 const requestedCaseUid = params.get("case");

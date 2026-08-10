@@ -1,4 +1,11 @@
-"""Sanitized progress callbacks for observable AI request lifecycles."""
+"""Publish sanitized AI-request progress without coupling it to model logic.
+
+The AI client reports phases such as preparing, requesting, completed, failed,
+or cancelled through a callback created here. Each update is written to SQLite
+for the password-protected Admin console. Errors are redacted before storage,
+and observability failures are deliberately best-effort so they cannot change a
+case result or terminate the model request.
+"""
 
 from app.database import (
     ai_request_cancel_requested,
@@ -17,7 +24,12 @@ def ai_activity_callback(
     comparison_uid=None,
     anonymous_slot=None,
 ):
-    """Create a best-effort callback that cannot break model processing."""
+    """Create a durable, cancellable activity record for one model invocation.
+
+    The returned callable updates the same row as the request moves through its
+    lifecycle. A small attached cancellation checker lets the streaming HTTP
+    loop stop when an operator cancels the request from Admin.
+    """
     activity_uid = create_ai_request_activity(
         conn,
         assessment_type,

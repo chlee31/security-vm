@@ -1,8 +1,10 @@
-"""Fetch, cache, match, and summarize supported threat-intelligence providers.
+"""Fetch, normalize, cache, and match supported threat-intelligence feeds.
 
-Bulk/cached providers are qualitative pre-AI evidence. VirusTotal lookup code
-is available here but orchestration deliberately reserves it for post-AI
-verification of Dangerous classifications.
+Provider-specific parsers turn downloaded IPs, domains, URLs, and hashes into
+the common ``threat_intel_indicators`` table. Case processing queries that
+local cache and sends only sanitized matches and provider status to the AI
+model, not credentials or complete feed responses. VirusTotal helpers remain
+available here, but orchestration reserves live verification for a later stage.
 """
 
 import csv

@@ -1,4 +1,15 @@
-"""Load, merge, validate, and save Security VM YAML configuration."""
+"""Load, merge, validate, and save Security VM YAML configuration.
+
+``DEFAULT_CONFIG`` is the documented fallback for every supported setting. A
+user's ``config.yaml`` is recursively merged over this dictionary, so the file
+only needs to contain values that differ from the defaults. Configuration is
+loaded when each worker starts; editing YAML does not mutate a running process,
+so ``run-all`` must be restarted after operational changes.
+
+This module does not test interfaces, model reachability, or credentials. Those
+checks belong to bootstrap and runtime components. Keeping file parsing here
+makes every worker interpret the same configuration in the same way.
+"""
 
 from pathlib import Path
 from copy import deepcopy
@@ -6,6 +17,9 @@ from copy import deepcopy
 import yaml
 
 
+# These defaults allow a local, minimally exposed analysis deployment. Interface
+# names, sensor paths, database path, model endpoint, and research controls are
+# intentionally overridable in config.yaml for each installation.
 DEFAULT_CONFIG = {
     "system": {"mode": "analysis", "retention_days": 7},
     "suricata": {
@@ -93,7 +107,13 @@ DEFAULT_CONFIG = {
 
 
 def load_config(path: str | Path = "config.yaml"):
-    """Load YAML over safe defaults and normalize historical key names."""
+    """Return one complete configuration assembled from defaults and YAML.
+
+    A missing file is valid and returns a deep copy of the defaults. Deep copies
+    prevent one caller from accidentally changing settings seen by another.
+    Legacy keys are normalized before merging so old installations continue to
+    start while new code reads only the current names.
+    """
     config_path = Path(path)
     if not config_path.exists():
         return deepcopy(DEFAULT_CONFIG)
@@ -104,13 +124,18 @@ def load_config(path: str | Path = "config.yaml"):
 
 
 def save_config(config, path: str | Path = "config.yaml"):
-    """Write current configuration while preserving readable YAML structure."""
+    """Write a complete configuration used by later worker restarts.
+
+    Dashboard/admin changes call this helper. It does not hot-reload already
+    running ingestion or AI workers; the launcher must be restarted for those
+    processes to read the new values.
+    """
     with Path(path).open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
 
 
 def deep_merge(base, override):
-    """Recursively merge dictionaries without mutating either input."""
+    """Apply nested user overrides without dropping sibling default settings."""
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             base[key] = deep_merge(base[key], value)
@@ -120,7 +145,12 @@ def deep_merge(base, override):
 
 
 def normalize_legacy_config_keys(config):
-    """Map older ``ollama`` settings into the current ``ai_model`` section."""
+    """Translate supported old keys and remove retired active-response settings.
+
+    This migration happens in memory when YAML is loaded. It lets historical
+    files run under the current passive-analysis design without keeping legacy
+    names throughout the application.
+    """
     legacy_ai = config.pop("olla" + "ma", None)
     if legacy_ai and "ai_model" not in config:
         config["ai_model"] = legacy_ai

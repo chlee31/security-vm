@@ -1,9 +1,15 @@
 """Command-line entry point and orchestration for the Security VM pipeline.
 
-Suricata and Zeek readers persist and correlate sensor evidence without waiting
-for network model I/O. A separate required AI worker gathers bounded evidence,
-requests an explanation, stores the complete audit, applies Python response
-policy, and optionally performs post-classification VirusTotal verification.
+This module is the coordinator, not the owner of every implementation detail.
+Suricata file following, Zeek log following, normalization, persistence,
+correlation, model requests, and dashboard rendering live in focused modules.
+The functions here connect those stages and supervise their worker processes.
+
+Sensor readers persist and correlate evidence without waiting for network model
+I/O. A separate required AI worker finds durable cases with no report, gathers
+bounded evidence, requests an explanation, stores complete audit proof, and
+applies Python response policy. This separation prevents a slow or unavailable
+model from stopping Suricata/Zeek collection.
 """
 
 import argparse
@@ -257,7 +263,10 @@ def build_ai_evidence_context(conn, config, alert, detection=None, detection_id=
 
     This function joins normalized findings, bounded Zeek context, recurrence,
     and pre-AI threat intelligence. Raw sensor rows stay in SQLite and are
-    represented here by normalized fields, IDs, hashes, and provenance.
+    represented here by normalized fields, IDs, hashes, and provenance. The
+    selected fields answer four model questions: what sensors observed, how the
+    activity repeated, what protocol context surrounded it, and whether known
+    indicators matched. Credentials and unrestricted raw logs are excluded.
     """
     # ``sensor_findings`` is the common Suricata/Zeek view for the case. The
     # original records remain linked through source_table and sensor_event_id.
@@ -531,7 +540,15 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
 
 
 def run_ingest(config_path):
-    """Continuously persist Suricata alerts without waiting for AI analysis."""
+    """Read, normalize, store, and correlate Suricata alerts continuously.
+
+    The EVE follower yields only acknowledged file records. Each alert is first
+    normalized and stored in ``alerts``; it is then linked to an existing case
+    or used to create a new ``detections`` row. Finally, ``sensor_findings``
+    records the source-to-case relationship. The checkpoint advances only after
+    all durable writes succeed. The separate AI worker notices the missing
+    ``ai_reports`` row and performs model analysis later.
+    """
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     correlator = Correlator(config)
@@ -651,7 +668,13 @@ def run_zeek_status(config_path):
 
 
 def run_zeek_ingest(config_path):
-    """Validate the required Zeek sensor and continuously ingest its JSON logs."""
+    """Validate Zeek, store every configured log, and correlate notice rows.
+
+    All configured protocol logs enter ``zeek_events`` as supporting evidence.
+    Policy ``notice`` rows can also initiate or join a case through
+    ``sensor_findings``. When a notice lacks endpoints, its Zeek connection UID
+    is used to recover them from a stored conn row before correlation.
+    """
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     status = zeek_status(config)
@@ -673,7 +696,7 @@ def run_zeek_ingest(config_path):
     print(f"[+] Zeek ingest reading JSON logs from {config.get('zeek', {}).get('log_directory')}")
 
     def process_zeek_event(event_id, event):
-        """Turn each new Zeek notice into a new or correlated case finding."""
+        """Turn a durable Zeek notice into a new or correlated case finding."""
         if event.get("log_type") != "notice":
             return
         if sensor_finding_detection_id(conn, "zeek", event_id):
@@ -839,6 +862,13 @@ def run_all(
     set by ``--skip-suricata-restart`` and is useful when Suricata is managed
     separately. A required child exit shuts down the whole pipeline; an
     optional threat-intelligence worker may fail without stopping collection.
+
+    Suricata's health check is inline because this launcher only needs to ask
+    systemd whether one service is active. Zeek status is delegated to
+    ``zeek_inventory.py`` because Zeek requires binary discovery, ZeekControl
+    state/PID inspection, package awareness, and access checks across multiple
+    logs. This historical layout does not make either sensor less important;
+    both ingestion workers are required and feed the same SQLite case model.
     """
     config = load_config(config_path)
     database_path = config.get("database", {}).get("path", "security_vm.db")
@@ -989,6 +1019,9 @@ def run_all(
     print("[+] Normal logs are quiet. Errors and process exits will print here.", flush=True)
 
     if restart_suricata:
+        # Suricata operational inventory is intentionally small here: systemd
+        # owns the process, and config.yaml names the single EVE input consumed
+        # by the application. The reader itself lives in suricata_reader.py.
         print("[+] Checking Suricata service", flush=True)
         suricata_active = run_quiet_command(
             "suricata", privileged_prefix + ["systemctl", "is-active", "suricata"], timeout=10
@@ -1005,6 +1038,8 @@ def run_all(
             print("[!] Cannot start: Suricata is a required sensor and is not active.", flush=True)
             return
 
+    # Zeek has several binaries, a ZeekControl state database, PIDs, packages,
+    # and many logs, so zeek_inventory.py supplies the richer status object.
     print("[+] Checking required Zeek sensor", flush=True)
     zeekctl = zeek_runtime_status.get("binaries", {}).get("zeekctl") or "zeekctl"
     if not zeek_runtime_status.get("running"):
@@ -1279,7 +1314,14 @@ def assessment_inputs_from_row(conn, row):
 
 
 def run_ai_worker(config_path, poll_seconds=1.0, correlation_delay_seconds=5):
-    """Continuously assess persisted cases without blocking either sensor."""
+    """Continuously assess the oldest durable case missing an AI report.
+
+    The short age delay lets a second sensor attach corroborating evidence
+    before the first prompt snapshot is prepared. The queue is derived with a
+    database LEFT JOIN rather than an in-memory list, so work survives process
+    and dashboard restarts. After a report is stored, that case disappears from
+    the next missing-report query and the worker advances naturally.
+    """
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     print("[+] AI assessment worker starting")

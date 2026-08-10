@@ -1,4 +1,11 @@
-"""Periodically refresh enabled bulk threat-intelligence feeds."""
+"""Periodically refresh enabled bulk threat-intelligence feeds.
+
+The worker reloads config.yaml each cycle, checks each provider's last successful
+refresh, and downloads only feeds that are due. Parsed indicators replace that
+provider's cache in one transaction, preventing a partial download from leaving
+half an IOC set. Cases query this local cache before AI analysis; API keys and
+raw provider responses are not sent to the model.
+"""
 
 import time
 from datetime import datetime, timezone
@@ -10,7 +17,7 @@ from app.security import redact_secrets
 
 
 def parse_time(value):
-    """Read a saved timestamp."""
+    """Normalize a saved provider timestamp to UTC for refresh comparisons."""
     if not value:
         return None
     try:
@@ -23,7 +30,7 @@ def parse_time(value):
 
 
 def refresh_due_providers(conn, config):
-    """Refresh enabled bulk feeds whose configured interval has elapsed."""
+    """Refresh each enabled, due provider and return sanitized outcome records."""
     states = threat_intel_source_rows(conn)
     now = datetime.now(timezone.utc)
     results = []

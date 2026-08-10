@@ -1,4 +1,11 @@
-"""Follow required Zeek JSON logs and persist normalized network evidence."""
+"""Follow required Zeek JSON logs and persist normalized network evidence.
+
+Each configured log has its own durable inode/offset checkpoint because Zeek
+rotates protocol logs independently.  A row is normalized and stored before the
+checkpoint advances, so restarting the worker does not intentionally skip
+unprocessed evidence.  Notice rows may initiate cases; conn, DNS, TLS, HTTP,
+file, SSH, X.509, and weird rows normally provide surrounding case context.
+"""
 
 from pathlib import Path
 import time
@@ -33,7 +40,7 @@ def enabled_log_types(config):
 class ZeekLogFollower:
     """Tail one rotating Zeek JSON log with a persistent SQLite checkpoint."""
     def __init__(self, conn, config, log_type, on_event=None):
-        """Set up this reader with the files and settings it needs."""
+        """Bind one protocol log to its database checkpoint and case callback."""
         self.conn = conn
         self.config = config
         self.log_type = log_type
@@ -97,7 +104,12 @@ class ZeekLogFollower:
         return True
 
     def poll(self):
-        """Read all currently available lines, storing and acknowledging each."""
+        """Store every complete line, then advance this log's checkpoint.
+
+        The callback runs only after ``zeek_events`` has a durable source row.
+        This ordering means sensor fusion always links a case to evidence that
+        can be retrieved later, even if correlation itself reports an error.
+        """
         if not self.open_if_ready():
             return 0
         inserted = 0

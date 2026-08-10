@@ -1,4 +1,11 @@
-"""Describe enrichment availability and perform lightweight IP classification."""
+"""Describe enrichment availability and provide compatibility OTX helpers.
+
+IP classification happens locally before any external request so private,
+loopback, link-local, multicast, reserved, and Tailscale CGNAT addresses are not
+sent to reputation providers. The broader multi-provider cache and matching
+pipeline lives in ``threat_intel.py``; the OTX functions here remain for manual
+status/lookups and older dashboard routes.
+"""
 
 import ipaddress
 import json

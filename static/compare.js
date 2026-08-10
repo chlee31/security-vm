@@ -1,3 +1,6 @@
+// Blind-comparison workspace. Candidate identities stay behind anonymous
+// response labels until an analyst records a vote; the API owns the durable
+// run, response, and review records used for research exports.
 const params = new URLSearchParams(window.location.search);
 const requestedRun = params.get("run");
 const requestedCase = params.get("case");

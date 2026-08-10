@@ -1,3 +1,5 @@
+// IP-focused evidence view. It gathers cases, sensor records, peer activity,
+// and cached threat-intelligence history for one address from API responses.
 const params = new URLSearchParams(window.location.search);
 const ipAddress = params.get("address");
 

@@ -1,7 +1,9 @@
 """Evaluation Lab helpers for labelled correlation and model-quality studies.
 
 Evaluation ratings measure experimental answer quality and do not influence
-live alert classification or response.
+live alert classification or response. The helpers validate manually supplied
+ground truth, compare expected versus observed case attachment, and generate
+spreadsheet-safe exports. They never ingest sensor logs or send model requests.
 """
 
 import csv

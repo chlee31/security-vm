@@ -1,17 +1,29 @@
-"""Create the initial normalized detection record for a Suricata alert."""
+"""Create the first case-level record for an ungrouped Suricata alert.
+
+This small class does not perform the full Suricata/Zeek join. It converts the
+first alert into the fields required by ``detections``. Database correlation
+later decides whether subsequent sensor findings attach to this case or create
+another one.
+"""
 
 from app.normalizer import detection_type_from_alert
 
 
 class Correlator:
-    """Build the first record for a case; subsequent grouping is database-backed."""
+    """Build the case shell used before database-backed grouping can occur."""
 
     def __init__(self, config):
-        """Set up this reader with the files and settings it needs."""
+        """Keep correlation strengths used to describe a single-sensor start."""
         self.config = config
 
     def correlate(self, alert, alert_id):
-        """Create the initial case fields for an ungrouped Suricata alert."""
+        """Create an ungrouped case from one already normalized alert.
+
+        Endpoint, protocol, time, and Community ID values are copied so later
+        SQL queries can compare new findings without reparsing raw JSON. The
+        initial state explicitly says ``single_sensor``; fusion may update it
+        after compatible Suricata or Zeek evidence arrives.
+        """
         detection_type = detection_type_from_alert(alert)
         strengths = self.config.get("correlation", {}).get("strengths", {})
         try:
