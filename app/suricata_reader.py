@@ -49,7 +49,7 @@ class SuricataRecord:
 class SuricataEveFollower:
     """Tail EVE safely across restarts, truncation, and log rotation."""
     def __init__(self, path, conn=None, source="eve", start_position="end", poll_seconds=0.5):
-        """Initialize this helper with the state required for later operations."""
+        """Set up this reader with the files and settings it needs."""
         self.path = Path(path)
         self.conn = conn
         self.source = source
@@ -59,7 +59,7 @@ class SuricataEveFollower:
         self.inode = None
 
     def close(self):
-        """Release the file or database resources owned by this helper."""
+        """Close the open log file."""
         if self.handle:
             self.handle.close()
             self.handle = None

@@ -19,7 +19,7 @@ from app.threat_intel import lookup_virustotal_ip, provider_config
 
 
 def _lookup_time(value):
-    """Look up time and return normalized evidence."""
+    """Read a timestamp returned by VirusTotal."""
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     except ValueError:

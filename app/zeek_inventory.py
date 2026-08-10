@@ -24,7 +24,7 @@ def resolve_binary(name):
 
 
 def run_command(command, timeout=8):
-    """Run the command operation and return its result."""
+    """Run a command and return its exit code and output."""
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
     except FileNotFoundError as exc:
@@ -88,7 +88,7 @@ def running_zeek_pids(zeekctl_path):
 
 
 def zeek_status(config):
-    """Build or inspect zeek status data."""
+    """Report whether Zeek is installed, running, and writing logs."""
     zeek_config = config.get("zeek", {})
     zeek = resolve_binary("zeek")
     zeekctl = resolve_binary("zeekctl")

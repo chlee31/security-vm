@@ -54,7 +54,7 @@ def should_external_enrich_ip(ip_address):
 
 
 def summarize_otx_response(data):
-    """Summarize otx response into bounded evidence."""
+    """Keep the useful fields from an OTX response."""
     pulse_info = data.get("pulse_info") or {}
     pulses = pulse_info.get("pulses") or []
     pulse_count = pulse_info.get("count")
@@ -90,7 +90,7 @@ def summarize_otx_response(data):
 
 
 def lookup_otx_ip(config, ip_address):
-    """Look up otx ip and return normalized evidence."""
+    """Ask AlienVault OTX about one public IP address."""
     threat_intel = config.get("threat_intel", {})
     api_key = threat_intel.get("otx_api_key")
     if not threat_intel.get("otx_enabled") or not api_key:
@@ -122,7 +122,7 @@ def lookup_otx_ip(config, ip_address):
 
 
 def test_otx_connection(api_key):
-    """Test otx connection and return a diagnostic result."""
+    """Test the OTX connection and explain any failure."""
     if not api_key:
         raise ValueError("OTX API key is missing")
 

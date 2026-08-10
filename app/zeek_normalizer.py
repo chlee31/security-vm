@@ -81,7 +81,7 @@ def first_present(raw, *keys):
 
 
 def normalize_actions(value):
-    """Normalize actions into the application's stable representation."""
+    """Clean actions for consistent storage."""
     if value in (None, "", "-"):
         return []
     if isinstance(value, list):

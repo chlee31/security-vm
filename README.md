@@ -186,6 +186,154 @@ python -m app.bootstrap
 
 Bootstrap checks the OS and required tools, initializes SQLite, configures the AI endpoint, guides Zeek interface and JSON-log setup, and can enable matching Community IDs. Reviewed Zeek packages can be installed through `zkg` when approved. Interface names are detected from the host instead of assuming `ens33`, `ens37`, or `eth0`.
 
+## Suricata Installation and Setup
+
+Bootstrap checks that Suricata is installed, but Suricata's capture interfaces
+and rules are system settings. Complete this section before starting Security
+VM on a new Ubuntu installation.
+
+### 1. Install Suricata and its rule updater
+
+```bash
+sudo apt update
+sudo apt install -y suricata suricata-update jq
+suricata --build-info | head
+```
+
+Ubuntu's repository version is sufficient for the project. If a newer version
+is installed from the official OISF repository, keep all Suricata packages from
+the same repository to avoid dependency conflicts.
+
+### 2. Identify the monitoring interfaces
+
+```bash
+ip -br link
+ip route
+```
+
+Record the real interface names. In the current lab, `ens33` is the external
+interface and `ens37` is the internal interface, but another VM may use names
+such as `eth0`, `enp0s3`, or `ens160`.
+
+Back up the configuration before editing it:
+
+```bash
+sudo cp -a /etc/suricata/suricata.yaml \
+  /etc/suricata/suricata.yaml.before-security-vm
+sudoedit /etc/suricata/suricata.yaml
+```
+
+Find the active `af-packet:` section. Change its interface entries to the
+interfaces Suricata should monitor. To inspect both sides of the router, keep
+one entry for each interface and give each entry a different `cluster-id`:
+
+```yaml
+af-packet:
+  - interface: ens33
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+  - interface: ens37
+    cluster-id: 98
+    cluster-type: cluster_flow
+    defrag: yes
+```
+
+Do not add a second `af-packet:` heading if one already exists. Edit the
+existing section, preserve any useful options supplied by the installed
+Suricata version, and replace old interface names such as `eth0`.
+
+The service does not use the separate `pcap:` section for normal live
+AF_PACKET capture. Changing only `pcap:` will therefore not fix an incorrect
+interface used by the system service.
+
+### 3. Install the community rules
+
+```bash
+sudo suricata-update
+sudo grep -n -A 4 "default-rule-path\|rule-files:" \
+  /etc/suricata/suricata.yaml
+```
+
+The normal managed-rule configuration is:
+
+```yaml
+default-rule-path: /var/lib/suricata/rules
+rule-files:
+  - suricata.rules
+```
+
+`suricata-update` maintains `suricata.rules`. The project's `rules/local.rules`
+is not automatically loaded unless an administrator explicitly adds it to
+Suricata's `rule-files` list.
+
+### 4. Enable EVE JSON and matching Community IDs
+
+Security VM reads `/var/log/suricata/eve.json`. Confirm that the `eve-log`
+output is enabled in `/etc/suricata/suricata.yaml`, then run the project helper:
+
+```bash
+cd ~/Documents/security-vm
+sudo ./scripts/enable_community_id.sh
+```
+
+The helper backs up both sensor configurations, enables Suricata Community ID,
+sets the Suricata and Zeek seed to `0`, validates both sensors, restarts
+Suricata, and deploys Zeek. Matching seeds are required for the same flow to
+receive the same Community ID in both sensors.
+
+Verify the saved settings:
+
+```bash
+sudo grep -n -E "community-id|community-id-seed" \
+  /etc/suricata/suricata.yaml
+sudo grep -n -E "community-id|CommunityID" \
+  /opt/zeek/share/zeek/site/local.zeek
+```
+
+### 5. Validate and start Suricata
+
+```bash
+sudo suricata -T -c /etc/suricata/suricata.yaml
+sudo systemctl enable --now suricata
+sudo systemctl restart suricata
+sudo systemctl status suricata --no-pager
+sudo journalctl -u suricata -n 50 --no-pager
+```
+
+Do not continue if `suricata -T` reports an invalid interface, rule, or YAML
+error. Correct the configuration first.
+
+### 6. Allow the application user to read EVE JSON
+
+First try Suricata's log group:
+
+```bash
+sudo usermod -aG suricata "$USER"
+newgrp suricata
+```
+
+Log out and back in if the new group is not shown by `groups`. If the installed
+package does not grant group access, use an ACL as a fallback:
+
+```bash
+sudo apt install -y acl
+sudo setfacl -m "u:$USER:rx" /var/log/suricata
+sudo setfacl -m "u:$USER:r" /var/log/suricata/eve.json
+```
+
+Finally, confirm that alerts are arriving and include Community IDs:
+
+```bash
+sudo tail -f /var/log/suricata/eve.json
+# In another terminal:
+sudo jq -c 'select(.event_type == "alert") |
+  {timestamp,src_ip,dest_ip,signature:.alert.signature,community_id}' \
+  /var/log/suricata/eve.json | tail
+```
+
+After these checks pass, continue with `run-all` below.
+
 ## Start Everything
 
 With the virtual environment active:

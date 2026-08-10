@@ -51,7 +51,7 @@ def yes_no(prompt, default=False):
 
 
 def check_tool(name, binary):
-    """Check tool and return a normalized status."""
+    """Check whether a required command is installed."""
     path = resolve_tool_path(name, binary)
     status = "installed" if path else "missing"
     print(f"{name:10} {status:10} {path or ''}")
@@ -345,7 +345,7 @@ interface={interface}
 
 
 def test_ai_model(host, model, timeout):
-    """Test ai model and return a diagnostic result."""
+    """Test the configured AI model and explain any failure."""
     try:
         response = requests.get(f"{host}/api/tags", timeout=timeout)
         response.raise_for_status()
@@ -358,7 +358,7 @@ def test_ai_model(host, model, timeout):
 
 
 def main():
-    """Run this module's command-line workflow."""
+    """Run the setup wizard from the command line."""
     os_release = detect_os_release()
     recommendation = zeek_os_recommendation(os_release)
     print(f"Detected operating system: {recommendation['pretty_name']}")

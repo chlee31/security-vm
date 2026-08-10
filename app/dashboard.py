@@ -523,7 +523,7 @@ def encrypted_traffic_summary(conn, limit=8):
 
 
 def validate_ai_model_config(payload):
-    """Validate ai model config and reject unsupported input."""
+    """Check that the AI model settings are valid."""
     host = payload.host.strip().rstrip("/")
     model = payload.model.strip()
     provider = payload.provider.strip().lower().replace(" ", "_")
@@ -538,7 +538,7 @@ def validate_ai_model_config(payload):
 
 
 def validate_ai_profile(payload):
-    """Validate ai profile and reject unsupported input."""
+    """Check that the AI profile settings are valid."""
     host, model, provider, timeout_seconds = validate_ai_model_config(payload)
     name = payload.name.strip()
     if not name:
@@ -661,23 +661,23 @@ def create_app(config_path):
 
     @app.get("/compare")
     def ai_comparison_workbook():
-        """Return or update ai comparison workbook state used by the AI workflow."""
+        """Open the AI comparison page."""
         return static_page("compare.html")
 
     @app.get("/experiments/stability")
     @app.get("/experiments/missing-evidence")
     def ai_experiment_workbook():
-        """Return or update ai experiment workbook state used by the AI workflow."""
+        """Open the AI experiments page."""
         return static_page("experiments.html")
 
     @app.get("/zeek")
     def zeek_telemetry_workbook():
-        """Build or inspect zeek telemetry workbook data."""
+        """Open the Zeek telemetry page."""
         return static_page("zeek.html")
 
     @app.get("/asset-inventory")
     def asset_inventory_workbook():
-        """Return asset inventory workbook data retained for schema compatibility."""
+        """Return legacy asset inventory workbook kept for older databases."""
         return RedirectResponse(url="/admin#settings", status_code=307)
 
     @app.get("/assets")
@@ -691,7 +691,7 @@ def create_app(config_path):
         return static_page("admin.html")
 
     def api_evaluation_overview():
-        """Handle the evaluation overview dashboard API request."""
+        """Serve the evaluation overview API endpoint."""
         conn = connect(db_path)
         try:
             return evaluation_overview(conn)
@@ -699,7 +699,7 @@ def create_app(config_path):
             conn.close()
 
     def api_evaluation_cases(limit: int = 250):
-        """Handle the evaluation cases dashboard API request."""
+        """Serve the evaluation cases API endpoint."""
         conn = connect(db_path)
         try:
             return evaluation_case_options(conn, max(1, min(limit, 1000)))
@@ -707,7 +707,7 @@ def create_app(config_path):
             conn.close()
 
     def api_evaluation_scenarios(limit: int = 200, experiment_type: str = None):
-        """Handle the evaluation scenarios dashboard API request."""
+        """Serve the evaluation scenarios API endpoint."""
         conn = connect(db_path)
         try:
             return list_evaluation_scenarios(
@@ -719,7 +719,7 @@ def create_app(config_path):
             conn.close()
 
     def api_create_evaluation_scenario(payload: EvaluationScenarioRequest):
-        """Handle the create evaluation scenario dashboard API request."""
+        """Serve the create evaluation scenario API endpoint."""
         try:
             scenario = normalize_scenario(payload.dict())
         except ValueError as exc:
@@ -734,7 +734,7 @@ def create_app(config_path):
             conn.close()
 
     def api_evaluation_scenario(scenario_uid: str):
-        """Handle the evaluation scenario dashboard API request."""
+        """Serve the evaluation scenario API endpoint."""
         conn = connect(db_path)
         try:
             scenario = get_evaluation_scenario(conn, scenario_uid.upper())
@@ -745,7 +745,7 @@ def create_app(config_path):
             conn.close()
 
     def api_evaluation_candidates(scenario_uid: str, limit: int = 5000):
-        """Handle the evaluation candidates dashboard API request."""
+        """Serve the evaluation candidates API endpoint."""
         conn = connect(db_path)
         try:
             uid = scenario_uid.upper()
@@ -758,7 +758,7 @@ def create_app(config_path):
             conn.close()
 
     def api_evaluation_correlation_metrics(scenario_uid: str):
-        """Handle the evaluation correlation metrics dashboard API request."""
+        """Serve the evaluation correlation metrics API endpoint."""
         conn = connect(db_path)
         try:
             metrics = evaluation_correlation_metrics(conn, scenario_uid.upper())
@@ -771,7 +771,7 @@ def create_app(config_path):
     def api_update_evaluation_scenario(
         scenario_uid: str, payload: EvaluationScenarioRequest
     ):
-        """Handle the update evaluation scenario dashboard API request."""
+        """Serve the update evaluation scenario API endpoint."""
         try:
             scenario = normalize_scenario(payload.dict(), scenario_uid=scenario_uid)
         except ValueError as exc:
@@ -786,7 +786,7 @@ def create_app(config_path):
             conn.close()
 
     def api_delete_evaluation_scenario(scenario_uid: str):
-        """Handle the delete evaluation scenario dashboard API request."""
+        """Serve the delete evaluation scenario API endpoint."""
         conn = connect(db_path)
         try:
             if not delete_evaluation_scenario(conn, scenario_uid.upper()):
@@ -798,7 +798,7 @@ def create_app(config_path):
     def api_link_evaluation_case(
         scenario_uid: str, payload: EvaluationCaseLinkRequest
     ):
-        """Handle the link evaluation case dashboard API request."""
+        """Serve the link evaluation case API endpoint."""
         try:
             link = normalize_case_link(payload.dict())
         except ValueError as exc:
@@ -817,7 +817,7 @@ def create_app(config_path):
             conn.close()
 
     def api_unlink_evaluation_case(scenario_uid: str, case_uid: str):
-        """Handle the unlink evaluation case dashboard API request."""
+        """Serve the unlink evaluation case API endpoint."""
         conn = connect(db_path)
         try:
             if not delete_evaluation_case_link(
@@ -831,7 +831,7 @@ def create_app(config_path):
     def api_label_evaluation_event(
         scenario_uid: str, payload: EvaluationEventLabelRequest
     ):
-        """Handle the label evaluation event dashboard API request."""
+        """Serve the label evaluation event API endpoint."""
         try:
             label = normalize_event_label(payload.dict())
         except ValueError as exc:
@@ -890,7 +890,7 @@ def create_app(config_path):
     def api_delete_evaluation_event_label(
         scenario_uid: str, event_sensor: str, event_uid: str
     ):
-        """Handle the delete evaluation event label dashboard API request."""
+        """Serve the delete evaluation event label API endpoint."""
         conn = connect(db_path)
         try:
             if not delete_evaluation_event_label(
@@ -902,7 +902,7 @@ def create_app(config_path):
             conn.close()
 
     def api_export_evaluation(format: str = "json", scenario_uid: str = None):
-        """Handle the export evaluation dashboard API request."""
+        """Serve the export evaluation API endpoint."""
         export_format = format.lower()
         if export_format not in {"json", "csv"}:
             raise HTTPException(status_code=400, detail="Export format must be json or csv")
@@ -936,7 +936,7 @@ def create_app(config_path):
 
     @app.get("/api/admin/settings")
     def api_admin_settings(limit: int = 500):
-        """Handle the admin settings dashboard API request."""
+        """Serve the admin settings API endpoint."""
         conn = connect(db_path)
         try:
             profile_uid = ensure_ai_profile_from_config(conn, config)
@@ -1006,7 +1006,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/ai-requests/{activity_uid}/cancel")
     def api_cancel_ai_request(activity_uid: str):
-        """Handle the cancel ai request dashboard API request."""
+        """Serve the cancel AI request API endpoint."""
         conn = connect(db_path)
         try:
             if not cancel_ai_request(conn, activity_uid):
@@ -1017,7 +1017,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/ai-requests/cancel-all")
     def api_cancel_all_ai_requests():
-        """Handle the cancel all ai requests dashboard API request."""
+        """Serve the cancel all AI requests API endpoint."""
         conn = connect(db_path)
         try:
             return {"ok": True, "cancelled": cancel_all_ai_requests(conn), "paused": True}
@@ -1026,7 +1026,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/ai-worker/resume")
     def api_resume_ai_worker():
-        """Handle the resume ai worker dashboard API request."""
+        """Serve the resume AI worker API endpoint."""
         conn = connect(db_path)
         try:
             set_ai_worker_paused(conn, False)
@@ -1036,7 +1036,7 @@ def create_app(config_path):
 
     @app.put("/api/admin/threat-intel")
     def api_admin_threat_intel(payload: ThreatIntelAdminRequest):
-        """Handle the admin threat intel dashboard API request."""
+        """Serve the admin threat intel API endpoint."""
         threat_intel = config.setdefault("threat_intel", {})
         configured = threat_intel.setdefault("providers", {})
         for source, request in payload.providers.items():
@@ -1064,7 +1064,7 @@ def create_app(config_path):
 
     @app.put("/api/admin/ai-comparison")
     def api_admin_ai_comparison(payload: AIComparisonSettingsRequest):
-        """Handle the admin ai comparison dashboard API request."""
+        """Serve the admin AI comparison API endpoint."""
         profile_uids = list(dict.fromkeys(uid.strip() for uid in payload.profile_uids if uid.strip()))
         if not profile_uids:
             raise HTTPException(status_code=400, detail="Select at least one active AI profile")
@@ -1093,7 +1093,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/threat-intel/{source}/refresh")
     def api_admin_refresh_threat_intel(source: str):
-        """Handle the admin refresh threat intel dashboard API request."""
+        """Serve the admin refresh threat intel API endpoint."""
         conn = connect(db_path)
         try:
             try:
@@ -1109,7 +1109,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/threat-intel/refresh-active")
     def api_admin_refresh_active_threat_intel():
-        """Handle the admin refresh active threat intel dashboard API request."""
+        """Serve the admin refresh active threat intel API endpoint."""
         conn = connect(db_path)
         results = []
         try:
@@ -1127,7 +1127,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/ai-model")
     def api_admin_ai_model(payload: AIModelConfigRequest):
-        """Handle the admin ai model dashboard API request."""
+        """Serve the admin AI model API endpoint."""
         host, model, provider, timeout_seconds = validate_ai_model_config(payload)
         config.setdefault("ai_model", {})
         config["ai_model"]["host"] = host
@@ -1169,7 +1169,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/ai-profiles")
     def api_admin_create_ai_profile(payload: AIProfileRequest):
-        """Handle the admin create ai profile dashboard API request."""
+        """Serve the admin create AI profile API endpoint."""
         profile = validate_ai_profile(payload)
         conn = connect(db_path)
         try:
@@ -1192,7 +1192,7 @@ def create_app(config_path):
 
     @app.put("/api/admin/ai-profiles/{profile_uid}")
     def api_admin_update_ai_profile(profile_uid: str, payload: AIProfileRequest):
-        """Handle the admin update ai profile dashboard API request."""
+        """Serve the admin update AI profile API endpoint."""
         profile = validate_ai_profile(payload)
         conn = connect(db_path)
         try:
@@ -1215,7 +1215,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/ai-profiles/{profile_uid}/select")
     def api_admin_select_ai_profile(profile_uid: str):
-        """Handle the admin select ai profile dashboard API request."""
+        """Serve the admin select AI profile API endpoint."""
         conn = connect(db_path)
         try:
             profile = get_ai_profile(conn, profile_uid)
@@ -1239,7 +1239,7 @@ def create_app(config_path):
 
     @app.delete("/api/admin/ai-profiles/{profile_uid}")
     def api_admin_delete_ai_profile(profile_uid: str):
-        """Handle the admin delete ai profile dashboard API request."""
+        """Serve the admin delete AI profile API endpoint."""
         conn = connect(db_path)
         try:
             profile = get_ai_profile(conn, profile_uid)
@@ -1304,7 +1304,7 @@ def create_app(config_path):
 
     @app.put("/api/admin/assets/{asset_id}")
     def api_admin_update_asset(asset_id: int, payload: AdminAssetRequest):
-        """Handle the admin update asset dashboard API request."""
+        """Serve the admin update asset API endpoint."""
         try:
             ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
         except ValueError:
@@ -1351,7 +1351,7 @@ def create_app(config_path):
 
     @app.delete("/api/admin/assets/{asset_id}")
     def api_admin_delete_asset(asset_id: int):
-        """Handle the admin delete asset dashboard API request."""
+        """Serve the admin delete asset API endpoint."""
         conn = connect(db_path)
         try:
             if not delete_asset(conn, asset_id):
@@ -1363,7 +1363,7 @@ def create_app(config_path):
 
     @app.get("/api/alerts")
     def api_alerts(limit: int = 50):
-        """Handle the alerts dashboard API request."""
+        """Serve the alerts API endpoint."""
         conn = connect(db_path)
         try:
             return latest_alerts(conn, limit)
@@ -1372,7 +1372,7 @@ def create_app(config_path):
 
     @app.get("/api/latest-alerts")
     def api_latest_sensor_alerts(limit: int = 50, sensor: str = "all"):
-        """Handle the latest sensor alerts dashboard API request."""
+        """Serve the latest sensor alerts API endpoint."""
         conn = connect(db_path)
         try:
             return latest_sensor_alerts(conn, limit, sensor)
@@ -1381,7 +1381,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-opinions")
     def api_ai_opinions(limit: int = 50):
-        """Handle the ai opinions dashboard API request."""
+        """Serve the AI opinions API endpoint."""
         conn = connect(db_path)
         try:
             return latest_ai_opinions(conn, limit)
@@ -1390,7 +1390,7 @@ def create_app(config_path):
 
     @app.get("/api/" + "olla" + "ma-reports")
     def api_legacy_ai_opinions(limit: int = 50):
-        """Handle the legacy ai opinions dashboard API request."""
+        """Serve the legacy AI opinions API endpoint."""
         conn = connect(db_path)
         try:
             insert_app_event(
@@ -1405,7 +1405,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-model-comparison")
     def api_ai_model_comparison():
-        """Handle the ai model comparison dashboard API request."""
+        """Serve the AI model comparison API endpoint."""
         conn = connect(db_path)
         try:
             return ai_model_comparison(conn)
@@ -1414,7 +1414,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-comparisons")
     def api_ai_comparisons(limit: int = 50, case_uid: str = None):
-        """Handle the ai comparisons dashboard API request."""
+        """Serve the AI comparisons API endpoint."""
         conn = connect(db_path)
         try:
             return list_ai_comparison_runs(conn, max(1, min(limit, 200)), case_uid=case_uid)
@@ -1423,7 +1423,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-comparisons/options")
     def api_ai_comparison_options(limit: int = 200):
-        """Handle the ai comparison options dashboard API request."""
+        """Serve the AI comparison options API endpoint."""
         conn = connect(db_path)
         try:
             cases = conn.execute(
@@ -1454,7 +1454,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-comparisons/selection-summary")
     def api_ai_comparison_selection_summary():
-        """Handle the ai comparison selection summary dashboard API request."""
+        """Serve the AI comparison selection summary API endpoint."""
         conn = connect(db_path)
         try:
             return ai_comparison_selection_summary(conn)
@@ -1463,7 +1463,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-comparisons/export")
     def api_ai_comparison_export(format: str = "csv"):
-        """Handle the ai comparison export dashboard API request."""
+        """Serve the AI comparison export API endpoint."""
         conn = connect(db_path)
         try:
             rows = ai_comparison_candidate_export_rows(conn)
@@ -1510,7 +1510,7 @@ def create_app(config_path):
         limit: int = 100,
         experiment_type: Optional[str] = None,
     ):
-        """Handle the ai experiments dashboard API request."""
+        """Serve the AI experiments API endpoint."""
         conn = connect(db_path)
         try:
             return list_ai_experiment_runs(
@@ -1526,7 +1526,7 @@ def create_app(config_path):
         format: str = "csv",
         experiment_type: Optional[str] = None,
     ):
-        """Handle the ai experiment export dashboard API request."""
+        """Serve the AI experiment export API endpoint."""
         conn = connect(db_path)
         try:
             rows = ai_experiment_export_rows(conn, experiment_type)
@@ -1570,7 +1570,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-experiments/{experiment_uid}")
     def api_ai_experiment_detail(experiment_uid: str):
-        """Handle the ai experiment detail dashboard API request."""
+        """Serve the AI experiment detail API endpoint."""
         conn = connect(db_path)
         try:
             detail = ai_experiment_detail(conn, experiment_uid)
@@ -1585,7 +1585,7 @@ def create_app(config_path):
         result_uid: str,
         payload: AIExperimentReviewRequest,
     ):
-        """Handle the review ai experiment result dashboard API request."""
+        """Serve the review AI experiment result API endpoint."""
         conn = connect(db_path)
         try:
             review = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
@@ -1601,7 +1601,7 @@ def create_app(config_path):
 
     @app.post("/api/ai-experiments/stability", status_code=202)
     def api_queue_stability_experiment(payload: StabilityExperimentRequest):
-        """Handle the queue stability experiment dashboard API request."""
+        """Serve the queue stability experiment API endpoint."""
         conn = connect(db_path)
         try:
             settings = [
@@ -1624,7 +1624,7 @@ def create_app(config_path):
     def api_queue_missing_evidence_experiment(
         payload: MissingEvidenceExperimentRequest,
     ):
-        """Handle the queue missing evidence experiment dashboard API request."""
+        """Serve the queue missing evidence experiment API endpoint."""
         conn = connect(db_path)
         try:
             variants = [
@@ -1645,7 +1645,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-comparisons/{comparison_uid}")
     def api_ai_comparison_detail(comparison_uid: str):
-        """Handle the ai comparison detail dashboard API request."""
+        """Serve the AI comparison detail API endpoint."""
         conn = connect(db_path)
         try:
             detail = ai_comparison_detail(conn, comparison_uid)
@@ -1657,7 +1657,7 @@ def create_app(config_path):
 
     @app.post("/api/ai-comparisons/{comparison_uid}/vote")
     def api_vote_ai_comparison(comparison_uid: str, payload: AIComparisonVoteRequest):
-        """Handle the vote ai comparison dashboard API request."""
+        """Serve the vote AI comparison API endpoint."""
         conn = connect(db_path)
         try:
             try:
@@ -1685,7 +1685,7 @@ def create_app(config_path):
 
     @app.post("/api/ai-comparisons/{comparison_uid}/reopen")
     def api_reopen_ai_comparison(comparison_uid: str):
-        """Handle the reopen ai comparison dashboard API request."""
+        """Serve the reopen AI comparison API endpoint."""
         conn = connect(db_path)
         try:
             try:
@@ -1710,7 +1710,7 @@ def create_app(config_path):
         comparison_uid: str,
         payload: AIComparisonPromotionRequest,
     ):
-        """Handle the use ai comparison as case explanation dashboard API request."""
+        """Serve the use AI comparison as case explanation API endpoint."""
         conn = connect(db_path)
         try:
             try:
@@ -1737,7 +1737,7 @@ def create_app(config_path):
 
     @app.get("/api/detection-detail")
     def api_detection_detail(detection_type: str = None, limit: int = 50):
-        """Handle the detection detail dashboard API request."""
+        """Serve the detection detail API endpoint."""
         conn = connect(db_path)
         try:
             return detection_type_detail(conn, detection_type, limit)
@@ -1746,7 +1746,7 @@ def create_app(config_path):
 
     @app.get("/api/dashboard-summary")
     def api_dashboard_summary(limit: int = 12):
-        """Handle the dashboard summary dashboard API request."""
+        """Serve the dashboard summary API endpoint."""
         conn = connect(db_path)
         try:
             detail = detection_type_detail(conn, None, limit)
@@ -1836,7 +1836,7 @@ def create_app(config_path):
 
     @app.get("/api/enrichment-status")
     def api_enrichment_status(limit: int = 50):
-        """Handle the enrichment status dashboard API request."""
+        """Serve the enrichment status API endpoint."""
         conn = connect(db_path)
         try:
             return enrichment_status(conn, config, limit)
@@ -1845,7 +1845,7 @@ def create_app(config_path):
 
     @app.get("/api/zeek/status")
     def api_zeek_status():
-        """Handle the zeek status dashboard API request."""
+        """Serve the Zeek status API endpoint."""
         conn = connect(db_path)
         try:
             status = zeek_status(config)
@@ -1856,7 +1856,7 @@ def create_app(config_path):
 
     @app.get("/api/zeek/telemetry")
     def api_zeek_telemetry(limit: int = 50):
-        """Handle the zeek telemetry dashboard API request."""
+        """Serve the Zeek telemetry API endpoint."""
         conn = connect(db_path)
         try:
             summary = zeek_telemetry_summary(conn, limit)
@@ -1867,7 +1867,7 @@ def create_app(config_path):
 
     @app.get("/api/zeek/events")
     def api_zeek_events(limit: int = 50, log_type: str = None):
-        """Handle the zeek events dashboard API request."""
+        """Serve the Zeek events API endpoint."""
         conn = connect(db_path)
         try:
             return latest_zeek_events(conn, limit, log_type)
@@ -1876,7 +1876,7 @@ def create_app(config_path):
 
     @app.get("/api/zeek/events/{event_id}")
     def api_zeek_event(event_id: int):
-        """Handle the zeek event dashboard API request."""
+        """Serve the Zeek event API endpoint."""
         conn = connect(db_path)
         try:
             row = conn.execute("SELECT * FROM zeek_events WHERE id = ?", (event_id,)).fetchone()
@@ -1888,7 +1888,7 @@ def create_app(config_path):
 
     @app.get("/api/detections/{detection_id}/zeek-context")
     def api_detection_zeek_context(detection_id: int, seconds: int = 120):
-        """Handle the detection zeek context dashboard API request."""
+        """Serve the detection Zeek context API endpoint."""
         seconds = max(1, min(seconds, 600))
         conn = connect(db_path)
         try:
@@ -1898,7 +1898,7 @@ def create_app(config_path):
 
     @app.post("/api/threat-intel-config")
     def api_threat_intel_config(payload: ThreatIntelConfigRequest):
-        """Handle the threat intel config dashboard API request."""
+        """Serve the threat intel config API endpoint."""
         if payload.cache_ttl_hours < 1 or payload.cache_ttl_hours > 168:
             raise HTTPException(status_code=400, detail="Cache TTL must be between 1 and 168 hours")
         config.setdefault("threat_intel", {})
@@ -1933,7 +1933,7 @@ def create_app(config_path):
 
     @app.post("/api/otx-lookups")
     def api_otx_lookups(payload: OtxLookupRequest):
-        """Handle the otx lookups dashboard API request."""
+        """Serve the OTX lookups API endpoint."""
         if payload.scope not in {"top5", "top10", "visible"}:
             raise HTTPException(status_code=400, detail="Unsupported OTX lookup scope")
         if payload.scope == "top5":
@@ -1988,7 +1988,7 @@ def create_app(config_path):
 
     @app.post("/api/otx-status")
     def api_otx_status(payload: OtxStatusRequest):
-        """Handle the otx status dashboard API request."""
+        """Serve the OTX status API endpoint."""
         api_key = payload.otx_api_key.strip() or config.get("threat_intel", {}).get("otx_api_key", "")
         if not api_key:
             return {"ok": False, "status": "missing_key", "error": "OTX API key is missing"}
@@ -2016,7 +2016,7 @@ def create_app(config_path):
 
     @app.get("/api/decision-evidence")
     def api_decision_evidence(limit: int = 25, detection_type: str = None, outcome: str = None):
-        """Handle the decision evidence dashboard API request."""
+        """Serve the decision evidence API endpoint."""
         if outcome and outcome not in {"safe", "human_review", "dangerous"}:
             raise HTTPException(status_code=400, detail="Unsupported outcome filter")
         conn = connect(db_path)
@@ -2027,7 +2027,7 @@ def create_app(config_path):
 
     @app.get("/api/investigation/{detection_id}")
     def api_investigation(detection_id: int):
-        """Handle the investigation dashboard API request."""
+        """Serve the investigation API endpoint."""
         conn = connect(db_path)
         try:
             detail = investigation_detail(conn, detection_id)
@@ -2048,7 +2048,7 @@ def create_app(config_path):
 
     @app.get("/api/cases/{case_uid}")
     def api_case_workspace(case_uid: str):
-        """Handle the case workspace dashboard API request."""
+        """Serve the case workspace API endpoint."""
         conn = connect(db_path)
         try:
             detail = case_workspace(conn, case_uid)
@@ -2093,7 +2093,7 @@ def create_app(config_path):
 
     @app.get("/api/cases/{case_uid}/ai-comparisons")
     def api_case_ai_comparisons(case_uid: str, limit: int = 20):
-        """Handle the case ai comparisons dashboard API request."""
+        """Serve the case AI comparisons API endpoint."""
         conn = connect(db_path)
         try:
             return list_ai_comparison_runs(conn, max(1, min(limit, 100)), case_uid=case_uid)
@@ -2105,7 +2105,7 @@ def create_app(config_path):
         case_uid: str,
         payload: Optional[AIComparisonQueueRequest] = None,
     ):
-        """Handle the run case ai comparison dashboard API request."""
+        """Serve the run case AI comparison API endpoint."""
         conn = connect(db_path)
         try:
             return queue_model_comparison(
@@ -2121,7 +2121,7 @@ def create_app(config_path):
 
     @app.post("/api/cases/{case_uid}/virustotal/refresh")
     def api_refresh_case_virustotal(case_uid: str):
-        """Handle the refresh case virustotal dashboard API request."""
+        """Serve the refresh case VirusTotal API endpoint."""
         conn = connect(db_path)
         try:
             return {
@@ -2135,7 +2135,7 @@ def create_app(config_path):
 
     @app.get("/api/ip-detail")
     def api_ip_detail(address: str, limit: int = 100):
-        """Handle the ip detail dashboard API request."""
+        """Serve the IP detail API endpoint."""
         conn = connect(db_path)
         try:
             detail = ip_detail(conn, address, limit)
@@ -2150,7 +2150,7 @@ def create_app(config_path):
 
     @app.get("/api/asset-inventory")
     def api_asset_inventory(limit: int = 500):
-        """Handle the asset inventory dashboard API request."""
+        """Serve the asset inventory API endpoint."""
         conn = connect(db_path)
         try:
             assets = list_all_assets(conn, limit)
@@ -2253,7 +2253,7 @@ def create_app(config_path):
 
     @app.post("/api/admin/assets")
     def api_upsert_asset(payload: AssetRequest):
-        """Handle the upsert asset dashboard API request."""
+        """Serve the upsert asset API endpoint."""
         try:
             ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
         except ValueError:
@@ -2289,7 +2289,7 @@ def create_app(config_path):
 
     @app.delete("/api/assets/{asset_id}")
     def api_deactivate_asset(asset_id: int):
-        """Handle the deactivate asset dashboard API request."""
+        """Serve the deactivate asset API endpoint."""
         conn = connect(db_path)
         try:
             if not deactivate_asset(conn, asset_id):
@@ -2301,7 +2301,7 @@ def create_app(config_path):
 
     @app.get("/api/reviews")
     def api_reviews(limit: int = 50):
-        """Handle the reviews dashboard API request."""
+        """Serve the reviews API endpoint."""
         conn = connect(db_path)
         try:
             return list_review_queue(conn, limit)
@@ -2310,7 +2310,7 @@ def create_app(config_path):
 
     @app.post("/api/reviews/{detection_id}")
     def api_submit_review(detection_id: int, payload: AnalystReviewRequest):
-        """Handle the submit review dashboard API request."""
+        """Serve the submit review API endpoint."""
         action = payload.action.strip().lower()
         if action not in {"confirm", "log_only", "human_review", "investigate", "escalate"}:
             raise HTTPException(status_code=400, detail="Unsupported review action")
@@ -2338,7 +2338,7 @@ def create_app(config_path):
 
     @app.get("/api/events")
     def api_events(limit: int = 100):
-        """Handle the events dashboard API request."""
+        """Serve the events API endpoint."""
         conn = connect(db_path)
         try:
             return latest_app_events(conn, limit)
@@ -2347,7 +2347,7 @@ def create_app(config_path):
 
     @app.post("/api/reset-logs")
     def api_reset_logs(payload: ResetLogsRequest):
-        """Handle the reset logs dashboard API request."""
+        """Serve the reset logs API endpoint."""
         if payload.confirm != "RESET":
             raise HTTPException(status_code=400, detail="Type RESET to clear dashboard logs")
         conn = connect(db_path)
@@ -2360,7 +2360,7 @@ def create_app(config_path):
 
     @app.get("/api/ai-status")
     def api_ai_status():
-        """Handle the ai status dashboard API request."""
+        """Serve the AI status API endpoint."""
         conn = connect(db_path)
         try:
             try:
@@ -2381,12 +2381,12 @@ def create_app(config_path):
 
     @app.get("/api/" + "olla" + "ma-status")
     def api_legacy_ai_status():
-        """Handle the legacy ai status dashboard API request."""
+        """Serve the legacy AI status API endpoint."""
         return api_ai_status()
 
     @app.get("/api/metrics")
     def api_metrics():
-        """Handle the metrics dashboard API request."""
+        """Serve the metrics API endpoint."""
         conn = connect(db_path)
         try:
             suricata_alerts = conn.execute("SELECT COUNT(*) AS count FROM alerts").fetchone()["count"]

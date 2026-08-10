@@ -33,7 +33,7 @@ def enabled_log_types(config):
 class ZeekLogFollower:
     """Tail one rotating Zeek JSON log with a persistent SQLite checkpoint."""
     def __init__(self, conn, config, log_type, on_event=None):
-        """Initialize this helper with the state required for later operations."""
+        """Set up this reader with the files and settings it needs."""
         self.conn = conn
         self.config = config
         self.log_type = log_type
@@ -44,7 +44,7 @@ class ZeekLogFollower:
         self.on_event = on_event
 
     def close(self):
-        """Release the file or database resources owned by this helper."""
+        """Close the open log file."""
         if self.handle:
             self.handle.close()
             self.handle = None

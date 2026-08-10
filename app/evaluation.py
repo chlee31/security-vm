@@ -50,7 +50,7 @@ def _clean_text(value, field, required=False, maximum=2000):
 
 
 def _normalize_time(value, field):
-    """Normalize time into the application's stable representation."""
+    """Convert a timestamp to UTC for consistent comparisons."""
     text = _clean_text(value, field, required=True, maximum=64)
     parsed_text = text.replace("Z", "+00:00")
     try:
@@ -63,7 +63,7 @@ def _normalize_time(value, field):
 
 
 def _normalize_ip(value, field):
-    """Normalize ip into the application's stable representation."""
+    """Check and standardize an entered IP address."""
     text = _clean_text(value, field, maximum=64)
     if not text:
         return None
@@ -74,7 +74,7 @@ def _normalize_ip(value, field):
 
 
 def normalize_scenario(payload, scenario_uid=None):
-    """Normalize scenario into the application's stable representation."""
+    """Check and clean a submitted evaluation scenario."""
     uid = _clean_text(
         scenario_uid or payload.get("scenario_uid"),
         "Scenario UID",
@@ -182,7 +182,7 @@ def normalize_scenario(payload, scenario_uid=None):
 
 
 def normalize_case_link(payload):
-    """Normalize case link into the application's stable representation."""
+    """Check and clean a case-to-scenario link."""
     case_uid = _clean_text(
         payload.get("case_uid"), "Case UID", required=True, maximum=80
     )
@@ -218,7 +218,7 @@ def assignment_label(expected_case_uid, actual_case_uid):
 
 
 def normalize_event_label(payload):
-    """Normalize event label into the application's stable representation."""
+    """Check and clean a ground-truth event label."""
     sensor = _clean_text(
         payload.get("event_sensor"), "Event sensor", required=True, maximum=20
     ).lower()
@@ -318,7 +318,7 @@ def _csv_safe(value):
 
 
 def evaluation_bundle_csv(bundle):
-    """Build evaluation bundle csv data for controlled evaluation."""
+    """Convert an evaluation export into CSV files."""
     output = io.StringIO()
     fieldnames = [
         "record_type",

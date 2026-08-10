@@ -176,7 +176,7 @@ def provider_evidence_for_indicator(conn, config, indicator, indicator_type="ip"
 
 
 def _zeek_raw_event(event):
-    """Build or inspect zeek raw event data."""
+    """Read the original JSON stored with a Zeek event."""
     raw = (event or {}).get("raw_json") or {}
     if isinstance(raw, dict):
         return raw
@@ -188,7 +188,7 @@ def _zeek_raw_event(event):
 
 
 def _zeek_values(value):
-    """Build or inspect zeek values data."""
+    """Read extra Zeek fields stored as JSON."""
     if value in (None, "", "-"):
         return []
     if isinstance(value, (list, tuple, set)):
@@ -429,7 +429,7 @@ def _url_indicators(url, source, category, confidence, raw=None):
 
 
 def fetch_threatfox(settings):
-    """Download and normalize threatfox provider data."""
+    """Download indicators from ThreatFox."""
     response = requests.post(
         "https://threatfox-api.abuse.ch/api/v1/",
         headers={"Auth-Key": settings["api_key"], "Content-Type": "application/json"},
@@ -472,7 +472,7 @@ def fetch_threatfox(settings):
 
 
 def fetch_urlhaus(settings):
-    """Download and normalize urlhaus provider data."""
+    """Download indicators from URLhaus."""
     url = f"https://urlhaus-api.abuse.ch/v2/files/exports/{settings['api_key']}/recent.csv"
     text = _get(url, timeout=90).text
     lines = [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
@@ -493,7 +493,7 @@ def _csv_rows(url):
 
 
 def fetch_sslbl(_settings):
-    """Download and normalize sslbl provider data."""
+    """Download indicators from SSLBL."""
     indicators = []
     for row in _csv_rows("https://sslbl.abuse.ch/blacklist/sslipblacklist.csv"):
         if len(row) < 3:
@@ -511,7 +511,7 @@ def fetch_sslbl(_settings):
 
 
 def fetch_spamhaus_drop(_settings):
-    """Download and normalize spamhaus drop provider data."""
+    """Download blocked networks from Spamhaus DROP."""
     indicators = []
     for url in ("https://www.spamhaus.org/drop/drop_v4.json", "https://www.spamhaus.org/drop/drop_v6.json"):
         for line in _get(url).text.splitlines():
@@ -527,7 +527,7 @@ def fetch_spamhaus_drop(_settings):
 
 
 def fetch_openphish(_settings):
-    """Download and normalize openphish provider data."""
+    """Download phishing URLs from OpenPhish."""
     indicators = []
     text = _get("https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt").text
     for line in text.splitlines():
@@ -538,7 +538,7 @@ def fetch_openphish(_settings):
 
 
 def fetch_ipsum(_settings):
-    """Download and normalize ipsum provider data."""
+    """Download reported malicious IP addresses from IPsum."""
     indicators = []
     text = _get("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt").text
     for line in text.splitlines():
@@ -566,7 +566,7 @@ def fetch_ipsum(_settings):
 
 
 def fetch_feodo(_settings):
-    """Download and normalize feodo provider data."""
+    """Download botnet indicators from Feodo Tracker."""
     rows = _get("https://feodotracker.abuse.ch/downloads/ipblocklist.json").json()
     if isinstance(rows, dict):
         rows = rows.get("data") or []
@@ -587,7 +587,7 @@ def fetch_feodo(_settings):
 
 
 def lookup_virustotal_ip(settings, ip_address):
-    """Look up virustotal ip and return normalized evidence."""
+    """Ask VirusTotal about one public IP address."""
     try:
         address = ipaddress.ip_address(str(ip_address or "").strip())
     except ValueError as exc:
