@@ -10,6 +10,7 @@ from app.database import get_suricata_checkpoint, upsert_suricata_checkpoint
 
 
 def permission_help(path):
+    """Build actionable guidance for an unreadable Suricata EVE file."""
     return (
         f"Cannot read Suricata EVE JSON at {path}. "
         "Make sure this terminal has the suricata group loaded with `groups`, "
@@ -48,6 +49,7 @@ class SuricataRecord:
 class SuricataEveFollower:
     """Tail EVE safely across restarts, truncation, and log rotation."""
     def __init__(self, path, conn=None, source="eve", start_position="end", poll_seconds=0.5):
+        """Initialize this helper with the state required for later operations."""
         self.path = Path(path)
         self.conn = conn
         self.source = source
@@ -57,12 +59,14 @@ class SuricataEveFollower:
         self.inode = None
 
     def close(self):
+        """Release the file or database resources owned by this helper."""
         if self.handle:
             self.handle.close()
             self.handle = None
         self.inode = None
 
     def _checkpoint(self):
+        """Load the saved EVE file identity and byte offset for this reader."""
         if self.conn is None:
             return None
         return get_suricata_checkpoint(self.conn, self.source)

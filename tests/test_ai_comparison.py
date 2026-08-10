@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from app.ai_comparison import _comparison_lock, run_model_comparison
+from app.ai_comparison import CONTROL_OPTIONS, _comparison_lock, run_model_comparison
 from app.database import (
     ai_comparison_detail,
     ai_comparison_export_rows,
@@ -314,8 +314,12 @@ class AIComparisonTests(unittest.TestCase):
             )
             uid = config["ai_model"]["active_profile_uid"]
             model = config["ai_model"]["model"]
-            self.assertEqual(config["ai_model"]["temperature"], 0.0)
-            self.assertEqual(config["ai_model"]["seed"], 42)
+            # Comparison requests deliberately use the declared research
+            # control rather than normal config.yaml sampling values.
+            self.assertEqual(
+                config["ai_model"]["temperature"], CONTROL_OPTIONS["temperature"]
+            )
+            self.assertEqual(config["ai_model"]["seed"], CONTROL_OPTIONS["seed"])
             prepared_evidence = prepared_request["evidence_package"]["evidence_context"]
             self.assertEqual(
                 prepared_evidence["sensor_fusion"]["findings"][0]["sensor"],

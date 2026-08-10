@@ -7,6 +7,7 @@ import requests
 
 
 def enrichment_plan(config):
+    """Describe configured enrichment providers and their cache policy."""
     threat_intel = config.get("threat_intel", {})
     ttl_hours = int(threat_intel.get("cache_ttl_hours", 24))
     return {
@@ -35,6 +36,7 @@ def enrichment_plan(config):
 
 
 def should_external_enrich_ip(ip_address):
+    """Return whether an address is globally routable and eligible for APIs."""
     try:
         parsed = ipaddress.ip_address(ip_address)
     except ValueError:
@@ -52,6 +54,7 @@ def should_external_enrich_ip(ip_address):
 
 
 def summarize_otx_response(data):
+    """Summarize otx response into bounded evidence."""
     pulse_info = data.get("pulse_info") or {}
     pulses = pulse_info.get("pulses") or []
     pulse_count = pulse_info.get("count")
@@ -87,6 +90,7 @@ def summarize_otx_response(data):
 
 
 def lookup_otx_ip(config, ip_address):
+    """Look up otx ip and return normalized evidence."""
     threat_intel = config.get("threat_intel", {})
     api_key = threat_intel.get("otx_api_key")
     if not threat_intel.get("otx_enabled") or not api_key:
@@ -118,6 +122,7 @@ def lookup_otx_ip(config, ip_address):
 
 
 def test_otx_connection(api_key):
+    """Test otx connection and return a diagnostic result."""
     if not api_key:
         raise ValueError("OTX API key is missing")
 

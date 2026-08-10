@@ -62,6 +62,7 @@ def parse_zeek_timestamp(value):
 
 
 def int_or_none(value):
+    """Convert a Zeek field to an integer, returning None for absent values."""
     if value in (None, "", "-"):
         return None
     try:
@@ -71,6 +72,7 @@ def int_or_none(value):
 
 
 def first_present(raw, *keys):
+    """Return the first populated value among equivalent Zeek field names."""
     for key in keys:
         value = raw.get(key)
         if value not in (None, "", "-"):
@@ -79,6 +81,7 @@ def first_present(raw, *keys):
 
 
 def normalize_actions(value):
+    """Normalize actions into the application's stable representation."""
     if value in (None, "", "-"):
         return []
     if isinstance(value, list):

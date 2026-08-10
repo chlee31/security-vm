@@ -28,6 +28,7 @@ def ai_activity_callback(
     )
 
     def progress(phase, details=None):
+        """Record and publish the latest progress state for this AI request."""
         safe = dict(details or {})
         if safe.get("error_message"):
             safe["error_message"] = redact_secrets(safe["error_message"], config)
@@ -39,6 +40,7 @@ def ai_activity_callback(
             return
 
     def cancellation_requested():
+        """Return whether cancellation has been requested for this AI operation."""
         try:
             return ai_request_cancel_requested(conn, activity_uid)
         except Exception:

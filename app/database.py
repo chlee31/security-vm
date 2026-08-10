@@ -209,6 +209,7 @@ def migrate_analyst_review_classification(conn):
 
 
 def ensure_ai_comparison_tables(conn):
+    """Create or migrate the ai comparison tables storage required by the current application."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS ai_comparison_runs (
@@ -452,6 +453,7 @@ def ensure_ai_experiment_tables(conn):
 
 
 def ensure_evaluation_tables(conn):
+    """Create or migrate the evaluation tables storage required by the current application."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS evaluation_scenarios (
@@ -578,6 +580,7 @@ def ensure_evaluation_tables(conn):
 
 
 def table_exists(conn, table_name):
+    """Return whether a named SQLite table exists in the current database."""
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table_name,),
@@ -586,6 +589,7 @@ def table_exists(conn, table_name):
 
 
 def table_columns(conn, table_name):
+    """Return the column names for an existing SQLite table."""
     if not table_exists(conn, table_name):
         return set()
     return {
@@ -594,6 +598,7 @@ def table_columns(conn, table_name):
 
 
 def ensure_suricata_ingest_tables(conn):
+    """Create or migrate the suricata ingest tables storage required by the current application."""
     alert_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()
     }
@@ -617,6 +622,7 @@ def ensure_suricata_ingest_tables(conn):
 
 
 def _uid_date(value):
+    """Convert an event timestamp into the date segment used by stable UIDs."""
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     except ValueError:
@@ -663,6 +669,7 @@ def ensure_case_identity_columns(conn):
 
 
 def ensure_virustotal_verification_table(conn):
+    """Create or migrate the virustotal verification table storage required by the current application."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS virustotal_verifications (
@@ -692,6 +699,7 @@ def ensure_virustotal_verification_table(conn):
 
 
 def ensure_ai_report_columns(conn, table_name):
+    """Create or migrate the ai report columns storage required by the current application."""
     if not table_exists(conn, table_name):
         return
     report_columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
@@ -777,6 +785,7 @@ def ensure_ai_run_audit_table(conn):
 
 
 def ensure_zeek_tables(conn):
+    """Create or migrate the zeek tables storage required by the current application."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS zeek_events (
@@ -834,6 +843,7 @@ def ensure_zeek_tables(conn):
 
 
 def ensure_sensor_fusion_tables(conn):
+    """Create or migrate the sensor fusion tables storage required by the current application."""
     alert_columns = {row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
     if "community_id" not in alert_columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN community_id TEXT")
@@ -878,6 +888,7 @@ def ensure_sensor_fusion_tables(conn):
 
 
 def ensure_ai_assessments_table(conn):
+    """Create or migrate the ai assessments table storage required by the current application."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS ai_assessments (
@@ -902,6 +913,7 @@ def ensure_ai_assessments_table(conn):
 
 
 def ensure_threat_intel_tables(conn):
+    """Create or migrate the threat intel tables storage required by the current application."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS threat_intel_indicators (
@@ -960,6 +972,7 @@ def ensure_threat_intel_tables(conn):
 
 
 def migrate_legacy_ai_reports(conn):
+    """Copy reports from the retired model-specific table into ai_reports."""
     legacy_table = "olla" + "ma_reports"
     if not table_exists(conn, legacy_table):
         return
@@ -985,6 +998,7 @@ def migrate_legacy_ai_reports(conn):
 
 
 def utc_now():
+    """Return the current UTC timestamp in the database storage format."""
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -1007,10 +1021,12 @@ def without_operational_scores(value):
 
 
 def normalize_ip(ip_address):
+    """Normalize ip into the application's stable representation."""
     return str(ipaddress.ip_address(str(ip_address).strip()))
 
 
 def default_asset_types(config):
+    """Build compatibility role labels from configured registered-IP defaults."""
     labels = {
         "laptop": "Laptop",
         "desktop": "Desktop",
@@ -1029,14 +1045,17 @@ def default_asset_types(config):
 
 
 def new_ai_profile_uid():
+    """Generate a new stable ai profile uid identifier."""
     return f"ai-{uuid.uuid4().hex[:12]}"
 
 
 def new_ai_comparison_uid():
+    """Generate a new stable ai comparison uid identifier."""
     return f"cmp-{uuid.uuid4().hex[:16]}"
 
 
 def new_ai_activity_uid():
+    """Generate a new stable ai activity uid identifier."""
     return f"air-{uuid.uuid4().hex[:16]}"
 
 
@@ -1126,6 +1145,7 @@ def update_ai_request_activity(conn, activity_uid, phase, details=None):
 
 
 def ai_request_cancel_requested(conn, activity_uid):
+    """Return whether an operator requested cancellation of this AI activity."""
     row = conn.execute(
         "SELECT cancel_requested FROM ai_request_activity WHERE activity_uid = ?",
         (activity_uid,),
@@ -1206,6 +1226,7 @@ def interrupt_active_ai_requests(conn, reason="Application restarted before requ
 
 
 def set_ai_worker_paused(conn, paused):
+    """Set the current ai worker paused state."""
     conn.execute(
         "UPDATE ai_worker_control SET paused = ?, updated_at = ? WHERE id = 1",
         (1 if paused else 0, utc_now()),
@@ -1214,6 +1235,7 @@ def set_ai_worker_paused(conn, paused):
 
 
 def ai_worker_paused(conn):
+    """Return whether the persistent AI-worker pause flag is enabled."""
     row = conn.execute("SELECT paused FROM ai_worker_control WHERE id = 1").fetchone()
     return bool(row and row["paused"] == 1)
 
@@ -1319,6 +1341,7 @@ def create_ai_comparison_run(
     model_inventory=None,
     status="running",
 ):
+    """Create and persist a new ai comparison run."""
     selected_profile_uids = list(selected_profile_uids or [])
     snapshot = control_snapshot or {}
     comparison_uid = new_ai_comparison_uid()
@@ -1365,6 +1388,7 @@ def create_ai_comparison_run(
 
 
 def insert_ai_comparison_candidate(conn, comparison_run_id, slot, profile_uid, report=None, error=None):
+    """Persist a new ai comparison candidate record in SQLite."""
     report = report or {}
     status = "failed" if error is not None else "complete"
     cur = conn.execute(
@@ -1471,6 +1495,7 @@ def fail_stale_ai_comparison_runs(conn, max_age_seconds=600):
 
 
 def finish_ai_comparison_run(conn, comparison_run_id, status, candidate_count, error_message=None):
+    """Finalize the stored state for this ai comparison run."""
     conn.execute(
         """
         UPDATE ai_comparison_runs
@@ -1483,6 +1508,7 @@ def finish_ai_comparison_run(conn, comparison_run_id, status, candidate_count, e
 
 
 def _comparison_votes(conn, comparison_run_id):
+    """Return analyst votes recorded for one model-comparison run."""
     rows = conn.execute(
         """
         SELECT id, analyst_name, selection, notes, created_at
@@ -1496,6 +1522,7 @@ def _comparison_votes(conn, comparison_run_id):
 
 
 def ai_comparison_detail(conn, comparison_uid):
+    """Return one comparison with candidates, votes, and frozen input metadata."""
     run = conn.execute(
         """
         SELECT id, comparison_uid, case_uid, detection_id, evidence_sha256,
@@ -1772,6 +1799,7 @@ def ai_comparison_detail(conn, comparison_uid):
 
 
 def list_ai_comparison_runs(conn, limit=50, case_uid=None):
+    """Return the stored ai comparison runs records for display or processing."""
     params = []
     where = ""
     if case_uid:
@@ -1811,6 +1839,7 @@ def list_ai_comparison_runs(conn, limit=50, case_uid=None):
 
 
 def vote_ai_comparison(conn, comparison_uid, analyst_name, selection, notes=""):
+    """Record an analyst selection or reject-all decision for a comparison."""
     run = conn.execute(
         "SELECT id FROM ai_comparison_runs WHERE comparison_uid = ?",
         (comparison_uid,),
@@ -2006,6 +2035,7 @@ def reopen_ai_comparison_review(conn, comparison_uid):
 
 
 def ai_comparison_selection_summary(conn):
+    """Aggregate reviewed comparison selections by anonymous candidate model."""
     rows = conn.execute(
         """
         SELECT candidates.ai_profile_uid, candidates.model_provider,
@@ -2354,6 +2384,7 @@ def ai_comparison_candidate_export_rows(conn):
 
 
 def list_ai_profiles(conn, limit=100):
+    """Return the stored ai profiles records for display or processing."""
     rows = conn.execute(
         """
         SELECT id, uid, name, provider, host, model, timeout_seconds, status,
@@ -2375,6 +2406,7 @@ def list_ai_profiles(conn, limit=100):
 # ---------------------------------------------------------------------------
 
 def new_ai_experiment_uid(prefix="EXP"):
+    """Generate a new stable ai experiment uid identifier."""
     return f"{prefix}-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:12]}"
 
 
@@ -2511,6 +2543,7 @@ def claim_next_ai_experiment_task(conn, stale_seconds=600):
 
 
 def finish_ai_experiment_result(conn, result_id, report=None, error=None):
+    """Finalize the stored state for this ai experiment result."""
     report = report or {}
     status = "failed" if error is not None else "complete"
     conn.execute(
@@ -2592,6 +2625,7 @@ def finish_ai_experiment_result(conn, result_id, report=None, error=None):
 
 
 def list_ai_experiment_runs(conn, experiment_type=None, limit=100):
+    """Return the stored ai experiment runs records for display or processing."""
     where = "WHERE experiment_type = ?" if experiment_type else ""
     params = [experiment_type] if experiment_type else []
     params.append(int(limit))
@@ -2615,6 +2649,7 @@ def list_ai_experiment_runs(conn, experiment_type=None, limit=100):
 
 
 def ai_experiment_detail(conn, experiment_uid):
+    """Return or update ai experiment detail state used by the AI workflow."""
     run = conn.execute(
         "SELECT * FROM ai_experiment_runs WHERE experiment_uid = ?",
         (experiment_uid,),
@@ -2661,6 +2696,7 @@ def ai_experiment_detail(conn, experiment_uid):
 
 
 def ai_experiment_export_rows(conn, experiment_type=None):
+    """Return or update ai experiment export rows state used by the AI workflow."""
     rows = conn.execute(
         """
         SELECT runs.experiment_uid, runs.experiment_type,
@@ -2766,6 +2802,7 @@ def review_ai_experiment_result(conn, result_uid, review):
 
 
 def get_ai_profile(conn, uid):
+    """Return the stored ai profile value when available."""
     row = conn.execute(
         """
         SELECT id, uid, name, provider, host, model, timeout_seconds, status,
@@ -2779,6 +2816,7 @@ def get_ai_profile(conn, uid):
 
 
 def create_ai_profile(conn, profile):
+    """Create and persist a new ai profile."""
     uid = profile.get("uid") or new_ai_profile_uid()
     conn.execute(
         """
@@ -2805,6 +2843,7 @@ def create_ai_profile(conn, profile):
 
 
 def update_ai_profile(conn, uid, profile):
+    """Update the stored ai profile data."""
     cur = conn.execute(
         """
         UPDATE ai_profiles
@@ -2829,12 +2868,14 @@ def update_ai_profile(conn, uid, profile):
 
 
 def delete_ai_profile(conn, uid):
+    """Delete the requested ai profile data."""
     cur = conn.execute("DELETE FROM ai_profiles WHERE uid = ?", (uid,))
     conn.commit()
     return cur.rowcount > 0
 
 
 def mark_ai_profile_selected(conn, uid):
+    """Mark the requested ai profile selected state in SQLite."""
     cur = conn.execute(
         """
         UPDATE ai_profiles
@@ -2848,6 +2889,7 @@ def mark_ai_profile_selected(conn, uid):
 
 
 def ensure_ai_profile_from_config(conn, config):
+    """Create or migrate the ai profile from config storage required by the current application."""
     ai_model = config.setdefault("ai_model", {})
     active_uid = ai_model.get("active_profile_uid")
     if active_uid and get_ai_profile(conn, active_uid):
@@ -2888,6 +2930,7 @@ def ensure_ai_profile_from_config(conn, config):
 
 
 def list_assets(conn, limit=100):
+    """Return the stored assets records for display or processing."""
     rows = conn.execute(
         """
         SELECT id, ip_address, name, device_type, network_interface,
@@ -2903,6 +2946,7 @@ def list_assets(conn, limit=100):
 
 
 def list_all_assets(conn, limit=500):
+    """Return the stored all assets records for display or processing."""
     rows = conn.execute(
         """
         SELECT id, ip_address, name, device_type, network_interface,
@@ -2917,6 +2961,7 @@ def list_all_assets(conn, limit=500):
 
 
 def lookup_asset(conn, ip_address):
+    """Look up asset and return normalized evidence."""
     if not ip_address:
         return None
     row = conn.execute(
@@ -2932,6 +2977,7 @@ def lookup_asset(conn, ip_address):
 
 
 def asset_context_for_alert(conn, alert):
+    """Return asset context for alert data retained for schema compatibility."""
     src_asset = lookup_asset(conn, alert.get("src_ip"))
     dest_asset = lookup_asset(conn, alert.get("dest_ip"))
     matched_asset = src_asset or dest_asset
@@ -2944,6 +2990,7 @@ def asset_context_for_alert(conn, alert):
 
 
 def upsert_asset(conn, asset):
+    """Create or update the matching asset record in SQLite."""
     now = utc_now()
     ip_address = normalize_ip(asset.get("ip_address"))
     cur = conn.cursor()
@@ -3002,6 +3049,7 @@ def upsert_asset(conn, asset):
 
 
 def deactivate_asset(conn, asset_id):
+    """Mark a legacy registered-IP record inactive without deleting history."""
     cur = conn.execute(
         "UPDATE assets SET status = 'inactive', updated_at = ? WHERE id = ?",
         (utc_now(), asset_id),
@@ -3011,12 +3059,14 @@ def deactivate_asset(conn, asset_id):
 
 
 def delete_asset(conn, asset_id):
+    """Delete the requested asset data."""
     cur = conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
     conn.commit()
     return cur.rowcount > 0
 
 
 def update_asset(conn, asset_id, asset):
+    """Update the stored asset data."""
     now = utc_now()
     ip_address = normalize_ip(asset.get("ip_address"))
     values = (
@@ -3056,6 +3106,7 @@ def update_asset(conn, asset_id, asset):
 
 
 def asset_summary(conn):
+    """Return asset summary data retained for schema compatibility."""
     rows = conn.execute(
         """
         SELECT device_type, COUNT(*) AS count
@@ -3199,11 +3250,13 @@ def insert_detection(conn, detection):
 def insert_ai_report(conn, detection_id, report):
     """Store the normalized human-readable model explanation for a case."""
     def sqlite_value(value):
+        """Convert a Python value into a representation SQLite can store safely."""
         if isinstance(value, (dict, list)):
             return json.dumps(value, sort_keys=True)
         return value
 
     def sqlite_int(value, default=0):
+        """Convert a nullable value into a SQLite-compatible integer."""
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -3264,6 +3317,7 @@ def upsert_ai_run_audit(conn, detection_id, report, ai_report_id=None, assessmen
     """Persist the authoritative local record of an AI request and response."""
 
     def encoded(value, fallback):
+        """Encode one CSV field without allowing spreadsheet formula execution."""
         return json.dumps(value if value is not None else fallback, sort_keys=True)
 
     prompt = str(report.get("audit_prompt_text") or "")
@@ -3338,6 +3392,7 @@ def upsert_ai_run_audit(conn, detection_id, report, ai_report_id=None, assessmen
 
 
 def ai_run_audits_for_detection(conn, detection_id):
+    """Return or update ai run audits for detection state used by the AI workflow."""
     rows = conn.execute(
         "SELECT * FROM ai_run_audits WHERE detection_id = ? ORDER BY id DESC",
         (detection_id,),
@@ -3440,6 +3495,7 @@ def insert_ai_assessment(conn, detection_id, report, assessment_type="initial", 
 
 
 def insert_virustotal_verification(conn, detection_id, verification, ai_report_id=None, stage="initial"):
+    """Persist a new virustotal verification record in SQLite."""
     cur = conn.execute(
         """
         INSERT INTO virustotal_verifications (
@@ -3469,6 +3525,7 @@ def insert_virustotal_verification(conn, detection_id, verification, ai_report_i
 
 
 def virustotal_verifications_for_detection(conn, detection_id):
+    """Return all VirusTotal verification attempts stored for a detection."""
     rows = conn.execute(
         "SELECT * FROM virustotal_verifications WHERE detection_id = ? ORDER BY id",
         (detection_id,),
@@ -3525,6 +3582,7 @@ def insert_zeek_event(conn, event):
 
 
 def zeek_event_id(conn, event):
+    """Build or inspect zeek event id data."""
     row = conn.execute(
         """
         SELECT id FROM zeek_events
@@ -3545,6 +3603,7 @@ def zeek_event_id(conn, event):
 
 
 def zeek_flow_for_uid(conn, zeek_uid):
+    """Build or inspect zeek flow for uid data."""
     if not zeek_uid:
         return None
     row = conn.execute(
@@ -3589,6 +3648,7 @@ def insert_sensor_finding(conn, detection_id, finding):
 
 
 def sensor_findings_for_detection(conn, detection_id):
+    """Return normalized Suricata and Zeek findings joined to a detection."""
     rows = conn.execute(
         """
         SELECT
@@ -3655,6 +3715,7 @@ def sensor_findings_for_detection(conn, detection_id):
 
 
 def sensor_finding_detection_id(conn, sensor, sensor_event_id):
+    """Find the detection that already owns a sensor event identifier."""
     row = conn.execute(
         "SELECT detection_id FROM sensor_findings WHERE sensor = ? AND sensor_event_id = ?",
         (sensor, sensor_event_id),
@@ -3663,16 +3724,19 @@ def sensor_finding_detection_id(conn, sensor, sensor_event_id):
 
 
 def detection_by_id(conn, detection_id):
+    """Load one detection by database ID with retired score fields removed."""
     row = conn.execute("SELECT * FROM detections WHERE id = ?", (detection_id,)).fetchone()
     return without_operational_scores(row) if row else None
 
 
 def detection_by_case_uid(conn, case_uid):
+    """Load one detection using its stable analyst-facing case UID."""
     row = conn.execute("SELECT * FROM detections WHERE case_uid = ?", (case_uid,)).fetchone()
     return without_operational_scores(row) if row else None
 
 
 def _event_time(value):
+    """Parse a stored sensor timestamp into a timezone-aware datetime."""
     if not value:
         return None
     text = str(value).replace("Z", "+00:00")
@@ -3688,6 +3752,7 @@ def _event_time(value):
 
 
 def _event_endpoints(event):
+    """Extract normalized source and destination addresses and ports."""
     return (
         event.get("src_ip") or event.get("source_ip"),
         event.get("dest_ip") or event.get("destination_ip"),
@@ -3697,6 +3762,7 @@ def _event_endpoints(event):
 
 
 def _event_name(event):
+    """Choose the most descriptive available name for a sensor event."""
     return str(
         event.get("signature")
         or event.get("event_name")
@@ -3725,9 +3791,11 @@ OBSERVABLE_KEYS = {
 
 
 def _event_observables(event):
+    """Collect normalized addresses, domains, URLs, and hashes from an event."""
     observables = set()
 
     def collect(value, key=""):
+        """Collect normalized observable values without duplicates."""
         if isinstance(value, str):
             try:
                 parsed = json.loads(value)
@@ -3759,6 +3827,7 @@ def _event_observables(event):
 
 
 def _candidate_observables(conn, detection_ids):
+    """Build observable sets for candidate detections during correlation."""
     if not detection_ids:
         return {}
     placeholders = ",".join("?" for _ in detection_ids)
@@ -3773,6 +3842,7 @@ def _candidate_observables(conn, detection_ids):
 
 
 def _same_sensor_behavior_match(event, candidate):
+    """Test whether two same-sensor events represent repeated behavior."""
     src, dst, _src_port, _dst_port = _event_endpoints(event)
     if not src or src != candidate.get("src_ip"):
         return False
@@ -3802,6 +3872,7 @@ DEFAULT_CORRELATION_STRENGTHS = {
 
 
 def correlation_strength(name, configured=None):
+    """Resolve a named correlation method to its configured confidence."""
     values = {**DEFAULT_CORRELATION_STRENGTHS, **(configured or {})}
     try:
         value = float(values.get(name, 0.0))
@@ -4043,6 +4114,7 @@ def fuse_detection(conn, detection_id, event, correlation_method, correlation_co
 
 
 def get_zeek_checkpoint(conn, log_type):
+    """Return the stored zeek checkpoint value when available."""
     row = conn.execute(
         "SELECT log_type, path, inode, offset, updated_at FROM zeek_ingest_checkpoints WHERE log_type = ?",
         (log_type,),
@@ -4051,6 +4123,7 @@ def get_zeek_checkpoint(conn, log_type):
 
 
 def get_suricata_checkpoint(conn, source="eve"):
+    """Return the stored suricata checkpoint value when available."""
     row = conn.execute(
         """
         SELECT source, path, inode, offset, updated_at
@@ -4063,6 +4136,7 @@ def get_suricata_checkpoint(conn, source="eve"):
 
 
 def upsert_suricata_checkpoint(conn, path, inode, offset, source="eve"):
+    """Create or update the matching suricata checkpoint record in SQLite."""
     conn.execute(
         """
         INSERT INTO suricata_ingest_checkpoints (
@@ -4081,6 +4155,7 @@ def upsert_suricata_checkpoint(conn, path, inode, offset, source="eve"):
 
 
 def upsert_zeek_checkpoint(conn, log_type, path, inode, offset):
+    """Create or update the matching zeek checkpoint record in SQLite."""
     conn.execute(
         """
         INSERT INTO zeek_ingest_checkpoints (log_type, path, inode, offset, updated_at)
@@ -4097,6 +4172,7 @@ def upsert_zeek_checkpoint(conn, log_type, path, inode, offset):
 
 
 def latest_zeek_events(conn, limit=50, log_type=None):
+    """Return the most recent zeek events records."""
     params = []
     where = ""
     if log_type:
@@ -4121,6 +4197,7 @@ def latest_zeek_events(conn, limit=50, log_type=None):
 
 
 def zeek_event_counts(conn):
+    """Build or inspect zeek event counts data."""
     rows = conn.execute(
         """
         SELECT log_type, COUNT(*) AS count
@@ -4133,6 +4210,7 @@ def zeek_event_counts(conn):
 
 
 def _zeek_raw(row):
+    """Build or inspect zeek raw data."""
     try:
         return json.loads(row["raw_json"] or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -4140,6 +4218,7 @@ def _zeek_raw(row):
 
 
 def _counter_rows(counter, name, limit=8):
+    """Convert a Counter into dashboard rows sorted by frequency."""
     return [
         {name: value, "count": count}
         for value, count in counter.most_common(limit)
@@ -4469,6 +4548,7 @@ def zeek_context_for_detection(conn, detection_id, seconds=120, limit=100):
 
 
 def insert_response(conn, response):
+    """Persist a new response record in SQLite."""
     cur = conn.execute(
         """
         INSERT INTO responses (
@@ -4492,6 +4572,7 @@ def insert_response(conn, response):
 
 
 def upsert_pending_review(conn, response, review_days=3):
+    """Create or update the matching pending review record in SQLite."""
     if response.get("final_action") != "human_review":
         return
 
@@ -4527,6 +4608,7 @@ def upsert_pending_review(conn, response, review_days=3):
 
 
 def insert_app_event(conn, level, component, message, details=None):
+    """Persist a new app event record in SQLite."""
     conn.execute(
         """
         INSERT INTO app_events (level, component, message, details)
@@ -4543,6 +4625,7 @@ def insert_app_event(conn, level, component, message, details=None):
 
 
 def reset_dashboard_logs(conn):
+    """Delete operational case history while preserving configuration tables."""
     tables = [
         "ai_comparison_review_history",
         "ai_comparison_votes",
@@ -4575,6 +4658,7 @@ def reset_dashboard_logs(conn):
 
 
 def latest_alerts(conn, limit=50):
+    """Return the most recent alerts records."""
     rows = conn.execute(
         """
         SELECT
@@ -4597,6 +4681,7 @@ def latest_alerts(conn, limit=50):
 
 
 def latest_sensor_alerts(conn, limit=50, sensor_filter=None):
+    """Return the most recent sensor alerts records."""
     normalized_filter = str(sensor_filter or "all").strip().lower()
     filter_sql = ""
     if normalized_filter == "suricata":
@@ -4680,6 +4765,7 @@ def latest_sensor_alerts(conn, limit=50, sensor_filter=None):
 
 
 def latest_ai_opinions(conn, limit=50):
+    """Return the most recent ai opinions records."""
     rows = conn.execute(
         """
         SELECT
@@ -4734,6 +4820,7 @@ def latest_ai_opinions(conn, limit=50):
 
 
 def ai_model_comparison(conn):
+    """Return or update ai model comparison state used by the AI workflow."""
     rows = conn.execute(
         """
         SELECT
@@ -4753,6 +4840,7 @@ def ai_model_comparison(conn):
 
 
 def ip_enrichment_profile(ip_address):
+    """Classify an address and state whether external enrichment is allowed."""
     if not ip_address:
         return {
             "ip_address": "",
@@ -4799,6 +4887,7 @@ def ip_enrichment_profile(ip_address):
 
 
 def latest_threat_intel_for_ip(conn, ip_address, source=None):
+    """Return the most recent threat intel for ip records."""
     if not ip_address:
         return None
     params = [ip_address]
@@ -4835,6 +4924,7 @@ def upsert_threat_intel_lookup(
     alert_id=None,
     detection_id=None,
 ):
+    """Create or update the matching threat intel lookup record in SQLite."""
     conn.execute(
         """
         INSERT INTO threat_intel_lookups (
@@ -4872,6 +4962,7 @@ def record_threat_intel_usage(
     stage,
     details=None,
 ):
+    """Record threat intel usage for audit and later review."""
     conn.execute(
         """
         INSERT INTO threat_intel_usage (
@@ -4900,6 +4991,7 @@ def record_threat_intel_usage(
 
 
 def threat_intel_usage_summary(conn):
+    """Return or update threat intel usage summary evidence in SQLite."""
     rows = conn.execute(
         """
         SELECT source, stage, COUNT(*) AS usage_count, MAX(used_at) AS last_used
@@ -4924,6 +5016,7 @@ def threat_intel_usage_summary(conn):
 
 
 def replace_threat_intel_indicators(conn, source, indicators):
+    """Replace the stored threat intel indicators data as one database operation."""
     imported_at = utc_now()
     rows = []
     for item in indicators:
@@ -4981,6 +5074,7 @@ def replace_threat_intel_indicators(conn, source, indicators):
 
 
 def update_threat_intel_source(conn, source, status, error=""):
+    """Update the stored threat intel source data."""
     now = utc_now()
     conn.execute(
         """
@@ -4996,11 +5090,13 @@ def update_threat_intel_source(conn, source, status, error=""):
 
 
 def threat_intel_source_rows(conn):
+    """Return or update threat intel source rows evidence in SQLite."""
     rows = conn.execute("SELECT * FROM threat_intel_sources ORDER BY source").fetchall()
     return {row["source"]: dict(row) for row in rows}
 
 
 def threat_intel_matches(conn, indicator, indicator_type="ip"):
+    """Return or update threat intel matches evidence in SQLite."""
     value = str(indicator or "").strip()
     if not value:
         return []
@@ -5041,6 +5137,7 @@ def threat_intel_matches(conn, indicator, indicator_type="ip"):
 
 
 def threat_intel_provider_results(conn, indicator, providers, indicator_type="ip"):
+    """Return or update threat intel provider results evidence in SQLite."""
     matches = threat_intel_matches(conn, indicator, indicator_type)
     by_source = {}
     for match in matches:
@@ -5076,6 +5173,7 @@ def threat_intel_provider_results(conn, indicator, providers, indicator_type="ip
 
 
 def public_ips_for_enrichment(conn, limit=10, detection_type=None):
+    """Select frequently observed public addresses eligible for enrichment."""
     if detection_type:
         rows = conn.execute(
             """
@@ -5133,6 +5231,7 @@ def public_ips_for_enrichment(conn, limit=10, detection_type=None):
 
 
 def detection_type_detail(conn, detection_type=None, limit=50):
+    """Build the detailed dashboard view for one behavior classification."""
     filter_sql = "WHERE detection_type = ?" if detection_type else ""
     params = [detection_type] if detection_type else []
 
@@ -5241,6 +5340,7 @@ def detection_type_detail(conn, detection_type=None, limit=50):
 
 
 def ip_detail(conn, ip_address, limit=100):
+    """Assemble sightings, cases, and enrichment evidence for one address."""
     normalized_ip = normalize_ip(ip_address)
     limit = max(1, min(int(limit or 100), 250))
 
@@ -5417,6 +5517,7 @@ def ip_detail(conn, ip_address, limit=100):
     ).fetchall()
 
     def enrich_ip_row(row):
+        """Add local classification and cached intelligence to an IP row."""
         item = {
             **dict(row),
             **ip_enrichment_profile(row["peer_ip"]),
@@ -5451,6 +5552,7 @@ def ip_detail(conn, ip_address, limit=100):
 
 
 def detection_time_window(conn, detection_type=None):
+    """Return the first and last timestamps for matching detections."""
     if detection_type:
         row = conn.execute(
             """
@@ -5471,6 +5573,7 @@ def detection_time_window(conn, detection_type=None):
 
 
 def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
+    """Return the most recent decision evidence records."""
     params = []
     filters = [
         "responses.id = (SELECT MAX(r2.id) FROM responses r2 WHERE r2.detection_id = detections.id)"
@@ -5578,6 +5681,7 @@ def latest_decision_evidence(conn, limit=25, detection_type=None, outcome=None):
 
 
 def investigation_detail(conn, detection_id):
+    """Assemble all stored evidence needed by the legacy investigation API."""
     row = conn.execute(
         """
         SELECT
@@ -5756,6 +5860,7 @@ def investigation_detail(conn, detection_id):
 
 
 def case_workspace(conn, case_uid):
+    """Assemble the complete case, evidence, AI, and review workspace."""
     detection = detection_by_case_uid(conn, case_uid)
     if not detection:
         return None
@@ -5795,6 +5900,7 @@ def case_workspace(conn, case_uid):
 
 
 def enrichment_status(conn, config, limit=50):
+    """Summarize provider configuration, freshness, and recent lookup results."""
     threat_intel = config.get("threat_intel", {})
     cache_ttl_hours = int(threat_intel.get("cache_ttl_hours", 24))
     otx_enabled = bool(threat_intel.get("otx_enabled", False))
@@ -5878,6 +5984,7 @@ def enrichment_status(conn, config, limit=50):
 
 
 def latest_app_events(conn, limit=100):
+    """Return the most recent app events records."""
     rows = conn.execute(
         """
         SELECT id, level, component, message, details, created_at
@@ -5891,6 +5998,7 @@ def latest_app_events(conn, limit=100):
 
 
 def expire_stale_reviews(conn):
+    """Expire stale stale reviews records according to policy."""
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
@@ -5905,6 +6013,7 @@ def expire_stale_reviews(conn):
 
 
 def seed_pending_reviews_from_responses(conn):
+    """Create missing pending reviews from responses records from existing durable data."""
     legacy_score = "original_score," if "original_score" in table_columns(
         conn, "analyst_reviews"
     ) else ""
@@ -5935,6 +6044,7 @@ def seed_pending_reviews_from_responses(conn):
 
 
 def list_review_queue(conn, limit=50):
+    """Return the stored review queue records for display or processing."""
     seed_pending_reviews_from_responses(conn)
     expire_stale_reviews(conn)
     rows = conn.execute(
@@ -5991,6 +6101,7 @@ def submit_analyst_review(
     classification=None,
     tuning_label=None,
 ):
+    """Store an analyst decision and apply its final case classification."""
     now = datetime.now(timezone.utc).isoformat()
     existing = conn.execute(
         "SELECT id, original_classification, original_action FROM analyst_reviews WHERE detection_id = ?",
@@ -6102,6 +6213,7 @@ def detections_without_ai_reports(
     newest_first=False,
     minimum_age_seconds=0,
 ):
+    """Return the next durable queue items that still need initial AI reports."""
     join_filters = []
     params = []
     if ai_profile_uid:
@@ -6179,12 +6291,14 @@ def detections_without_ai_reports(
 
 
 def _evaluation_bool(value):
+    """Build evaluation bool data for controlled evaluation."""
     if value is None:
         return None
     return bool(value)
 
 
 def _evaluation_scenario_row(row):
+    """Build evaluation scenario row data for controlled evaluation."""
     if not row:
         return None
     item = dict(row)
@@ -6217,6 +6331,7 @@ def _evaluation_scenario_row(row):
 
 
 def create_evaluation_scenario(conn, scenario):
+    """Create and persist a new evaluation scenario."""
     now = utc_now()
     conn.execute(
         """
@@ -6254,6 +6369,7 @@ def create_evaluation_scenario(conn, scenario):
 
 
 def update_evaluation_scenario(conn, scenario_uid, scenario):
+    """Update the stored evaluation scenario data."""
     now = utc_now()
     cur = conn.execute(
         """
@@ -6291,6 +6407,7 @@ def update_evaluation_scenario(conn, scenario_uid, scenario):
 
 
 def list_evaluation_scenarios(conn, limit=200, experiment_type=None):
+    """Return the stored evaluation scenarios records for display or processing."""
     where = ""
     params = []
     if experiment_type:
@@ -6318,6 +6435,7 @@ def list_evaluation_scenarios(conn, limit=200, experiment_type=None):
 
 
 def get_evaluation_scenario(conn, scenario_uid):
+    """Return the stored evaluation scenario value when available."""
     row = conn.execute(
         "SELECT * FROM evaluation_scenarios WHERE scenario_uid = ?",
         (scenario_uid,),
@@ -6331,6 +6449,7 @@ def get_evaluation_scenario(conn, scenario_uid):
 
 
 def delete_evaluation_scenario(conn, scenario_uid):
+    """Delete the requested evaluation scenario data."""
     if not conn.execute(
         "SELECT 1 FROM evaluation_scenarios WHERE scenario_uid = ?",
         (scenario_uid,),
@@ -6350,6 +6469,7 @@ def delete_evaluation_scenario(conn, scenario_uid):
 
 
 def upsert_evaluation_case_link(conn, scenario_uid, link):
+    """Create or update the matching evaluation case link record in SQLite."""
     now = utc_now()
     conn.execute(
         """
@@ -6385,6 +6505,7 @@ def upsert_evaluation_case_link(conn, scenario_uid, link):
 
 
 def list_evaluation_case_links(conn, scenario_uid):
+    """Return the stored evaluation case links records for display or processing."""
     rows = conn.execute(
         """
         SELECT links.*, detections.id AS detection_id, detections.first_seen,
@@ -6412,6 +6533,7 @@ def list_evaluation_case_links(conn, scenario_uid):
 
 
 def delete_evaluation_case_link(conn, scenario_uid, case_uid):
+    """Delete the requested evaluation case link data."""
     cur = conn.execute(
         "DELETE FROM evaluation_case_links WHERE scenario_uid = ? AND case_uid = ?",
         (scenario_uid, case_uid),
@@ -6421,6 +6543,7 @@ def delete_evaluation_case_link(conn, scenario_uid, case_uid):
 
 
 def upsert_evaluation_event_label(conn, scenario_uid, label):
+    """Create or update the matching evaluation event label record in SQLite."""
     now = utc_now()
     conn.execute(
         """
@@ -6465,6 +6588,7 @@ def upsert_evaluation_event_label(conn, scenario_uid, label):
 
 
 def list_evaluation_event_labels(conn, scenario_uid):
+    """Return the stored evaluation event labels records for display or processing."""
     rows = conn.execute(
         """
         SELECT * FROM evaluation_event_labels
@@ -6483,6 +6607,7 @@ def list_evaluation_event_labels(conn, scenario_uid):
 
 
 def evaluation_candidate_events(conn, scenario_uid, limit=5000):
+    """Build evaluation candidate events data for controlled evaluation."""
     scenario = get_evaluation_scenario(conn, scenario_uid)
     if not scenario:
         return []
@@ -6622,6 +6747,7 @@ def evaluation_candidate_events(conn, scenario_uid, limit=5000):
 
 
 def evaluation_correlation_metrics(conn, scenario_uid):
+    """Build evaluation correlation metrics data for controlled evaluation."""
     if not get_evaluation_scenario(conn, scenario_uid):
         return None
     candidates = evaluation_candidate_events(conn, scenario_uid)
@@ -6661,6 +6787,7 @@ def evaluation_correlation_metrics(conn, scenario_uid):
             true_negatives += 1
 
     def divided(numerator, denominator):
+        """Return a safe division result while avoiding division by zero."""
         return round(numerator / denominator, 4) if denominator else None
 
     precision = divided(true_positives, true_positives + false_positives)
@@ -6696,6 +6823,7 @@ def evaluation_correlation_metrics(conn, scenario_uid):
 
 
 def delete_evaluation_event_label(conn, scenario_uid, event_sensor, event_uid):
+    """Delete the requested evaluation event label data."""
     cur = conn.execute(
         """
         DELETE FROM evaluation_event_labels
@@ -6708,6 +6836,7 @@ def delete_evaluation_event_label(conn, scenario_uid, event_sensor, event_uid):
 
 
 def upsert_evaluation_model_review(conn, review):
+    """Create or update the matching evaluation model review record in SQLite."""
     review_uid = review.get("review_uid") or f"eval-model-{uuid.uuid4().hex[:12]}"
     reviewed_at = utc_now()
     conn.execute(
@@ -6765,6 +6894,7 @@ def upsert_evaluation_model_review(conn, review):
 
 
 def list_evaluation_model_reviews(conn, limit=500, comparison_run_uid=None):
+    """Return the stored evaluation model reviews records for display or processing."""
     where = ""
     params = []
     if comparison_run_uid:
@@ -6784,6 +6914,7 @@ def list_evaluation_model_reviews(conn, limit=500, comparison_run_uid=None):
 
 
 def delete_evaluation_model_review(conn, review_uid):
+    """Delete the requested evaluation model review data."""
     cur = conn.execute(
         "DELETE FROM evaluation_model_reviews WHERE review_uid = ?",
         (review_uid,),
@@ -6793,6 +6924,7 @@ def delete_evaluation_model_review(conn, review_uid):
 
 
 def evaluation_case_options(conn, limit=250):
+    """Build evaluation case options data for controlled evaluation."""
     rows = conn.execute(
         """
         SELECT detections.case_uid, detections.id AS detection_id,
@@ -6816,6 +6948,7 @@ def evaluation_case_options(conn, limit=250):
 
 
 def evaluation_overview(conn):
+    """Build evaluation overview data for controlled evaluation."""
     counts = {}
     for name, table in {
         "scenarios": "evaluation_scenarios",
@@ -6843,6 +6976,7 @@ def evaluation_overview(conn):
 
 
 def evaluation_export_bundle(conn, scenario_uid=None):
+    """Build evaluation export bundle data for controlled evaluation."""
     if scenario_uid:
         scenario = get_evaluation_scenario(conn, scenario_uid)
         scenarios = [scenario] if scenario else []

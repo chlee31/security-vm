@@ -7,6 +7,7 @@ class Correlator:
     """Build the first record for a case; subsequent grouping is database-backed."""
 
     def __init__(self, config):
+        """Initialize this helper with the state required for later operations."""
         self.config = config
 
     def correlate(self, alert, alert_id):

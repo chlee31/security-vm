@@ -132,6 +132,7 @@ def alert_observables(alert):
     seen = set()
 
     def add(value, indicator_type):
+        """Normalize and deduplicate one observable before provider matching."""
         value = str(value or "").strip()
         if not value:
             return
@@ -610,6 +611,12 @@ def run_ingest(config_path):
 
 
 def run_dashboard(config_path, host, port):
+    """Create the FastAPI dashboard and bind it to the requested address.
+
+    ``host`` and ``port`` come from the command line. Change them with
+    ``--host`` and ``--port``; they are intentionally not read from safelist or
+    another access-control setting.
+    """
     if host == "0.0.0.0":
         print(
             "[!] Dashboard is exposed on every interface and has no built-in authentication. "
@@ -621,6 +628,7 @@ def run_dashboard(config_path, host, port):
 
 
 def run_zeek_status(config_path):
+    """Print Zeek installation, process, binary, and configured-log health."""
     config = load_config(config_path)
     status = zeek_status(config)
     print(f"Zeek enabled: {status['enabled']}")
@@ -643,6 +651,7 @@ def run_zeek_status(config_path):
 
 
 def run_zeek_ingest(config_path):
+    """Validate the required Zeek sensor and continuously ingest its JSON logs."""
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     status = zeek_status(config)
@@ -664,6 +673,7 @@ def run_zeek_ingest(config_path):
     print(f"[+] Zeek ingest reading JSON logs from {config.get('zeek', {}).get('log_directory')}")
 
     def process_zeek_event(event_id, event):
+        """Turn each new Zeek notice into a new or correlated case finding."""
         if event.get("log_type") != "notice":
             return
         if sensor_finding_detection_id(conn, "zeek", event_id):
@@ -725,16 +735,19 @@ def run_zeek_ingest(config_path):
 
 
 def run_threat_intel(config_path):
+    """Run scheduled downloads for threat-intelligence providers enabled in YAML."""
     print("[+] Threat-intelligence feed worker starting")
     run_threat_intel_worker(config_path)
 
 
 def should_show_launcher_line(line):
+    """Return true when quiet launcher output contains a likely failure marker."""
     lowered = line.lower()
     return any(marker in lowered for marker in ERROR_MARKERS)
 
 
 def stream_process_output(name, pipe, recent_lines):
+    """Capture child output and print only probable errors to the parent terminal."""
     try:
         for raw_line in iter(pipe.readline, ""):
             line = raw_line.rstrip()
@@ -748,6 +761,7 @@ def stream_process_output(name, pipe, recent_lines):
 
 
 def start_managed_process(name, command, recent_lines):
+    """Start one run-all child process and its background output reader."""
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -765,6 +779,7 @@ def start_managed_process(name, command, recent_lines):
 
 
 def stop_managed_processes(processes):
+    """Terminate launcher children gracefully, then kill any that do not exit."""
     for name, process, _thread, _recent, _required in processes:
         if process.poll() is None:
             print(f"[+] Stopping {name}", flush=True)
@@ -779,6 +794,7 @@ def stop_managed_processes(processes):
 
 
 def print_recent_tail(name, recent_lines):
+    """Print the retained output tail after a managed component fails."""
     if not recent_lines:
         return
     print(f"[!] Recent {name} log tail:", flush=True)
@@ -787,6 +803,7 @@ def print_recent_tail(name, recent_lines):
 
 
 def run_quiet_command(name, command, timeout=20):
+    """Run a short management command while suppressing successful noise."""
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as exc:
@@ -816,6 +833,13 @@ def run_all(
     port,
     restart_suricata=True,
 ):
+    """Validate prerequisites and supervise every required application worker.
+
+    ``host`` and ``port`` control dashboard exposure. ``restart_suricata`` is
+    set by ``--skip-suricata-restart`` and is useful when Suricata is managed
+    separately. A required child exit shuts down the whole pipeline; an
+    optional threat-intelligence worker may fail without stopping collection.
+    """
     config = load_config(config_path)
     database_path = config.get("database", {}).get("path", "security_vm.db")
     schema_conn = init_db(database_path)
@@ -916,6 +940,7 @@ def run_all(
     component_started_at = {}
 
     def publish_runtime_components(force_status=None):
+        """Persist the current child-process health for the Admin console."""
         snapshot = []
         for name, process, _thread, _recent_lines, required in processes:
             return_code = process.poll()
@@ -935,6 +960,7 @@ def run_all(
             record_runtime_components(launcher_conn, snapshot)
 
     def handle_stop(_signum, _frame):
+        """Translate SIGINT/SIGTERM into an orderly whole-pipeline shutdown."""
         nonlocal shutting_down
         shutting_down = True
         print("\n[+] Shutdown requested", flush=True)
@@ -1034,6 +1060,11 @@ def run_all(
 
 
 def run_ai_backfill(config_path, limit):
+    """Generate missing AI reports for up to ``limit`` historical detections.
+
+    The active model, temperature, seed, context size, and timeout all come
+    from ``config.yaml`` through ``load_config``.
+    """
     config = load_config(config_path)
     conn = init_db(config.get("database", {}).get("path", "security_vm.db"))
     metadata = model_metadata(config)
@@ -1287,7 +1318,10 @@ def run_ai_worker(config_path, poll_seconds=1.0, correlation_delay_seconds=5):
 
 
 def main():
+    """Define the command-line interface and dispatch the selected operation."""
     parser = argparse.ArgumentParser(description="Security VM application")
+    # Every subcommand receives its own parser so ``python -m app.main --help``
+    # documents the same entry points used by run-all and manual troubleshooting.
     sub = parser.add_subparsers(dest="command", required=True)
 
     ingest = sub.add_parser("ingest", help="Tail Suricata EVE JSON and process alerts")
@@ -1324,6 +1358,7 @@ def main():
     experiment_worker.add_argument("--config", default="config.yaml")
 
     args = parser.parse_args()
+    # Dispatch only after argparse has validated command-specific arguments.
     if args.command == "ingest":
         run_ingest(args.config)
     elif args.command == "dashboard":

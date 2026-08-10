@@ -40,6 +40,7 @@ SCENARIO_UID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{2,39}$")
 
 
 def _clean_text(value, field, required=False, maximum=2000):
+    """Normalize and validate a text field submitted for an evaluation."""
     text = str(value or "").strip()
     if required and not text:
         raise ValueError(f"{field} is required")
@@ -49,6 +50,7 @@ def _clean_text(value, field, required=False, maximum=2000):
 
 
 def _normalize_time(value, field):
+    """Normalize time into the application's stable representation."""
     text = _clean_text(value, field, required=True, maximum=64)
     parsed_text = text.replace("Z", "+00:00")
     try:
@@ -61,6 +63,7 @@ def _normalize_time(value, field):
 
 
 def _normalize_ip(value, field):
+    """Normalize ip into the application's stable representation."""
     text = _clean_text(value, field, maximum=64)
     if not text:
         return None
@@ -71,6 +74,7 @@ def _normalize_ip(value, field):
 
 
 def normalize_scenario(payload, scenario_uid=None):
+    """Normalize scenario into the application's stable representation."""
     uid = _clean_text(
         scenario_uid or payload.get("scenario_uid"),
         "Scenario UID",
@@ -110,6 +114,7 @@ def normalize_scenario(payload, scenario_uid=None):
         raise ValueError(f"Unsupported expected sensor: {invalid_sensors[0]}")
 
     def classification(field):
+        """Normalize one model classification for evaluation output."""
         value = _clean_text(payload.get(field), field.replace("_", " "), maximum=80)
         if value and value not in REFERENCE_CLASSIFICATIONS:
             raise ValueError(
@@ -177,6 +182,7 @@ def normalize_scenario(payload, scenario_uid=None):
 
 
 def normalize_case_link(payload):
+    """Normalize case link into the application's stable representation."""
     case_uid = _clean_text(
         payload.get("case_uid"), "Case UID", required=True, maximum=80
     )
@@ -199,6 +205,7 @@ def normalize_case_link(payload):
 
 
 def assignment_label(expected_case_uid, actual_case_uid):
+    """Describe whether an evaluation answer selected the expected case."""
     if expected_case_uid and actual_case_uid:
         if expected_case_uid == actual_case_uid:
             return "expected_correctly_attached"
@@ -211,6 +218,7 @@ def assignment_label(expected_case_uid, actual_case_uid):
 
 
 def normalize_event_label(payload):
+    """Normalize event label into the application's stable representation."""
     sensor = _clean_text(
         payload.get("event_sensor"), "Event sensor", required=True, maximum=20
     ).lower()
@@ -262,6 +270,7 @@ def normalize_event_label(payload):
 def validate_event_assignment(
     label, candidate, linked_case_uids, operational_case_uids
 ):
+    """Validate event assignment and reject unsupported input."""
     if not candidate:
         raise ValueError(
             "Sensor event is outside the scenario candidate scope. "
@@ -299,6 +308,7 @@ def validate_event_assignment(
 
 
 def _csv_safe(value):
+    """Protect exported text from being interpreted as a spreadsheet formula."""
     if not isinstance(value, str):
         return value
     stripped = value.lstrip()
@@ -308,6 +318,7 @@ def _csv_safe(value):
 
 
 def evaluation_bundle_csv(bundle):
+    """Build evaluation bundle csv data for controlled evaluation."""
     output = io.StringIO()
     fieldnames = [
         "record_type",
@@ -327,6 +338,7 @@ def evaluation_bundle_csv(bundle):
     writer.writeheader()
 
     def write(row):
+        """Write one normalized row to the evaluation export."""
         writer.writerow({key: _csv_safe(value) for key, value in row.items()})
 
     for scenario in bundle.get("scenarios") or []:

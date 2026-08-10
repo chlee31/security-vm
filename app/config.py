@@ -53,16 +53,19 @@ DEFAULT_CONFIG = {
             "single_sensor": 0.5,
         },
     },
+    # SUPPORTED USER SETTINGS: deployment-specific endpoint and generation
+    # controls belong here or in config.yaml. Restart long-running workers after
+    # edits so all processes use the same merged configuration.
     "ai_model": {
         "host": "http://127.0.0.1:11434",
         "model": "llama3.2:latest",
         "provider": "ollama",
         "active_profile_uid": "",
-        "timeout_seconds": 90,
-        "num_predict": 1024,
-        "num_ctx": 8192,
-        "temperature": 0.0,
-        "seed": 42,
+        "timeout_seconds": 90,  # HTTP wait limit, not a model compute limit.
+        "num_predict": 1024,  # Maximum generated tokens inside num_ctx.
+        "num_ctx": 8192,  # Total input plus output token window.
+        "temperature": 0.0,  # Preferred baseline for repeatable runs.
+        "seed": 42,  # Reproducibility aid, not a cross-model guarantee.
     },
     "threat_intel": {
         "cache_ttl_hours": 24,

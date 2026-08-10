@@ -10,6 +10,7 @@ from app.security import redact_secrets
 
 
 def parse_time(value):
+    """Parse time into a normalized value."""
     if not value:
         return None
     try:

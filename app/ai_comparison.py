@@ -30,9 +30,14 @@ from app.database import (
 from app.security import redact_secrets
 
 
+# ADVANCED RESEARCH CONTROL: these values override config.yaml for the frozen
+# control request used by model comparisons. Change them only when intentionally
+# starting a new experiment design, then update the methodology and tests so
+# results are not mixed across different control conditions. Normal case
+# analysis still uses ``ai_model.temperature`` and ``ai_model.seed``.
 CONTROL_OPTIONS = {
-    "temperature": 0.0,
-    "seed": 42,
+    "temperature": 1.0,
+    "seed": 64,
     "num_ctx": 8192,
     "num_predict": 1024,
 }
@@ -70,6 +75,12 @@ def _comparison_profiles(conn, config, requested_uids=None):
 
 
 def _config_for_profile(config, profile, options=None):
+    """Build an isolated request config for one saved AI profile.
+
+    ``CONTROL_OPTIONS`` override normal config.yaml values. Explicit ``options``
+    override both, which is how a queued experiment varies temperature or seed
+    without changing application-wide settings.
+    """
     runtime = deepcopy(config)
     ai_model = runtime.setdefault("ai_model", {})
     ai_model.update(
@@ -87,6 +98,7 @@ def _config_for_profile(config, profile, options=None):
 
 
 def _tags_for_host(host, timeout=10):
+    """Fetch the model inventory advertised by an Ollama-compatible endpoint."""
     response = requests.get(f"{str(host).rstrip('/')}/api/tags", timeout=timeout)
     response.raise_for_status()
     return response.json().get("models") or []
@@ -127,6 +139,7 @@ def capture_model_inventory(profiles):
 
 
 def _snapshot_for_case(conn, config, case_uid, profiles):
+    """Freeze the exact prompt and evidence shared by comparison candidates."""
     workspace, alert, detection, evidence, _findings = prepare_case_context(
         conn, config, case_uid, assessment_type="model_comparison"
     )
@@ -192,6 +205,7 @@ def queue_model_comparison(
 
 
 def _run_snapshot(conn, comparison_uid):
+    """Load and decode one durable comparison run from SQLite."""
     row = conn.execute(
         """
         SELECT * FROM ai_comparison_runs WHERE comparison_uid = ?
@@ -332,6 +346,7 @@ def process_comparison_run(conn, config, comparison_uid):
 
 
 def process_next_comparison(conn, config):
+    """Atomically claim and process the oldest queued model comparison."""
     # Claim under a write transaction. Stale work is recoverable after a
     # stopped worker, while active runs refresh worker_claimed_at per result.
     conn.execute("BEGIN IMMEDIATE")
@@ -386,6 +401,7 @@ def run_model_comparison(conn, config, case_uid, requested_uids=None):
 
 
 def _baseline_candidates(conn, comparison_uid, successful_only=True):
+    """Return candidate responses eligible to become experiment controls."""
     query = """
         SELECT candidates.*, runs.case_uid, runs.detection_id,
                runs.prompt_text AS control_prompt_text,
@@ -404,6 +420,7 @@ def _baseline_candidates(conn, comparison_uid, successful_only=True):
 
 
 def _verify_current_digest(profile, expected_digest):
+    """Verify that the served model binary matches the queued baseline digest."""
     inventory = capture_model_inventory([profile])[profile["uid"]]
     if expected_digest and inventory.get("digest") != expected_digest:
         raise ValueError(
@@ -413,6 +430,7 @@ def _verify_current_digest(profile, expected_digest):
 
 
 def queue_stability_experiment(conn, config, comparison_uid, settings):
+    """Queue temperature/seed variants against the analyst-selected response."""
     winner = _selected_winner(conn, comparison_uid)
     if not winner:
         raise ValueError("Experiment requires a reviewed baseline with one winner")
@@ -479,6 +497,7 @@ def queue_stability_experiment(conn, config, comparison_uid, settings):
 
 
 def _selected_winner(conn, comparison_uid):
+    """Load the successful candidate selected by the analyst for experiments."""
     row = conn.execute(
         """
         SELECT candidates.*, runs.case_uid, runs.detection_id,
@@ -502,6 +521,7 @@ def _selected_winner(conn, comparison_uid):
 
 
 def queue_missing_evidence_experiment(conn, config, comparison_uid, variants):
+    """Queue evidence-removal variants from an analyst-selected baseline."""
     winner = _selected_winner(conn, comparison_uid)
     if not winner:
         raise ValueError("Experiment requires a reviewed baseline with one winner")
@@ -561,6 +581,7 @@ def mask_evidence_package(package, masks):
     destination_value = event.get("dest_ip")
 
     def replace_scalar(value, target):
+        """Replace every exact occurrence of one observable with a marker."""
         if isinstance(value, dict):
             return {key: replace_scalar(child, target) for key, child in value.items()}
         if isinstance(value, list):
@@ -568,6 +589,7 @@ def mask_evidence_package(package, masks):
         return MISSING_MARKER if target and str(value) == str(target) else value
 
     def remove_named_context(value, key_fragment, sensor_name=None):
+        """Recursively mask fields or sensor findings matching one context name."""
         if isinstance(value, dict):
             cleaned = {}
             for key, child in value.items():
@@ -633,6 +655,7 @@ def mask_evidence_package(package, masks):
 
 
 def _variant_prompt(control_prompt, control_package, variant_package):
+    """Replace only the evidence JSON inside an otherwise frozen prompt."""
     marker = "Analyze this event package:"
     marker_index = control_prompt.find(marker)
     if marker_index < 0:
@@ -658,6 +681,7 @@ def _variant_prompt(control_prompt, control_package, variant_package):
 
 
 def process_next_experiment_task(conn, config):
+    """Claim one experiment task, execute its model request, and store output."""
     task = claim_next_ai_experiment_task(conn)
     if not task:
         return None
@@ -724,6 +748,7 @@ def process_next_experiment_task(conn, config):
 
 
 def run_experiment_worker(config_path, poll_seconds=1.0):
+    """Process durable comparisons and experiments until the worker stops."""
     from app.config import load_config
     from app.database import init_db
 

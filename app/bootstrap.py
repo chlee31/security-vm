@@ -42,6 +42,7 @@ COMMUNITY_ID_SEED = 0
 
 
 def yes_no(prompt, default=False):
+    """Prompt for a yes-or-no answer and apply the configured default."""
     suffix = "Y/n" if default else "y/N"
     answer = input(f"{prompt} [{suffix}]: ").strip().lower()
     if not answer:
@@ -50,6 +51,7 @@ def yes_no(prompt, default=False):
 
 
 def check_tool(name, binary):
+    """Check tool and return a normalized status."""
     path = resolve_tool_path(name, binary)
     status = "installed" if path else "missing"
     print(f"{name:10} {status:10} {path or ''}")
@@ -57,6 +59,7 @@ def check_tool(name, binary):
 
 
 def resolve_tool_path(name, binary):
+    """Resolve the usable tool path from configured and system locations."""
     candidates = TOOL_PATH_CANDIDATES.get(name, [binary])
     for candidate in candidates:
         path = shutil.which(candidate) if "/" not in candidate else candidate
@@ -66,6 +69,7 @@ def resolve_tool_path(name, binary):
 
 
 def detect_os_release(path="/etc/os-release"):
+    """Read the Linux distribution identity and version from os-release."""
     values = {}
     try:
         for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -83,6 +87,7 @@ def detect_os_release(path="/etc/os-release"):
 
 
 def version_tuple(value):
+    """Convert a dotted version string into comparable major and minor integers."""
     try:
         parts = str(value).split(".")
         return tuple(int(part) for part in parts[:2])
@@ -91,6 +96,7 @@ def version_tuple(value):
 
 
 def zeek_os_recommendation(os_release):
+    """Report whether the detected OS meets the tested Zeek requirement."""
     is_ubuntu = os_release.get("id") == "ubuntu"
     supported_version = version_tuple(os_release.get("version_id")) >= (22, 4)
     return {
@@ -106,6 +112,7 @@ def zeek_os_recommendation(os_release):
 
 
 def run_json(command):
+    """Run a command expected to return JSON, falling back to an empty list."""
     try:
         result = subprocess.run(command, check=True, capture_output=True, text=True)
         return json.loads(result.stdout or "[]")
@@ -114,6 +121,7 @@ def run_json(command):
 
 
 def detected_interfaces():
+    """Return interfaces detected from the local operating environment."""
     rows = run_json(["ip", "-j", "addr", "show"])
     interfaces = []
     for row in rows:
@@ -136,6 +144,7 @@ def detected_interfaces():
 
 
 def prompt_choice(prompt, choices, default=None):
+    """Prompt until the user selects one of the allowed values."""
     if not choices:
         return ""
     choice_text = ", ".join(choices)
@@ -150,6 +159,7 @@ def prompt_choice(prompt, choices, default=None):
 
 
 def write_temp_text(text):
+    """Write configuration text to a temporary file and return its path."""
     handle = tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf", encoding="utf-8")
     with handle:
         handle.write(text)
@@ -157,6 +167,7 @@ def write_temp_text(text):
 
 
 def install_official_zeek(os_release):
+    """Install Zeek from the supported upstream repository when OS-compatible."""
     recommendation = zeek_os_recommendation(os_release)
     if not recommendation["recommended"]:
         print(f"[!] Zeek automatic setup skipped: {recommendation['message']}")
@@ -200,6 +211,7 @@ def install_official_zeek(os_release):
 
 
 def install_missing(missing, os_release):
+    """Offer to install missing apt tools and Zeek dependencies."""
     packages = sorted({APT_PACKAGES[item] for item in missing if item in APT_PACKAGES})
     if packages:
         print("\nMissing apt packages:")
@@ -225,6 +237,7 @@ def install_missing(missing, os_release):
 
 
 def zeek_config_directory():
+    """Locate the active ZeekControl configuration directory."""
     candidates = [
         Path("/opt/zeek/etc"),
         Path("/usr/local/etc"),
@@ -240,6 +253,7 @@ def zeek_config_directory():
 
 
 def zeek_setup_wizard(config):
+    """Interactively select Zeek interface, JSON logging, and community packages."""
     print("\nZeek setup:")
     config.setdefault("zeek", {})["enabled"] = True
     print("[+] Zeek is a required sensor and will remain enabled.")
@@ -331,6 +345,7 @@ interface={interface}
 
 
 def test_ai_model(host, model, timeout):
+    """Test ai model and return a diagnostic result."""
     try:
         response = requests.get(f"{host}/api/tags", timeout=timeout)
         response.raise_for_status()
@@ -343,6 +358,7 @@ def test_ai_model(host, model, timeout):
 
 
 def main():
+    """Run this module's command-line workflow."""
     os_release = detect_os_release()
     recommendation = zeek_os_recommendation(os_release)
     print(f"Detected operating system: {recommendation['pretty_name']}")

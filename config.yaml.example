@@ -54,14 +54,19 @@ correlation:
     same_sensor_behavior: 0.78
     single_sensor: 0.5
 ai_model:
+  # USER-ALTERABLE: set the reachable Ollama-compatible service and model.
+  # Restart run-all after changing any ai_model value.
   host: http://127.0.0.1:11434
   model: llama3.1:8b
   provider: ollama
   active_profile_uid: ''
+  # HTTP wait limit in seconds. This does not extend model context.
   timeout_seconds: 90
+  # num_ctx is input + output; num_predict is the maximum output portion.
   num_predict: 1024
   num_ctx: 8192
-  temperature: 0.1
+  # Baselines use 0.0/42. Increase temperature only for variation experiments.
+  temperature: 0.0
   seed: 42
 thresholds:
   safe_max: 29

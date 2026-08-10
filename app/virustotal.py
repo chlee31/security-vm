@@ -19,6 +19,7 @@ from app.threat_intel import lookup_virustotal_ip, provider_config
 
 
 def _lookup_time(value):
+    """Look up time and return normalized evidence."""
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     except ValueError:
@@ -47,6 +48,7 @@ def verdict(result):
 
 
 def _store(conn, detection_id, result, ai_report_id, stage):
+    """Persist a VirusTotal verification result and return it unchanged."""
     insert_virustotal_verification(conn, detection_id, result, ai_report_id, stage)
     return result
 

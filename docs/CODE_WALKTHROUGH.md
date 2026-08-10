@@ -33,6 +33,26 @@ decisions; this document provides the end-to-end map.
 10. `app/virustotal.py` may verify eligible public IPs after a `Dangerous`
     classification. VirusTotal does not numerically change or lower the result.
 
+## Short Presentation Notes
+
+> Suricata writes many kinds of records to EVE JSON, but the application only
+> sends records whose `event_type` is `alert` into the Suricata case pipeline.
+> `app/normalizer.py` extracts the timestamp, source and destination addresses,
+> ports, protocol, signature, severity, Flow ID, and Community ID into a stable
+> structure. The complete original event is also retained as `raw_json` for
+> audit and verification.
+>
+> Python then compares the Suricata signature and category with a small,
+> documented regular-expression map. Explicit language can label an event as
+> `port_scan`, `dns_tunneling`, `beaconing`, or `brute_force`; anything that
+> does not match remains `unknown`. This is a grouping heuristic, not the final
+> security classification and not a trained machine-learning model.
+>
+> The normalized event can then be stored, correlated with Zeek evidence, and
+> included in a bounded AI evidence package. The AI receives selected text
+> evidence rather than the original log file, while SQLite retains the original
+> sensor record so an analyst can verify where each field came from.
+
 ## How Python Builds the AI Prompt
 
 The central implementation is

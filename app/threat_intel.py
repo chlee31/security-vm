@@ -176,6 +176,7 @@ def provider_evidence_for_indicator(conn, config, indicator, indicator_type="ip"
 
 
 def _zeek_raw_event(event):
+    """Build or inspect zeek raw event data."""
     raw = (event or {}).get("raw_json") or {}
     if isinstance(raw, dict):
         return raw
@@ -187,6 +188,7 @@ def _zeek_raw_event(event):
 
 
 def _zeek_values(value):
+    """Build or inspect zeek values data."""
     if value in (None, "", "-"):
         return []
     if isinstance(value, (list, tuple, set)):
@@ -215,6 +217,7 @@ def zeek_event_observables(event):
     seen = set()
 
     def add(value, indicator_type, field):
+        """Normalize and add one value when it has not already been collected."""
         value = str(value or "").strip()
         if not value or value == "-":
             return
@@ -403,12 +406,14 @@ def zeek_context_threat_intel(conn, config, events, limit=50, provenance_limit=8
 
 
 def _get(url, timeout=60):
+    """Download a threat-intelligence feed with the project user agent."""
     response = requests.get(url, timeout=timeout, headers={"User-Agent": "security-vm-threat-intel/1.0"})
     response.raise_for_status()
     return response
 
 
 def _url_indicators(url, source, category, confidence, raw=None):
+    """Expand one URL into normalized URL, host, and address indicators."""
     items = [{"indicator": url, "indicator_type": "url", "category": category, "confidence": confidence, "raw_data": raw}]
     try:
         host = (urlsplit(url).hostname or "").lower()
@@ -424,6 +429,7 @@ def _url_indicators(url, source, category, confidence, raw=None):
 
 
 def fetch_threatfox(settings):
+    """Download and normalize threatfox provider data."""
     response = requests.post(
         "https://threatfox-api.abuse.ch/api/v1/",
         headers={"Auth-Key": settings["api_key"], "Content-Type": "application/json"},
@@ -466,6 +472,7 @@ def fetch_threatfox(settings):
 
 
 def fetch_urlhaus(settings):
+    """Download and normalize urlhaus provider data."""
     url = f"https://urlhaus-api.abuse.ch/v2/files/exports/{settings['api_key']}/recent.csv"
     text = _get(url, timeout=90).text
     lines = [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
@@ -480,11 +487,13 @@ def fetch_urlhaus(settings):
 
 
 def _csv_rows(url):
+    """Download a provider feed and parse its non-comment CSV rows."""
     lines = [line for line in _get(url).text.splitlines() if line.strip() and not line.startswith("#")]
     return list(csv.reader(lines))
 
 
 def fetch_sslbl(_settings):
+    """Download and normalize sslbl provider data."""
     indicators = []
     for row in _csv_rows("https://sslbl.abuse.ch/blacklist/sslipblacklist.csv"):
         if len(row) < 3:
@@ -502,6 +511,7 @@ def fetch_sslbl(_settings):
 
 
 def fetch_spamhaus_drop(_settings):
+    """Download and normalize spamhaus drop provider data."""
     indicators = []
     for url in ("https://www.spamhaus.org/drop/drop_v4.json", "https://www.spamhaus.org/drop/drop_v6.json"):
         for line in _get(url).text.splitlines():
@@ -517,6 +527,7 @@ def fetch_spamhaus_drop(_settings):
 
 
 def fetch_openphish(_settings):
+    """Download and normalize openphish provider data."""
     indicators = []
     text = _get("https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt").text
     for line in text.splitlines():
@@ -527,6 +538,7 @@ def fetch_openphish(_settings):
 
 
 def fetch_ipsum(_settings):
+    """Download and normalize ipsum provider data."""
     indicators = []
     text = _get("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt").text
     for line in text.splitlines():
@@ -554,6 +566,7 @@ def fetch_ipsum(_settings):
 
 
 def fetch_feodo(_settings):
+    """Download and normalize feodo provider data."""
     rows = _get("https://feodotracker.abuse.ch/downloads/ipblocklist.json").json()
     if isinstance(rows, dict):
         rows = rows.get("data") or []
@@ -574,6 +587,7 @@ def fetch_feodo(_settings):
 
 
 def lookup_virustotal_ip(settings, ip_address):
+    """Look up virustotal ip and return normalized evidence."""
     try:
         address = ipaddress.ip_address(str(ip_address or "").strip())
     except ValueError as exc:
@@ -622,6 +636,7 @@ FETCHERS = {
 
 
 def refresh_provider(conn, config, source):
+    """Fetch one configured provider and replace its cached indicators."""
     if source not in PROVIDERS:
         raise ValueError("Unknown threat-intelligence provider")
     settings = provider_config(config, source)

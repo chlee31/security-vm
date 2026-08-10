@@ -15,6 +15,7 @@ ZEEK_BINARY_CANDIDATES = {
 
 
 def resolve_binary(name):
+    """Resolve the usable binary from configured and system locations."""
     for candidate in ZEEK_BINARY_CANDIDATES.get(name, [name]):
         path = shutil.which(candidate) if "/" not in candidate else candidate
         if path and Path(path).exists():
@@ -23,6 +24,7 @@ def resolve_binary(name):
 
 
 def run_command(command, timeout=8):
+    """Run the command operation and return its result."""
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
     except FileNotFoundError as exc:
@@ -38,6 +40,7 @@ def run_command(command, timeout=8):
 
 
 def log_file_status(path):
+    """Report whether a configured Zeek log exists and can be inspected."""
     try:
         stat = path.stat()
     except FileNotFoundError:
@@ -50,6 +53,7 @@ def log_file_status(path):
 
 
 def running_zeek_pids(zeekctl_path):
+    """Read ZeekControl status and return PIDs for running Zeek processes."""
     if not zeekctl_path:
         return []
     spool_directory = Path(zeekctl_path).resolve().parent.parent / "spool"
@@ -84,6 +88,7 @@ def running_zeek_pids(zeekctl_path):
 
 
 def zeek_status(config):
+    """Build or inspect zeek status data."""
     zeek_config = config.get("zeek", {})
     zeek = resolve_binary("zeek")
     zeekctl = resolve_binary("zeekctl")

@@ -378,7 +378,7 @@ ai_model:
   timeout_seconds: 90
   num_predict: 1024
   num_ctx: 8192
-  temperature: 0.1
+  temperature: 0.0
   seed: 42
 ```
 
@@ -414,6 +414,21 @@ available input = num_ctx - num_predict
 `POST /api/generate`. These values apply even when the model runs remotely over
 Tailscale. The Ollama desktop context slider does not replace the explicit
 per-request `num_ctx` sent by Python.
+
+There are three distinct places where temperature and seed can come from:
+
+1. Normal case analysis uses `ai_model.temperature` and `ai_model.seed` from
+   `config.yaml`.
+2. Case reassessment uses the same `ai_model.temperature` and `ai_model.seed`
+   values from `config.yaml` as normal case analysis.
+3. Model-comparison control requests use `CONTROL_OPTIONS` near the top of
+   `app/ai_comparison.py`. This is an advanced research control and should agree
+   with the written methodology and its regression tests.
+4. Temperature/seed experiments use the values entered on the experiment page;
+   those intentionally override the baseline for each queued variation.
+
+Restart `run-all` after changing `config.yaml`. Code-level research controls
+also require a restart and should not be changed midway through one dataset.
 
 Test the endpoint:
 

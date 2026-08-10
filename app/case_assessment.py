@@ -223,7 +223,13 @@ def prepare_case_context(conn, config, case_uid, assessment_type="reassessment")
 
 
 def reassess_case(conn, config, case_uid):
-    """Create a new immutable assessment and response for an existing case."""
+    """Create a new immutable assessment using current config.yaml AI settings.
+
+    Reassessment deliberately shares the same ``ai_model.temperature`` and
+    ``ai_model.seed`` source as initial case analysis. Restart ``run-all`` after
+    editing config.yaml so dashboard-triggered reassessments use the new values.
+    The effective request options are preserved in the AI audit record.
+    """
     workspace, alert, detection, evidence, findings = prepare_case_context(
         conn, config, case_uid
     )

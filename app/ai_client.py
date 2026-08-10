@@ -32,6 +32,15 @@ import requests
 PROMPT_VERSION = "security-vm-case-explanation-v12-grounded-comparison"
 REVIEW_CLASSIFICATION = "Analyst Review Required"
 
+# ADVANCED DEVELOPER CONTROLS: these bounds keep one model request manageable.
+# Changing them changes prompt/evidence hashes and can invalidate comparisons
+# with older experiment runs. Routine operators should tune ``num_ctx`` and
+# ``num_predict`` in config.yaml instead.
+MAX_EVIDENCE_NESTING_DEPTH = 8
+MAX_EVIDENCE_LIST_ITEMS = 25
+MAX_EVIDENCE_STRING_CHARS = 2000
+DEFAULT_REPRESENTATIVE_FINDING_LIMIT = 12
+
 THREAT_INTEL_PROVIDER_NAMES = (
     "otx",
     "threatfox",
@@ -188,8 +197,14 @@ def _compact_ai_evidence(value, key="", path="$", depth=0, omissions=None):
     audit record instead of silently changing what the model receives.
     """
     omissions = omissions if omissions is not None else []
-    if depth > 8:
-        omissions.append({"path": path, "reason": "maximum_nesting_depth", "limit": 8})
+    if depth > MAX_EVIDENCE_NESTING_DEPTH:
+        omissions.append(
+            {
+                "path": path,
+                "reason": "maximum_nesting_depth",
+                "limit": MAX_EVIDENCE_NESTING_DEPTH,
+            }
+        )
         return "[nested evidence omitted]"
     if str(key).lower() in OMITTED_AI_EVIDENCE_KEYS:
         omissions.append({"path": path, "reason": "raw_or_sensitive_field"})
@@ -206,29 +221,29 @@ def _compact_ai_evidence(value, key="", path="$", depth=0, omissions=None):
             )
         return result
     if isinstance(value, list):
-        if len(value) > 25:
+        if len(value) > MAX_EVIDENCE_LIST_ITEMS:
             omissions.append(
                 {
                     "path": path,
                     "reason": "list_item_limit",
                     "original_count": len(value),
-                    "included_count": 25,
+                    "included_count": MAX_EVIDENCE_LIST_ITEMS,
                 }
             )
         return [
             _compact_ai_evidence(item, key, f"{path}[{index}]", depth + 1, omissions)
-            for index, item in enumerate(value[:25])
+            for index, item in enumerate(value[:MAX_EVIDENCE_LIST_ITEMS])
         ]
-    if isinstance(value, str) and len(value) > 2000:
+    if isinstance(value, str) and len(value) > MAX_EVIDENCE_STRING_CHARS:
         omissions.append(
             {
                 "path": path,
                 "reason": "string_character_limit",
                 "original_chars": len(value),
-                "included_chars": 2000,
+                "included_chars": MAX_EVIDENCE_STRING_CHARS,
             }
         )
-        return value[:2000] + " [truncated by Python]"
+        return value[:MAX_EVIDENCE_STRING_CHARS] + " [truncated by Python]"
     return value
 
 
@@ -244,7 +259,10 @@ def compact_ai_evidence_with_manifest(value, key="", path="$", depth=0):
     return compacted, omissions
 
 
-def summarize_sensor_findings_for_model(evidence_context, representative_limit=12):
+def summarize_sensor_findings_for_model(
+    evidence_context,
+    representative_limit=DEFAULT_REPRESENTATIVE_FINDING_LIMIT,
+):
     """Collapse repeated sensor rows into traceable model-facing aggregates.
 
     SQLite and the case workspace retain every original finding. Only the
@@ -431,6 +449,7 @@ def _evidence_source_map(package):
     intel_records = []
 
     def collect_intel(value, path):
+        """Collect matched provider records while preserving their JSON path."""
         if isinstance(value, dict):
             indicator = value.get("indicator")
             for match in value.get("matches") or []:
@@ -993,6 +1012,7 @@ def normalize_report(parsed):
         evidence_review = {}
 
     def text_list(value):
+        """Normalize a model field into a non-empty list of display strings."""
         if isinstance(value, str):
             value = [value]
         if not isinstance(value, list):
@@ -1034,6 +1054,7 @@ def _supplied_threat_intel_facts(evidence_package):
     }
 
     def visit(value):
+        """Walk nested threat-intelligence evidence and accumulate provider state."""
         if isinstance(value, dict):
             name = str(value.get("name") or value.get("source") or "").lower()
             if name in facts:
@@ -1165,6 +1186,7 @@ class AIModelRequestError(requests.RequestException):
     """Request failure that retains the exact local audit record."""
 
     def __init__(self, message, audit):
+        """Attach the prepared audit record to a transport-level failure."""
         super().__init__(message)
         self.audit = audit
 
@@ -1190,6 +1212,7 @@ def ask_ai_model(
     app has a different default context-length slider.
     """
     def progress(phase, details=None):
+        """Publish request lifecycle state without changing request behavior."""
         if not progress_callback:
             return
         try:
@@ -1199,6 +1222,7 @@ def ask_ai_model(
             return
 
     def cancellation_requested():
+        """Check whether the durable queue marks this invocation cancelled."""
         checker = getattr(progress_callback, "cancellation_requested", None)
         return bool(checker and checker())
 
@@ -1221,12 +1245,18 @@ def ask_ai_model(
     host = audit["model_endpoint"]
     model = audit["model_name"]
     timeout = ai_model.get("timeout_seconds", 90)
-    # These per-request options are sent to Ollama and take precedence over its
-    # server/app defaults for this invocation.
+    # SUPPORTED USER TUNING: edit these under ``ai_model`` in config.yaml, then
+    # restart run-all so every long-running worker uses the same configuration.
+    # These options take precedence over Ollama Desktop defaults for this call.
+    # Controlled experiments may intentionally override temperature and seed.
     options = {
+        # Maximum generated output; this amount is reserved inside num_ctx.
         "num_predict": int(ai_model.get("num_predict", 1024)),
+        # Total input-plus-output token window for this request.
         "num_ctx": int(ai_model.get("num_ctx", 8192)),
+        # 0.0 is most repeatable; higher values produce more varied wording.
         "temperature": float(ai_model.get("temperature", 0.0)),
+        # Reproducibility aid, not a guarantee across models or model versions.
         "seed": int(ai_model.get("seed", 42)),
     }
     # Four characters per token is only a planning estimate. Tokenization is
