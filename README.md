@@ -1,6 +1,6 @@
-# Security VM
+# ExplainIT
 
-Security VM is a research prototype that combines Suricata alerts, Zeek network metadata, cached threat intelligence, and locally hosted AI explanations into investigation cases.
+ExplainIT is a research prototype that combines Suricata alerts, Zeek network metadata, cached threat intelligence, and locally hosted AI explanations into investigation cases.
 
 For questions or project inquiries, contact **chlee31@myseneca.ca**.
 
