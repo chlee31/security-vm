@@ -92,7 +92,7 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config(path="config.yaml"):
+def load_config(path: str | Path = "config.yaml"):
     """Load YAML over safe defaults and normalize historical key names."""
     config_path = Path(path)
     if not config_path.exists():
@@ -103,7 +103,7 @@ def load_config(path="config.yaml"):
     return deep_merge(deepcopy(DEFAULT_CONFIG), loaded)
 
 
-def save_config(config, path="config.yaml"):
+def save_config(config, path: str | Path = "config.yaml"):
     """Write current configuration while preserving readable YAML structure."""
     with Path(path).open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)

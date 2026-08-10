@@ -86,11 +86,13 @@ def detect_os_release(path="/etc/os-release"):
     }
 
 
-def version_tuple(value):
+def version_tuple(value) -> tuple[int, int]:
     """Convert a dotted version string into comparable major and minor integers."""
     try:
         parts = str(value).split(".")
-        return tuple(int(part) for part in parts[:2])
+        major = int(parts[0]) if parts and parts[0] else 0
+        minor = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+        return (major, minor)
     except ValueError:
         return (0, 0)
 
