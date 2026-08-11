@@ -591,7 +591,6 @@ the returned response provide additional request-processing evidence.
 | `static/experiments.html` + `static/experiments.js` | Temperature/seed and missing-evidence experiments |
 | `static/admin.html` + `static/admin.js` | AI profiles, threat-intelligence settings, runtime console |
 | `static/zeek.html` + `static/zeek.js` | Zeek health, log counts, and telemetry |
-| `static/ip.html` + `static/ip.js` | IP-centered evidence and threat-intelligence results |
 | `static/styles.css` | Shared responsive visual design |
 | `app/dashboard.py` | FastAPI routes and JSON APIs used by all pages |
 

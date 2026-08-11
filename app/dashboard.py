@@ -18,12 +18,10 @@ import binascii
 import csv
 import io
 import importlib.util
-import ipaddress
 import json
 import os
 import secrets
 import shutil
-import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -31,7 +29,7 @@ from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 import requests
 from pydantic import BaseModel
@@ -46,45 +44,24 @@ from app.database import (
     ai_experiment_detail,
     ai_experiment_export_rows,
     ai_model_comparison,
-    asset_summary,
     case_workspace,
     connect,
-    create_evaluation_scenario,
     create_ai_profile,
-    deactivate_asset,
-    delete_evaluation_case_link,
-    delete_evaluation_event_label,
-    delete_evaluation_scenario,
-    delete_asset,
     delete_ai_profile,
-    default_asset_types,
     ensure_ai_profile_from_config,
-    evaluation_candidate_events,
-    evaluation_case_options,
-    evaluation_correlation_metrics,
-    evaluation_export_bundle,
-    evaluation_overview,
     get_ai_profile,
-    get_evaluation_scenario,
     init_db,
     insert_app_event,
-    detection_type_detail,
-    enrichment_status,
-    ip_detail,
     investigation_detail,
-    latest_alerts,
     latest_ai_request_activity,
     latest_runtime_components,
     latest_sensor_alerts,
     latest_app_events,
     latest_decision_evidence,
-    latest_ai_opinions,
     latest_zeek_events,
     list_ai_profiles,
     list_ai_comparison_runs,
     list_ai_experiment_runs,
-    list_all_assets,
-    list_evaluation_scenarios,
     list_review_queue,
     mark_ai_profile_selected,
     public_ips_for_enrichment,
@@ -95,23 +72,11 @@ from app.database import (
     review_ai_experiment_result,
     submit_analyst_review,
     upsert_threat_intel_lookup,
-    upsert_asset,
-    update_asset,
     update_ai_profile,
-    update_evaluation_scenario,
-    upsert_evaluation_case_link,
-    upsert_evaluation_event_label,
     vote_ai_comparison,
     zeek_context_for_detection,
     zeek_event_counts,
     zeek_telemetry_summary,
-)
-from app.evaluation import (
-    evaluation_bundle_csv,
-    normalize_case_link,
-    normalize_event_label,
-    normalize_scenario,
-    validate_event_assignment,
 )
 from app.bootstrap import detect_os_release, zeek_os_recommendation
 from app.enrichment import lookup_otx_ip, test_otx_connection
@@ -151,23 +116,6 @@ class AnalystReviewRequest(BaseModel):
     notes: str = ""
     classification: str = None
     tuning_label: str = ""
-
-
-class AssetRequest(BaseModel):
-    """Compatibility payload for registering descriptive IP-role context."""
-
-    ip_address: str
-    name: str
-    device_type: str
-    network_interface: str = ""
-    function: str = ""
-    notes: str = ""
-
-
-class AdminAssetRequest(AssetRequest):
-    """Extend a registered IP-role payload with its active/inactive state."""
-
-    status: str = "active"
 
 
 class AIModelConfigRequest(BaseModel):
@@ -266,14 +214,6 @@ class ResetLogsRequest(BaseModel):
     confirm: str
 
 
-class ThreatIntelConfigRequest(BaseModel):
-    """Compatibility payload for the original OTX-only settings form."""
-
-    otx_enabled: bool = False
-    otx_api_key: str = ""
-    cache_ttl_hours: int = 24
-
-
 class ThreatIntelProviderRequest(BaseModel):
     """Validate enablement, credential, and refresh settings for one provider."""
 
@@ -300,47 +240,6 @@ class OtxStatusRequest(BaseModel):
     """Supply an optional OTX key for a connection test without returning it."""
 
     otx_api_key: str = ""
-
-
-class EvaluationScenarioRequest(BaseModel):
-    """Describe labelled ground truth used only by the research evaluation API."""
-
-    scenario_uid: str
-    name: str
-    experiment_type: str
-    ground_truth_class: str
-    authorized_activity: Optional[bool] = None
-    attack_succeeded: Optional[bool] = None
-    source_ip: str = ""
-    destination_ip: str = ""
-    start_time: str
-    end_time: str
-    expected_case_count: int = 1
-    expected_min_classification: str = ""
-    expected_max_classification: str = ""
-    expected_sensors: List[str] = []
-    manual_distractor_event_uids: List[str] = []
-    notes: str = ""
-
-
-class EvaluationCaseLinkRequest(BaseModel):
-    """Record the expected relationship between a labelled scenario and case."""
-
-    case_uid: str
-    relationship_status: str = "expected_related"
-    analyst_confirmed: bool = False
-    notes: str = ""
-
-
-class EvaluationEventLabelRequest(BaseModel):
-    """Record whether one sensor event was attached to the expected case."""
-
-    event_uid: str
-    event_sensor: str
-    expected_case_uid: str = ""
-    actual_case_uid: str = ""
-    label: str = ""
-    notes: str = ""
 
 
 ADMIN_SYSTEM_TOOLS = {
@@ -380,10 +279,6 @@ AI_MODEL_SUGGESTIONS = [
     "deepseek-r1:8b",
     "deepseek-r1:latest",
 ]
-
-ENCRYPTED_TRAFFIC_PORTS = (22, 443, 853, 8443, 1194, 500, 4500, 51820)
-ENCRYPTED_TRAFFIC_KEYWORDS = ("tls", "ssl", "https", "quic", "vpn", "wireguard", "openvpn", "ipsec", "ssh")
-
 
 def tool_status():
     """Return normalized tool status information for the Admin page."""
@@ -476,105 +371,6 @@ def python_package_status():
     return packages
 
 
-def encrypted_traffic_summary(conn, limit=8):
-    """Summarize recent TLS, HTTPS, QUIC, and VPN-related sensor evidence."""
-    port_placeholders = ",".join("?" for _ in ENCRYPTED_TRAFFIC_PORTS)
-    keyword_sql = " OR ".join(
-        [
-            "LOWER(COALESCE(alerts.signature, '')) LIKE ?",
-            "LOWER(COALESCE(alerts.category, '')) LIKE ?",
-            "LOWER(COALESCE(detections.detection_type, '')) LIKE ?",
-        ]
-        * len(ENCRYPTED_TRAFFIC_KEYWORDS)
-    )
-    keyword_params = []
-    for keyword in ENCRYPTED_TRAFFIC_KEYWORDS:
-        pattern = f"%{keyword}%"
-        keyword_params.extend([pattern, pattern, pattern])
-    where_sql = f"""
-      (
-        CAST(COALESCE(alerts.dest_port, 0) AS INTEGER) IN ({port_placeholders})
-        OR CAST(COALESCE(alerts.src_port, 0) AS INTEGER) IN ({port_placeholders})
-        OR {keyword_sql}
-      )
-    """
-    params = list(ENCRYPTED_TRAFFIC_PORTS) + list(ENCRYPTED_TRAFFIC_PORTS) + keyword_params
-
-    total = conn.execute(
-        f"""
-        SELECT COUNT(DISTINCT detections.id) AS count
-        FROM detections
-        LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-        WHERE {where_sql}
-        """,
-        params,
-    ).fetchone()
-
-    port_case_sql = f"""
-      CASE
-        WHEN CAST(COALESCE(alerts.dest_port, 0) AS INTEGER) IN ({port_placeholders}) THEN alerts.dest_port
-        WHEN CAST(COALESCE(alerts.src_port, 0) AS INTEGER) IN ({port_placeholders}) THEN alerts.src_port
-        ELSE COALESCE(alerts.dest_port, alerts.src_port, 'metadata')
-      END
-    """
-    port_case_params = list(ENCRYPTED_TRAFFIC_PORTS) + list(ENCRYPTED_TRAFFIC_PORTS)
-
-    ports = conn.execute(
-        f"""
-        SELECT protocol, port, COUNT(*) AS count
-        FROM (
-          SELECT
-            COALESCE(alerts.protocol, 'unknown') AS protocol,
-            {port_case_sql} AS port
-          FROM detections
-          LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-          WHERE {where_sql}
-        )
-        GROUP BY protocol, port
-        ORDER BY count DESC
-        LIMIT ?
-        """,
-        port_case_params + params + [limit],
-    ).fetchall()
-
-    ips = conn.execute(
-        f"""
-        SELECT ip_address, COUNT(*) AS count
-        FROM (
-          SELECT detections.src_ip AS ip_address
-          FROM detections
-          LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-          WHERE {where_sql} AND detections.src_ip IS NOT NULL
-          UNION ALL
-          SELECT detections.dest_ip AS ip_address
-          FROM detections
-          LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-          WHERE {where_sql} AND detections.dest_ip IS NOT NULL
-        )
-        GROUP BY ip_address
-        ORDER BY count DESC
-        LIMIT ?
-        """,
-        params + params + [limit],
-    ).fetchall()
-
-    return {
-        "candidate_count": total["count"] if total else 0,
-        "ports": [dict(row) for row in ports],
-        "ips": [dict(row) for row in ips],
-        "visible": [
-            "IPs",
-            "ports",
-            "protocol",
-            "DNS/TLS hints",
-            "timing",
-            "volume",
-            "reputation",
-        ],
-        "not_visible": "Encrypted payload contents without endpoint telemetry or TLS inspection.",
-    }
-
-
 def validate_ai_model_config(payload):
     """Check that the AI model settings are valid."""
     host = payload.host.strip().rstrip("/")
@@ -636,11 +432,7 @@ def create_app(config_path):
 
     @app.middleware("http")
     async def add_no_cache_headers(request, call_next):
-        """Disable browser caching and retire obsolete compatibility routes."""
-        retired_paths = {
-            "/api/asset-inventory",
-        }
-        retired_prefixes = ("/api/assets",)
+        """Disable browser caching and protect Admin routes with basic auth."""
         path = request.url.path
         if path == "/admin" or path.startswith("/api/admin/"):
             if not admin_password:
@@ -675,13 +467,6 @@ def create_app(config_path):
                     headers={"WWW-Authenticate": 'Basic realm="Security VM Admin"'},
                     media_type="text/plain",
                 )
-        if path in retired_paths or path.startswith(retired_prefixes):
-            return JSONResponse(
-                status_code=410,
-                content={
-                    "detail": "This endpoint was retired when Security VM moved to passive case analysis."
-                },
-            )
         response = await call_next(request)
         if request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -692,11 +477,6 @@ def create_app(config_path):
         """Serve the main Security VM dashboard page."""
         return static_page("index.html")
 
-    @app.get("/detection")
-    def detection_workbook():
-        """Serve the detection-focused workbook page."""
-        return static_page("detection.html")
-
     @app.get("/outcome")
     def outcome_workbook():
         """Serve the classification-outcome workbook page."""
@@ -706,11 +486,6 @@ def create_app(config_path):
     def investigation_workbook():
         """Serve the detailed case investigation page."""
         return static_page("investigation.html")
-
-    @app.get("/ip")
-    def ip_workbook():
-        """Serve the IP evidence and enrichment detail page."""
-        return static_page("ip.html")
 
     @app.get("/compare")
     def ai_comparison_workbook():
@@ -728,264 +503,10 @@ def create_app(config_path):
         """Open the Zeek telemetry page."""
         return static_page("zeek.html")
 
-    @app.get("/asset-inventory")
-    def asset_inventory_workbook():
-        """Return legacy asset inventory workbook kept for older databases."""
-        return RedirectResponse(url="/admin#settings", status_code=307)
-
-    @app.get("/assets")
-    def legacy_asset_inventory_workbook():
-        """Redirect the retired inventory page to its remaining admin settings."""
-        return RedirectResponse(url="/admin#settings", status_code=307)
-
     @app.get("/admin")
     def admin_controls():
         """Serve the authenticated administration controls page."""
         return static_page("admin.html")
-
-    def api_evaluation_overview():
-        """Serve the evaluation overview API endpoint."""
-        conn = connect(db_path)
-        try:
-            return evaluation_overview(conn)
-        finally:
-            conn.close()
-
-    def api_evaluation_cases(limit: int = 250):
-        """Serve the evaluation cases API endpoint."""
-        conn = connect(db_path)
-        try:
-            return evaluation_case_options(conn, max(1, min(limit, 1000)))
-        finally:
-            conn.close()
-
-    def api_evaluation_scenarios(limit: int = 200, experiment_type: str = None):
-        """Serve the evaluation scenarios API endpoint."""
-        conn = connect(db_path)
-        try:
-            return list_evaluation_scenarios(
-                conn,
-                max(1, min(limit, 1000)),
-                experiment_type=experiment_type,
-            )
-        finally:
-            conn.close()
-
-    def api_create_evaluation_scenario(payload: EvaluationScenarioRequest):
-        """Serve the create evaluation scenario API endpoint."""
-        try:
-            scenario = normalize_scenario(payload.dict())
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        conn = connect(db_path)
-        try:
-            try:
-                return create_evaluation_scenario(conn, scenario)
-            except sqlite3.IntegrityError:
-                raise HTTPException(status_code=409, detail="Scenario UID already exists")
-        finally:
-            conn.close()
-
-    def api_evaluation_scenario(scenario_uid: str):
-        """Serve the evaluation scenario API endpoint."""
-        conn = connect(db_path)
-        try:
-            scenario = get_evaluation_scenario(conn, scenario_uid.upper())
-            if not scenario:
-                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            return scenario
-        finally:
-            conn.close()
-
-    def api_evaluation_candidates(scenario_uid: str, limit: int = 5000):
-        """Serve the evaluation candidates API endpoint."""
-        conn = connect(db_path)
-        try:
-            uid = scenario_uid.upper()
-            if not get_evaluation_scenario(conn, uid):
-                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            return evaluation_candidate_events(
-                conn, uid, max(1, min(limit, 10000))
-            )
-        finally:
-            conn.close()
-
-    def api_evaluation_correlation_metrics(scenario_uid: str):
-        """Serve the evaluation correlation metrics API endpoint."""
-        conn = connect(db_path)
-        try:
-            metrics = evaluation_correlation_metrics(conn, scenario_uid.upper())
-            if not metrics:
-                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            return metrics
-        finally:
-            conn.close()
-
-    def api_update_evaluation_scenario(
-        scenario_uid: str, payload: EvaluationScenarioRequest
-    ):
-        """Serve the update evaluation scenario API endpoint."""
-        try:
-            scenario = normalize_scenario(payload.dict(), scenario_uid=scenario_uid)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        conn = connect(db_path)
-        try:
-            saved = update_evaluation_scenario(conn, scenario_uid.upper(), scenario)
-            if not saved:
-                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            return saved
-        finally:
-            conn.close()
-
-    def api_delete_evaluation_scenario(scenario_uid: str):
-        """Serve the delete evaluation scenario API endpoint."""
-        conn = connect(db_path)
-        try:
-            if not delete_evaluation_scenario(conn, scenario_uid.upper()):
-                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            return {"status": "deleted", "scenario_uid": scenario_uid.upper()}
-        finally:
-            conn.close()
-
-    def api_link_evaluation_case(
-        scenario_uid: str, payload: EvaluationCaseLinkRequest
-    ):
-        """Serve the link evaluation case API endpoint."""
-        try:
-            link = normalize_case_link(payload.dict())
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        conn = connect(db_path)
-        try:
-            uid = scenario_uid.upper()
-            if not get_evaluation_scenario(conn, uid):
-                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            if not conn.execute(
-                "SELECT 1 FROM detections WHERE case_uid = ?", (link["case_uid"],)
-            ).fetchone():
-                raise HTTPException(status_code=404, detail="Operational case not found")
-            return upsert_evaluation_case_link(conn, uid, link)
-        finally:
-            conn.close()
-
-    def api_unlink_evaluation_case(scenario_uid: str, case_uid: str):
-        """Serve the unlink evaluation case API endpoint."""
-        conn = connect(db_path)
-        try:
-            if not delete_evaluation_case_link(
-                conn, scenario_uid.upper(), case_uid
-            ):
-                raise HTTPException(status_code=404, detail="Evaluation case link not found")
-            return {"status": "deleted"}
-        finally:
-            conn.close()
-
-    def api_label_evaluation_event(
-        scenario_uid: str, payload: EvaluationEventLabelRequest
-    ):
-        """Serve the label evaluation event API endpoint."""
-        try:
-            label = normalize_event_label(payload.dict())
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        conn = connect(db_path)
-        try:
-            uid = scenario_uid.upper()
-            scenario = get_evaluation_scenario(conn, uid)
-            if not scenario:
-                raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-            candidate = next(
-                (
-                    item
-                    for item in evaluation_candidate_events(conn, uid)
-                    if item["sensor"] == label["event_sensor"]
-                    and item["event_uid"] == label["event_uid"]
-                ),
-                None,
-            )
-            linked_case_uids = {
-                item["case_uid"] for item in (scenario.get("case_links") or [])
-            }
-            referenced_case_uids = {
-                value
-                for value in (
-                    label.get("expected_case_uid"),
-                    label.get("actual_case_uid"),
-                    candidate.get("actual_case_uid") if candidate else None,
-                )
-                if value
-            }
-            operational_case_uids = set()
-            if referenced_case_uids:
-                placeholders = ",".join("?" for _ in referenced_case_uids)
-                operational_case_uids = {
-                    row["case_uid"]
-                    for row in conn.execute(
-                        f"SELECT case_uid FROM detections "
-                        f"WHERE case_uid IN ({placeholders})",
-                        tuple(referenced_case_uids),
-                    ).fetchall()
-                }
-            try:
-                label = validate_event_assignment(
-                    label,
-                    candidate,
-                    linked_case_uids,
-                    operational_case_uids,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            return upsert_evaluation_event_label(conn, uid, label)
-        finally:
-            conn.close()
-
-    def api_delete_evaluation_event_label(
-        scenario_uid: str, event_sensor: str, event_uid: str
-    ):
-        """Serve the delete evaluation event label API endpoint."""
-        conn = connect(db_path)
-        try:
-            if not delete_evaluation_event_label(
-                conn, scenario_uid.upper(), event_sensor.lower(), event_uid
-            ):
-                raise HTTPException(status_code=404, detail="Evaluation event label not found")
-            return {"status": "deleted"}
-        finally:
-            conn.close()
-
-    def api_export_evaluation(format: str = "json", scenario_uid: str = None):
-        """Serve the export evaluation API endpoint."""
-        export_format = format.lower()
-        if export_format not in {"json", "csv"}:
-            raise HTTPException(status_code=400, detail="Export format must be json or csv")
-        conn = connect(db_path)
-        try:
-            bundle = evaluation_export_bundle(
-                conn, scenario_uid.upper() if scenario_uid else None
-            )
-        finally:
-            conn.close()
-        if scenario_uid and not bundle["scenarios"]:
-            raise HTTPException(status_code=404, detail="Evaluation scenario not found")
-        suffix = scenario_uid.upper() if scenario_uid else "all"
-        if export_format == "csv":
-            return Response(
-                content=evaluation_bundle_csv(bundle),
-                media_type="text/csv",
-                headers={
-                    "Content-Disposition": f'attachment; filename="security-vm-evaluation-{suffix}.csv"',
-                    **NO_CACHE_HEADERS,
-                },
-            )
-        return Response(
-            content=json.dumps(bundle, indent=2, sort_keys=True),
-            media_type="application/json",
-            headers={
-                "Content-Disposition": f'attachment; filename="security-vm-evaluation-{suffix}.json"',
-                **NO_CACHE_HEADERS,
-            },
-        )
 
     @app.get("/api/admin/settings")
     def api_admin_settings(limit: int = 500):
@@ -1355,113 +876,12 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.put("/api/admin/assets/{asset_id}")
-    def api_admin_update_asset(asset_id: int, payload: AdminAssetRequest):
-        """Serve the admin update asset API endpoint."""
-        try:
-            ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Enter a valid IPv4 or IPv6 address")
-
-        name = payload.name.strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="Asset name is required")
-
-        allowed_types = {item["value"] for item in default_asset_types(config)}
-        device_type = payload.device_type.strip()
-        if device_type not in allowed_types:
-            raise HTTPException(status_code=400, detail="Unsupported device type")
-
-        status = payload.status.strip().lower()
-        if status not in {"active", "inactive"}:
-            raise HTTPException(status_code=400, detail="Asset status must be active or inactive")
-
-        conn = connect(db_path)
-        try:
-            try:
-                ok = update_asset(
-                    conn,
-                    asset_id,
-                    {
-                        "ip_address": ip_address,
-                        "name": name,
-                        "device_type": device_type,
-                        "network_interface": payload.network_interface.strip()
-                        or config.get("assets", {}).get("internal_interface", "ens37"),
-                        "function": payload.function.strip(),
-                        "notes": payload.notes.strip(),
-                        "status": status,
-                    },
-                )
-            except sqlite3.IntegrityError:
-                raise HTTPException(status_code=400, detail="Another asset already uses that IP address")
-            if not ok:
-                raise HTTPException(status_code=404, detail="Asset not found")
-            insert_app_event(conn, "info", "admin", f"Updated asset {name} ({ip_address})", {"asset_id": asset_id})
-            return {"status": "saved", "id": asset_id}
-        finally:
-            conn.close()
-
-    @app.delete("/api/admin/assets/{asset_id}")
-    def api_admin_delete_asset(asset_id: int):
-        """Serve the admin delete asset API endpoint."""
-        conn = connect(db_path)
-        try:
-            if not delete_asset(conn, asset_id):
-                raise HTTPException(status_code=404, detail="Asset not found")
-            insert_app_event(conn, "warning", "admin", f"Deleted asset {asset_id}")
-            return {"status": "deleted"}
-        finally:
-            conn.close()
-
-    @app.get("/api/alerts")
-    def api_alerts(limit: int = 50):
-        """Serve the alerts API endpoint."""
-        conn = connect(db_path)
-        try:
-            return latest_alerts(conn, limit)
-        finally:
-            conn.close()
-
     @app.get("/api/latest-alerts")
     def api_latest_sensor_alerts(limit: int = 50, sensor: str = "all"):
         """Serve the latest sensor alerts API endpoint."""
         conn = connect(db_path)
         try:
             return latest_sensor_alerts(conn, limit, sensor)
-        finally:
-            conn.close()
-
-    @app.get("/api/ai-opinions")
-    def api_ai_opinions(limit: int = 50):
-        """Serve the AI opinions API endpoint."""
-        conn = connect(db_path)
-        try:
-            return latest_ai_opinions(conn, limit)
-        finally:
-            conn.close()
-
-    @app.get("/api/" + "olla" + "ma-reports")
-    def api_legacy_ai_opinions(limit: int = 50):
-        """Serve the legacy AI opinions API endpoint."""
-        conn = connect(db_path)
-        try:
-            insert_app_event(
-                conn,
-                "warning",
-                "dashboard",
-                "Deprecated AI opinion API path used by a stale browser tab",
-            )
-            return latest_ai_opinions(conn, limit)
-        finally:
-            conn.close()
-
-    @app.get("/api/ai-model-comparison")
-    def api_ai_model_comparison():
-        """Serve the AI model comparison API endpoint."""
-        conn = connect(db_path)
-        try:
-            return ai_model_comparison(conn)
         finally:
             conn.close()
 
@@ -1788,81 +1208,30 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/detection-detail")
-    def api_detection_detail(detection_type: str = None, limit: int = 50):
-        """Serve the detection detail API endpoint."""
-        conn = connect(db_path)
-        try:
-            return detection_type_detail(conn, detection_type, limit)
-        finally:
-            conn.close()
-
     @app.get("/api/dashboard-summary")
     def api_dashboard_summary(limit: int = 12):
-        """Serve the dashboard summary API endpoint."""
+        """Return only the compact timeline, model, and Zeek homepage data."""
         conn = connect(db_path)
         try:
-            detail = detection_type_detail(conn, None, limit)
-            comparison = ai_model_comparison(conn)
-            enrichment = enrichment_status(conn, config, limit)
-            active_uid = config.get("ai_model", {}).get("active_profile_uid")
-            active_profile = get_ai_profile(conn, active_uid) if active_uid else None
-            otx_rows = conn.execute(
+            timeline_rows = conn.execute(
                 """
                 SELECT
-                  reputation,
-                  COUNT(*) AS count,
-                  SUM(COALESCE(malicious_count, 0)) AS malicious_total,
-                  SUM(COALESCE(suspicious_count, 0)) AS suspicious_total
-                FROM (
-                  SELECT
-                    indicator,
-                    COALESCE(reputation, 'unknown') AS reputation,
-                    MAX(COALESCE(malicious_count, 0)) AS malicious_count,
-                    MAX(COALESCE(suspicious_count, 0)) AS suspicious_count
-                  FROM threat_intel_lookups
-                  WHERE source = 'otx'
-                  GROUP BY indicator, COALESCE(reputation, 'unknown')
-                )
-                GROUP BY reputation
-                ORDER BY count DESC
-                """
-            ).fetchall()
-            otx_lookup_rows = conn.execute(
-                """
-                SELECT indicator, indicator_type, COALESCE(reputation, 'unknown') AS reputation,
-                       malicious_count, suspicious_count, lookup_result, lookup_time, cached
-                FROM threat_intel_lookups
-                WHERE source = 'otx'
-                ORDER BY reputation ASC, lookup_time DESC, id DESC
+                  substr(COALESCE(first_seen, created_at), 1, 13) AS bucket,
+                  COUNT(*) AS count
+                FROM detections
+                GROUP BY bucket
+                ORDER BY bucket DESC
                 LIMIT ?
                 """,
-                (max(250, limit * 25),),
+                (max(1, min(int(limit), 100)),),
             ).fetchall()
-            otx_by_reputation = {}
-            seen_indicators = set()
-            for row in otx_lookup_rows:
-                item = dict(row)
-                key = (item.get("reputation"), item.get("indicator"))
-                if key in seen_indicators:
-                    continue
-                seen_indicators.add(key)
-                otx_by_reputation.setdefault(item.get("reputation") or "unknown", []).append(item)
-            review_rows = conn.execute(
-                """
-                SELECT review_status, COUNT(*) AS count
-                FROM analyst_reviews
-                GROUP BY review_status
-                ORDER BY count DESC
-                """
-            ).fetchall()
-            encrypted_summary = encrypted_traffic_summary(conn, limit)
+            comparison = ai_model_comparison(conn)
+            active_uid = config.get("ai_model", {}).get("active_profile_uid")
+            active_profile = get_ai_profile(conn, active_uid) if active_uid else None
             zeek_counts = zeek_event_counts(conn)
             zeek_runtime = zeek_status(config)
             return {
-                "timeline": detail.get("timeline", [])[-8:],
-                "top_ips": detail.get("ips", [])[:limit],
-                "encrypted_traffic": encrypted_summary,
+                "timeline": [dict(row) for row in reversed(timeline_rows)],
                 "zeek": {
                     "enabled": zeek_runtime.get("enabled"),
                     "installed": zeek_runtime.get("installed"),
@@ -1873,26 +1242,9 @@ def create_app(config_path):
                     "logs": zeek_runtime.get("logs", []),
                     "community_packages": zeek_runtime.get("community_packages", []),
                 },
-                "otx": {
-                    "lookup_count": enrichment.get("lookup_count", 0),
-                    "sources": enrichment.get("sources", []),
-                    "by_reputation": [dict(row) for row in otx_rows],
-                    "lookups_by_reputation": otx_by_reputation,
-                    "recent_lookups": enrichment.get("recent_lookups", [])[:limit],
-                },
                 "model_comparison": comparison,
                 "active_ai_profile": active_profile,
-                "review_status": [dict(row) for row in review_rows],
             }
-        finally:
-            conn.close()
-
-    @app.get("/api/enrichment-status")
-    def api_enrichment_status(limit: int = 50):
-        """Serve the enrichment status API endpoint."""
-        conn = connect(db_path)
-        try:
-            return enrichment_status(conn, config, limit)
         finally:
             conn.close()
 
@@ -1946,41 +1298,6 @@ def create_app(config_path):
         conn = connect(db_path)
         try:
             return zeek_context_for_detection(conn, detection_id, seconds=seconds)
-        finally:
-            conn.close()
-
-    @app.post("/api/threat-intel-config")
-    def api_threat_intel_config(payload: ThreatIntelConfigRequest):
-        """Serve the threat intel config API endpoint."""
-        if payload.cache_ttl_hours < 1 or payload.cache_ttl_hours > 168:
-            raise HTTPException(status_code=400, detail="Cache TTL must be between 1 and 168 hours")
-        config.setdefault("threat_intel", {})
-        config["threat_intel"]["cache_ttl_hours"] = payload.cache_ttl_hours
-        config["threat_intel"]["otx_enabled"] = payload.otx_enabled
-        if payload.otx_api_key.strip():
-            config["threat_intel"]["otx_api_key"] = payload.otx_api_key.strip()
-        elif not payload.otx_enabled:
-            config["threat_intel"]["otx_api_key"] = ""
-        save_config(config, config_path)
-
-        conn = connect(db_path)
-        try:
-            insert_app_event(
-                conn,
-                "info",
-                "enrichment",
-                "Updated OTX enrichment settings",
-                {
-                    "otx_enabled": payload.otx_enabled,
-                    "api_key_configured": bool(config["threat_intel"].get("otx_api_key")),
-                    "cache_ttl_hours": payload.cache_ttl_hours,
-                },
-            )
-            return {
-                "status": "saved",
-                "otx_enabled": payload.otx_enabled,
-                "api_key_configured": bool(config["threat_intel"].get("otx_api_key")),
-            }
         finally:
             conn.close()
 
@@ -2186,172 +1503,6 @@ def create_app(config_path):
         finally:
             conn.close()
 
-    @app.get("/api/ip-detail")
-    def api_ip_detail(address: str, limit: int = 100):
-        """Serve the IP detail API endpoint."""
-        conn = connect(db_path)
-        try:
-            detail = ip_detail(conn, address, limit)
-            detail["threat_intel"] = provider_evidence_for_indicator(
-                conn, load_config(config_path), detail.get("ip_address")
-            )
-            return detail
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid IP address")
-        finally:
-            conn.close()
-
-    @app.get("/api/asset-inventory")
-    def api_asset_inventory(limit: int = 500):
-        """Serve the asset inventory API endpoint."""
-        conn = connect(db_path)
-        try:
-            assets = list_all_assets(conn, limit)
-            type_rows = conn.execute(
-                """
-                SELECT device_type, status, COUNT(*) AS count
-                FROM assets
-                GROUP BY device_type, status
-                ORDER BY count DESC, device_type ASC
-                """
-            ).fetchall()
-            match_rows = conn.execute(
-                """
-                SELECT ip_address, SUM(source_matches) AS source_matches, SUM(destination_matches) AS destination_matches
-                FROM (
-                  SELECT assets.ip_address, COUNT(detections.id) AS source_matches, 0 AS destination_matches
-                  FROM assets
-                  LEFT JOIN detections ON detections.src_ip = assets.ip_address
-                  GROUP BY assets.ip_address
-                  UNION ALL
-                  SELECT assets.ip_address, 0 AS source_matches, COUNT(detections.id) AS destination_matches
-                  FROM assets
-                  LEFT JOIN detections ON detections.dest_ip = assets.ip_address
-                  GROUP BY assets.ip_address
-                )
-                GROUP BY ip_address
-                """
-            ).fetchall()
-            matches_by_ip = {
-                row["ip_address"]: {
-                    "source_matches": row["source_matches"] or 0,
-                    "destination_matches": row["destination_matches"] or 0,
-                    "total_matches": (row["source_matches"] or 0) + (row["destination_matches"] or 0),
-                }
-                for row in match_rows
-            }
-            recent_rows = conn.execute(
-                """
-                SELECT
-                  detections.id AS detection_id,
-                  detections.src_ip,
-                  detections.dest_ip,
-                  detections.detection_type,
-                  detections.created_at,
-                  alerts.signature,
-                  responses.final_classification
-                FROM detections
-                LEFT JOIN alerts ON alerts.id = detections.first_alert_id
-                LEFT JOIN responses ON responses.detection_id = detections.id
-                WHERE detections.src_ip IN (SELECT ip_address FROM assets)
-                   OR detections.dest_ip IN (SELECT ip_address FROM assets)
-                ORDER BY detections.id DESC
-                LIMIT 50
-                """
-            ).fetchall()
-            recent_by_ip = {}
-            for row in recent_rows:
-                item = dict(row)
-                for ip_address in {item.get("src_ip"), item.get("dest_ip")}:
-                    if ip_address:
-                        recent_by_ip.setdefault(ip_address, []).append(item)
-
-            enriched_assets = []
-            for asset in assets:
-                item = dict(asset)
-                item["matches"] = matches_by_ip.get(
-                    item["ip_address"],
-                    {"source_matches": 0, "destination_matches": 0, "total_matches": 0},
-                )
-                item["recent_detections"] = recent_by_ip.get(item["ip_address"], [])[:6]
-                enriched_assets.append(item)
-
-            active_assets = [asset for asset in enriched_assets if asset.get("status") == "active"]
-            internal_interface = config.get("assets", {}).get("internal_interface", "ens37")
-            summary = asset_summary(conn)
-            summary.update(
-                {
-                    "inactive": len([asset for asset in enriched_assets if asset.get("status") == "inactive"]),
-                    "internal_interface_count": len(
-                        [
-                            asset
-                            for asset in active_assets
-                            if (asset.get("network_interface") or internal_interface) == internal_interface
-                        ]
-                    ),
-                }
-            )
-            return {
-                "types": [
-                    {"value": item["value"], "label": item["label"]}
-                    for item in default_asset_types(config)
-                ],
-                "default_interface": internal_interface,
-                "summary": summary,
-                "by_type": [dict(row) for row in type_rows],
-                "assets": enriched_assets,
-            }
-        finally:
-            conn.close()
-
-    @app.post("/api/admin/assets")
-    def api_upsert_asset(payload: AssetRequest):
-        """Serve the upsert asset API endpoint."""
-        try:
-            ip_address = str(ipaddress.ip_address(payload.ip_address.strip()))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Enter a valid IPv4 or IPv6 address")
-
-        name = payload.name.strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="Asset name is required")
-
-        allowed_types = {item["value"] for item in default_asset_types(config)}
-        device_type = payload.device_type.strip()
-        if device_type not in allowed_types:
-            raise HTTPException(status_code=400, detail="Unsupported device type")
-
-        conn = connect(db_path)
-        try:
-            asset_id = upsert_asset(
-                conn,
-                {
-                    "ip_address": ip_address,
-                    "name": name,
-                    "device_type": device_type,
-                    "network_interface": payload.network_interface.strip()
-                    or config.get("assets", {}).get("internal_interface", "ens37"),
-                    "function": payload.function.strip(),
-                    "notes": payload.notes.strip(),
-                },
-            )
-            insert_app_event(conn, "info", "assets", f"Saved asset {name} ({ip_address})", {"asset_id": asset_id})
-            return {"id": asset_id, "status": "active"}
-        finally:
-            conn.close()
-
-    @app.delete("/api/assets/{asset_id}")
-    def api_deactivate_asset(asset_id: int):
-        """Serve the deactivate asset API endpoint."""
-        conn = connect(db_path)
-        try:
-            if not deactivate_asset(conn, asset_id):
-                raise HTTPException(status_code=404, detail="Asset not found")
-            insert_app_event(conn, "info", "assets", f"Deactivated asset {asset_id}")
-            return {"status": "inactive"}
-        finally:
-            conn.close()
-
     @app.get("/api/reviews")
     def api_reviews(limit: int = 50):
         """Serve the reviews API endpoint."""
@@ -2429,76 +1580,6 @@ def create_app(config_path):
             except requests.RequestException as exc:
                 insert_app_event(conn, "error", "ai_model", f"AI model unreachable: {exc}")
                 return {"ok": False, "error": str(exc), "host": config.get("ai_model", {}).get("host")}
-        finally:
-            conn.close()
-
-    @app.get("/api/" + "olla" + "ma-status")
-    def api_legacy_ai_status():
-        """Serve the legacy AI status API endpoint."""
-        return api_ai_status()
-
-    @app.get("/api/metrics")
-    def api_metrics():
-        """Serve the metrics API endpoint."""
-        conn = connect(db_path)
-        try:
-            suricata_alerts = conn.execute("SELECT COUNT(*) AS count FROM alerts").fetchone()["count"]
-            zeek_detection_findings = conn.execute(
-                "SELECT COUNT(*) AS count FROM sensor_findings WHERE sensor = 'zeek' AND finding_type = 'notice'"
-            ).fetchone()["count"]
-            total_alerts = suricata_alerts + zeek_detection_findings
-            total_detections = conn.execute("SELECT COUNT(*) AS count FROM detections").fetchone()["count"]
-            zeek_counts = zeek_event_counts(conn)
-            zeek_notice_count = zeek_counts.get("notice", 0)
-            zeek_weird_count = zeek_counts.get("weird", 0)
-            investigation_cases = total_detections
-            ai_reassessments = conn.execute(
-                "SELECT COUNT(*) AS count FROM ai_assessments WHERE assessment_type = 'reassessment'"
-            ).fetchone()["count"]
-            by_type = conn.execute(
-                "SELECT detection_type, COUNT(*) AS count FROM detections GROUP BY detection_type ORDER BY count DESC"
-            ).fetchall()
-            by_classification = conn.execute(
-                """
-                SELECT final_classification, final_action, COUNT(*) AS count
-                FROM responses
-                WHERE id = (
-                  SELECT MAX(r2.id) FROM responses r2 WHERE r2.detection_id = responses.detection_id
-                )
-                GROUP BY final_classification, final_action
-                """
-            ).fetchall()
-            outcome_counts = {
-                "safe": 0,
-                "human_review": 0,
-                "dangerous": 0,
-            }
-            for row in by_classification:
-                classification = str(row["final_classification"] or "").lower()
-                action = str(row["final_action"] or "").lower()
-                count = row["count"]
-                if classification == "dangerous":
-                    outcome_counts["dangerous"] += count
-                elif "human" in classification or "analyst" in classification:
-                    outcome_counts["human_review"] += count
-                else:
-                    outcome_counts["safe"] += count
-            return {
-                "total_alerts": total_alerts,
-                "total_detections": total_detections,
-                "zeek_notice_count": zeek_notice_count,
-                "zeek_weird_count": zeek_weird_count,
-                "zeek_event_counts": zeek_counts,
-                "multi_sensor_detections": conn.execute(
-                    "SELECT COUNT(*) AS count FROM detections WHERE sensor_state = 'multi_sensor'"
-                ).fetchone()["count"],
-                "investigations_ready": investigation_cases,
-                "investigations_failed": 0,
-                "ai_reassessments": ai_reassessments,
-                "outcome_counts": outcome_counts,
-                "detections_by_type": [dict(row) for row in by_type],
-                "mode": config.get("system", {}).get("mode"),
-            }
         finally:
             conn.close()
 
