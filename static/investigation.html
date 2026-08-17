@@ -19,14 +19,12 @@
           <span class="divider"></span>
           <a class="nav-link" href="/outcome?type=all">Cases</a>
           <span class="divider"></span>
-          <span class="divider"></span>
           <a class="nav-link" href="/">Dashboard</a>
         </div>
       </section>
 
       <section class="case-actions" aria-label="Case actions">
         <button id="inv-reassess" type="button">Reassess Case</button>
-        <button id="inv-compare" type="button">Queue Model Comparison</button>
         <button id="inv-refresh-vt" type="button">Refresh VirusTotal</button>
         <button id="inv-refresh" type="button">Refresh Evidence</button>
         <span id="inv-action-status" class="connection-status">Case evidence loaded on request.</span>
@@ -66,17 +64,6 @@
           </div>
           <div id="inv-overview" class="case-overview-grid"></div>
         </section>
-
-        <details class="panel wide-panel collapsible-panel">
-          <summary class="panel-head">
-            <div>
-              <p class="eyebrow">AI Comparison</p>
-              <h2>All Model Responses</h2>
-            </div>
-            <small class="panel-hint">Sequential requests · responses use anonymous research labels</small>
-          </summary>
-          <div id="inv-comparison"></div>
-        </details>
 
         <details class="panel wide-panel collapsible-panel">
           <summary class="panel-head">

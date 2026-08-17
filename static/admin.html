@@ -19,7 +19,6 @@
           <span class="divider"></span>
           <a class="nav-link" href="/outcome?type=all">Cases</a>
           <span class="divider"></span>
-          <span class="divider"></span>
           <a class="nav-link" href="/">Dashboard</a>
         </div>
       </section>
@@ -28,9 +27,46 @@
         <button class="admin-tab-button active" type="button" data-admin-tab-button="settings">Settings</button>
         <button class="admin-tab-button" type="button" data-admin-tab-button="threat-intel">Threat Intelligence</button>
         <button class="admin-tab-button" type="button" data-admin-tab-button="runtime">Runtime Console</button>
+        <button class="admin-tab-button" type="button" data-admin-tab-button="ai-comparison">AI Comparison</button>
       </nav>
 
       <section class="admin-grid">
+        <section class="panel wide-panel" data-admin-tab-panel="ai-comparison" hidden>
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Admin Evaluation</p>
+              <h2>AI Comparison</h2>
+            </div>
+          </div>
+          <div class="list admin-list">
+            <div class="list-item">
+              <strong>Model comparison workspace</strong>
+              <p>Run selected AI profiles against the same stored case evidence and review their responses.</p>
+              <a class="toolbar-button" href="/compare">Open AI Comparison</a>
+            </div>
+            <div class="list-item">
+              <strong>Controlled experiments</strong>
+              <p>Run the protected temperature, seed, and missing-evidence evaluation tools.</p>
+              <div class="admin-action-row">
+                <a class="toolbar-button" href="/experiments/stability">Temperature and Seed Stability</a>
+                <a class="toolbar-button" href="/experiments/missing-evidence">Missing-Evidence Robustness</a>
+              </div>
+            </div>
+          </div>
+          <form id="ai-comparison-form" class="admin-form comparison-profile-form">
+            <div class="list-item">
+              <div class="row tight">
+                <strong>Comparison profiles</strong>
+                <span>exactly 3</span>
+              </div>
+              <p>Select the three saved profiles used by protected comparison runs.</p>
+              <div id="ai-comparison-profiles" class="comparison-profile-choices"></div>
+            </div>
+            <button class="wide-button" type="submit">Save Comparison Profiles</button>
+            <div id="ai-comparison-status" class="connection-status">Comparison profiles not changed.</div>
+          </form>
+        </section>
+
         <section class="panel wide-panel runtime-console-panel" data-admin-tab-panel="runtime" hidden>
           <div class="panel-head">
             <div>
@@ -144,18 +180,6 @@
           </form>
           <div id="ai-model-summary" class="list"></div>
           <div id="ai-profiles" class="list admin-list"></div>
-          <form id="ai-comparison-form" class="admin-form comparison-profile-form">
-            <div class="list-item">
-              <div class="row tight">
-                <strong>Comparison profiles</strong>
-                <span>exactly 3</span>
-              </div>
-              <p>Each case uses one frozen evidence package. Requests run one at a time, then all model identities and responses appear together on the investigation page.</p>
-              <div id="ai-comparison-profiles" class="comparison-profile-choices"></div>
-            </div>
-            <button class="wide-button" type="submit">Save Comparison Profiles</button>
-            <div id="ai-comparison-status" class="connection-status">Comparison profiles not changed.</div>
-          </form>
         </section>
 
         <section class="panel" data-admin-tab-panel="settings">

@@ -162,7 +162,7 @@ async function refresh() {
   const detectionLabel = detectionType ? ` · ${label(detectionType)}` : "";
   els.title.textContent = `${outcomeLabel}${detectionLabel}`;
 
-  const query = new URLSearchParams({ limit: "200" });
+  const query = new URLSearchParams({ limit: "20" });
   if (outcomeType !== "all") query.set("outcome", outcomeType);
   if (detectionType) query.set("detection_type", detectionType);
 

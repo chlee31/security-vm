@@ -1,10 +1,11 @@
-"""Periodically refresh enabled bulk threat-intelligence feeds.
+"""Run the background loop that keeps bulk threat-intelligence feeds current.
 
 The worker reloads config.yaml each cycle, checks each provider's last successful
 refresh, and downloads only feeds that are due. Parsed indicators replace that
 provider's cache in one transaction, preventing a partial download from leaving
-half an IOC set. Cases query this local cache before AI analysis; API keys and
-raw provider responses are not sent to the model.
+half an IOC set. It writes provider status, normalized indicators, and sanitized
+errors to SQLite, then sleeps until the next check. Cases query this local cache
+before AI analysis; API keys and raw provider responses are not sent to models.
 """
 
 import time

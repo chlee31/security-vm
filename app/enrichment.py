@@ -1,45 +1,17 @@
-"""Describe enrichment availability and provide compatibility OTX helpers.
+"""Validate IP eligibility and summarize direct AlienVault OTX lookups.
 
 IP classification happens locally before any external request so private,
 loopback, link-local, multicast, reserved, and Tailscale CGNAT addresses are not
-sent to reputation providers. The broader multi-provider cache and matching
-pipeline lives in ``threat_intel.py``; the OTX functions here remain for manual
-status/lookups and older dashboard routes.
+sent to reputation providers. Eligible public IPs may be looked up through OTX,
+and the response is reduced to the fields the application can store and explain.
+The broader scheduled feed-download, cache, and multi-provider matching pipeline
+lives in ``threat_intel.py``.
 """
 
 import ipaddress
 import json
 
 import requests
-
-
-def enrichment_plan(config):
-    """Describe configured enrichment providers and their cache policy."""
-    threat_intel = config.get("threat_intel", {})
-    ttl_hours = int(threat_intel.get("cache_ttl_hours", 24))
-    return {
-        "cache_ttl_hours": ttl_hours,
-        "sources": [
-            {
-                "name": "local-ip-classification",
-                "enabled": True,
-                "live_api": False,
-                "status": "active",
-            },
-            {
-                "name": "otx",
-                "enabled": bool(threat_intel.get("otx_enabled")),
-                "live_api": True,
-                "status": "active" if threat_intel.get("otx_enabled") else "disabled",
-            },
-            {
-                "name": "virustotal",
-                "enabled": bool(threat_intel.get("virustotal_enabled")),
-                "live_api": True,
-                "status": "active" if threat_intel.get("virustotal_enabled") else "planned_disabled",
-            },
-        ],
-    }
 
 
 def should_external_enrich_ip(ip_address):

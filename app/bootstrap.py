@@ -1,8 +1,14 @@
-"""Interactive host setup for sensors, permissions, and configuration.
+"""Guide the user through first-time host and sensor configuration.
 
-Bootstrap discovers interfaces and installed tools, prepares sensor settings,
-and writes application configuration. Privileged sensor changes are kept here
-rather than mixed into the normal ingestion path.
+The bootstrap reads the current host, detects network interfaces and required
+tools, checks the supported Ubuntu version, prepares Zeek and sensor permissions,
+and asks the user for installation-specific values. It merges those answers with
+``DEFAULT_CONFIG``, writes the selected YAML file, and initializes its SQLite
+database. The resulting configuration is the input later read by ``run-all``.
+
+This module performs setup only. It does not continuously ingest traffic or run
+the dashboard, and privileged operating-system changes stay here instead of in
+the normal evidence-processing workers.
 """
 
 import json

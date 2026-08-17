@@ -14,7 +14,7 @@ def main():
     """Parse the target endpoint, verify it, and print one model response."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True, help="Example: http://127.0.0.1:11434")
-    parser.add_argument("--model", default="llama3.2:latest")
+    parser.add_argument("--model", default="gemma4:e4b")
     args = parser.parse_args()
 
     tags = requests.get(f"{args.host}/api/tags", timeout=15)

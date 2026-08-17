@@ -1,15 +1,15 @@
-"""FastAPI application exposing dashboard pages and JSON management endpoints.
+"""Connect the browser interface to stored application data through FastAPI.
 
-Routes in this module translate HTTP requests into database/service operations.
-Read routes assemble already stored case, sensor, AI, and threat-intelligence
-rows for presentation. Write routes represent explicit operator actions such as
-starting a comparison, recording feedback, changing settings, or cancelling a
-request. Sensor ingestion and automatic AI processing remain in worker modules,
-which keeps a browser refresh from creating or changing security evidence.
+``create_app`` receives a config path and returns the FastAPI application run by
+Uvicorn. Page routes serve HTML from ``static/``. API routes open the configured
+SQLite database, call query/helper functions, and return JSON that the matching
+JavaScript file renders in the browser. Write routes handle explicit operator
+actions such as feedback, settings changes, comparison requests, or cancellation.
 
 The HTML/JavaScript frontend is intentionally a view over SQLite rather than an
-independent analysis engine. Facts labelled as Python come from normalized
-database fields; model interpretations come from stored AI reports and audits.
+analysis engine. Refreshing a page rereads stored data but does not ingest sensor
+files or run AI analysis; those tasks remain in background workers. Facts labelled
+as Python come from normalized fields, while AI text comes from stored reports.
 """
 
 from pathlib import Path
@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 from app.config import load_config, save_config
 from app.database import (
+    ai_model_comparison,
     ai_comparison_detail,
     cancel_ai_request,
     cancel_all_ai_requests,
@@ -43,7 +44,6 @@ from app.database import (
     ai_comparison_selection_summary,
     ai_experiment_detail,
     ai_experiment_export_rows,
-    ai_model_comparison,
     case_workspace,
     connect,
     create_ai_profile,
@@ -432,9 +432,25 @@ def create_app(config_path):
 
     @app.middleware("http")
     async def add_no_cache_headers(request, call_next):
-        """Disable browser caching and protect Admin routes with basic auth."""
+        """Disable browser caching and protect administrative routes."""
         path = request.url.path
-        if path == "/admin" or path.startswith("/api/admin/"):
+        admin_only = (
+            path in {"/admin", "/compare"}
+            or path.startswith(
+                (
+                    "/api/admin/",
+                    "/api/ai-comparisons",
+                    "/api/ai-experiments",
+                    "/api/ai-experiment-results",
+                    "/experiments/",
+                )
+            )
+            or (
+                path.startswith("/api/cases/")
+                and path.endswith(("/ai-comparisons", "/ai-comparison"))
+            )
+        )
+        if admin_only:
             if not admin_password:
                 return JSONResponse(
                     status_code=503,
@@ -877,7 +893,7 @@ def create_app(config_path):
             conn.close()
 
     @app.get("/api/latest-alerts")
-    def api_latest_sensor_alerts(limit: int = 50, sensor: str = "all"):
+    def api_latest_decision_evidence(limit: int = 50, sensor: str = "all"):
         """Serve the latest sensor alerts API endpoint."""
         conn = connect(db_path)
         try:
@@ -1083,7 +1099,6 @@ def create_app(config_path):
             ]
             experiment_uid = queue_stability_experiment(
                 conn,
-                load_config(config_path),
                 payload.comparison_uid,
                 settings,
             )
@@ -1106,7 +1121,6 @@ def create_app(config_path):
             ]
             experiment_uid = queue_missing_evidence_experiment(
                 conn,
-                load_config(config_path),
                 payload.comparison_uid,
                 variants,
             )
@@ -1210,7 +1224,7 @@ def create_app(config_path):
 
     @app.get("/api/dashboard-summary")
     def api_dashboard_summary(limit: int = 12):
-        """Return only the compact timeline, model, and Zeek homepage data."""
+        """Return the compact timeline and Zeek data shown on the homepage."""
         conn = connect(db_path)
         try:
             timeline_rows = conn.execute(
@@ -1232,6 +1246,8 @@ def create_app(config_path):
             zeek_runtime = zeek_status(config)
             return {
                 "timeline": [dict(row) for row in reversed(timeline_rows)],
+                "model_comparison": comparison,
+                "active_ai_profile": active_profile,
                 "zeek": {
                     "enabled": zeek_runtime.get("enabled"),
                     "installed": zeek_runtime.get("installed"),
@@ -1242,8 +1258,6 @@ def create_app(config_path):
                     "logs": zeek_runtime.get("logs", []),
                     "community_packages": zeek_runtime.get("community_packages", []),
                 },
-                "model_comparison": comparison,
-                "active_ai_profile": active_profile,
             }
         finally:
             conn.close()

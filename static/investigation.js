@@ -23,8 +23,6 @@ const els = {
   zeek: document.querySelector("#inv-zeek"),
   audit: document.querySelector("#inv-audit"),
   reassess: document.querySelector("#inv-reassess"),
-  compare: document.querySelector("#inv-compare"),
-  comparison: document.querySelector("#inv-comparison"),
   refreshVt: document.querySelector("#inv-refresh-vt"),
   refresh: document.querySelector("#inv-refresh"),
   actionStatus: document.querySelector("#inv-action-status"),
@@ -76,128 +74,6 @@ function orderedSteps(steps, fallback) {
 
 function endpointIdentity(ip) {
   return ip || "Unknown endpoint";
-}
-
-const threatIntelProviders = [
-  "otx", "threatfox", "urlhaus", "sslbl", "spamhaus_drop",
-  "openphish", "ipsum", "feodo", "virustotal"
-];
-
-function renderModelThreatIntel(candidate) {
-  const analysis = candidate.threat_intel_analysis || {};
-  return `
-    <section class="candidate-threat-intel">
-      <div class="candidate-section-heading">
-        <h3>Threat Intelligence Interpretation</h3>
-        <span class="status-pill">${escapeHtml(label(analysis.influence || "unavailable"))}</span>
-      </div>
-      <p>${escapeHtml(analysis.overall || "This legacy response did not include a dedicated threat-intelligence conclusion.")}</p>
-    </section>
-  `;
-}
-
-function renderModelCandidate(candidate, vote) {
-  const selected = vote?.selection === candidate.anonymous_slot;
-  return `
-    <article class="model-candidate ${selected ? "winner" : ""} ${candidate.status === "failed" ? "failed" : ""}">
-      <header>
-        <span class="candidate-letter">${escapeHtml(candidate.anonymous_slot)}</span>
-        <div>
-          <strong>Response ${escapeHtml(candidate.anonymous_slot)}</strong>
-          <small>${candidate.status === "failed" ? "Request failed" : `${candidate.elapsed_ms ?? 0}ms`}</small>
-        </div>
-        ${selected ? `<span class="status-pill active">selected</span>` : ""}
-      </header>
-      ${candidate.status === "failed" ? `
-        <div class="empty">Request failed: ${escapeHtml(candidate.error_message || "No error detail was stored.")}</div>
-      ` : `
-        <div class="candidate-verdict">
-          <strong>${escapeHtml(candidate.classification || "No classification")}</strong>
-          <span>${escapeHtml(candidate.confidence || "Unknown")} confidence</span>
-        </div>
-        <section>
-          <h3>Case Summary</h3>
-          <p>${escapeHtml(candidate.summary || "No summary returned.")}</p>
-        </section>
-        ${renderModelThreatIntel(candidate)}
-        <dl class="candidate-evidence">
-          <div><dt>Who</dt><dd>${escapeHtml(candidate.who_summary || "Not established")}</dd></div>
-          <div><dt>What</dt><dd>${escapeHtml(candidate.what_summary || "Not established")}</dd></div>
-          <div><dt>When</dt><dd>${escapeHtml(candidate.when_summary || "Not established")}</dd></div>
-          <div><dt>Where</dt><dd>${escapeHtml(candidate.where_summary || "Not established")}</dd></div>
-          <div><dt>Why</dt><dd>${escapeHtml(candidate.why_summary || "Not established")}</dd></div>
-          <div><dt>How</dt><dd>${escapeHtml(candidate.how_summary || "Not established")}</dd></div>
-        </dl>
-        <section class="candidate-next-steps">
-          <h3>Recommended Next Steps</h3>
-          <ol>${(candidate.next_steps || []).map((step) => `<li>${escapeHtml(step)}</li>`).join("") || `<li>No concrete next steps returned.</li>`}</ol>
-        </section>
-        <details class="model-raw-response">
-          <summary>View complete raw model response</summary>
-          <pre class="raw-json">${escapeHtml(candidate.raw_response || "No raw response stored.")}</pre>
-        </details>
-        <footer>Response ${escapeHtml(candidate.anonymous_slot)} · prompt ${escapeHtml(candidate.prompt_version || "unknown")}</footer>
-      `}
-    </article>
-  `;
-}
-
-function renderComparisonInputProof(detail) {
-  const proof = detail?.input_consistency || {};
-  const fullyVerified = proof.same_prompt_across_candidates
-    && proof.same_evidence_across_candidates
-    && proof.same_generation_options_across_candidates;
-  const matchesInitial = proof.matches_initial_case_prompt
-    && proof.matches_initial_case_evidence;
-  return `
-    <section class="comparison-input-proof ${fullyVerified ? "verified" : "warning"}">
-      <div>
-        <strong>${fullyVerified ? "Verified identical input for every response" : "Comparison input could not be fully verified"}</strong>
-        <small>${matchesInitial
-          ? "The comparison reuses the exact prompt and evidence snapshot that produced the initial case summary."
-          : "This comparison used a separately prepared case snapshot; differences from the initial summary may reflect changed evidence as well as model behavior."}</small>
-      </div>
-      <details>
-        <summary>View input hashes</summary>
-        <p>Prompt SHA-256: <span class="hash-value">${escapeHtml(proof.prompt_sha256 || "not recorded")}</span></p>
-        <p>Evidence SHA-256: <span class="hash-value">${escapeHtml(proof.evidence_sha256 || "not recorded")}</span></p>
-      </details>
-    </section>
-  `;
-}
-
-async function renderComparisonRuns(runs) {
-  if (!runs?.length) {
-    els.comparison.innerHTML = `<div class="empty comparison-empty">No model comparison has been run for this case.</div>`;
-    return;
-  }
-  const latest = await getJson(`/api/ai-comparisons/${encodeURIComponent(runs[0].comparison_uid)}`);
-  const vote = latest.votes?.[0];
-  const expected = latest.expected_candidate_count || latest.selected_profile_uids?.length || 0;
-  els.comparison.innerHTML = `
-    <div class="comparison-inline-head">
-      <div>
-        <strong>${escapeHtml(latest.comparison_uid)}</strong>
-        <small>${latest.candidate_count || 0}/${expected} successful · ${latest.processed_count || 0}/${expected} attempted · ${escapeHtml(label(latest.status))}</small>
-      </div>
-      <a class="nav-link" href="/compare?run=${encodeURIComponent(latest.comparison_uid)}&case=${encodeURIComponent(latest.case_uid)}" target="_blank" rel="noopener">Open Comparison Workspace</a>
-    </div>
-    ${renderComparisonInputProof(latest)}
-    <div class="model-candidate-grid investigation-model-grid">
-      ${(latest.candidates || []).map((candidate) => renderModelCandidate(candidate, vote)).join("")}
-    </div>
-    ${runs.length > 1 ? `
-      <details class="previous-comparison-runs">
-        <summary>Previous comparison runs (${runs.length - 1})</summary>
-        <div class="workbook-list">
-          ${runs.slice(1).map((run) => {
-            const runExpected = run.expected_candidate_count || 0;
-            return `<a class="workbook-row investigation-link" href="/compare?run=${encodeURIComponent(run.comparison_uid)}&case=${encodeURIComponent(run.case_uid)}" target="_blank" rel="noopener"><strong>${escapeHtml(run.comparison_uid)}</strong><small>${run.candidate_count || 0}/${runExpected} successful · ${run.processed_count || 0}/${runExpected} attempted · ${escapeHtml(label(run.status))}</small></a>`;
-          }).join("")}
-        </div>
-      </details>
-    ` : ""}
-  `;
 }
 
 async function getJson(path) {
@@ -822,33 +698,6 @@ async function reassess() {
   }
 }
 
-async function runComparison() {
-  if (!currentInvestigation?.case_uid) return;
-  els.compare.disabled = true;
-  setActionStatus("", "The model comparison is being queued for sequential background processing.");
-  const progressTimer = window.setInterval(() => {
-    refreshComparisonOnly().catch(() => {});
-  }, 3000);
-  try {
-    const result = await sendJson(`/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/ai-comparison`, "POST");
-    await refresh();
-    setActionStatus("ok", `Comparison ${result.comparison_uid} queued with ${result.expected_candidate_count || 0} model requests.`);
-  } catch (error) {
-    setActionStatus("error", error.message);
-  } finally {
-    window.clearInterval(progressTimer);
-    els.compare.disabled = false;
-  }
-}
-
-async function refreshComparisonOnly() {
-  if (!currentInvestigation?.case_uid) return;
-  const runs = await getJson(
-    `/api/cases/${encodeURIComponent(currentInvestigation.case_uid)}/ai-comparisons?limit=10`
-  );
-  await renderComparisonRuns(runs);
-}
-
 async function refreshVirusTotal() {
   if (!currentInvestigation?.case_uid) return;
   els.refreshVt.disabled = true;
@@ -877,11 +726,6 @@ async function refresh() {
       : `/api/investigation/${encodeURIComponent(detectionId)}`;
     const data = await getJson(path);
     render(data);
-    if (data.case_uid) {
-      await refreshComparisonOnly();
-    } else {
-      await renderComparisonRuns([]);
-    }
   } catch (error) {
     els.updated.textContent = "Case API error";
     els.alert.innerHTML = `<div class="empty">${error.message}</div>`;
@@ -891,7 +735,6 @@ async function refresh() {
 refresh();
 els.reviewForm.addEventListener("submit", submitReview);
 els.reassess.addEventListener("click", reassess);
-els.compare.addEventListener("click", runComparison);
 els.refreshVt.addEventListener("click", refreshVirusTotal);
 els.refresh.addEventListener("click", refresh);
 els.findingViewButtons.forEach((button) => button.addEventListener("click", () => {

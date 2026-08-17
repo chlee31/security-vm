@@ -1,8 +1,11 @@
-"""Apply Python-controlled qualitative classification and response policy.
+"""Convert a model recommendation into the application's final case action.
 
-The AI model recommends a classification, but Python normalizes it and can
-force analyst review when sensor findings are materially disputed. No numerical
-risk score is calculated here.
+The module receives the fused detection record and an optional normalized AI
+report. It accepts only the supported labels, maps the resulting label to an
+application action, and forces ``Analyst Review Required`` when confidence is
+low, the model requests review, or the sensors materially disagree. Its output
+is the response dictionary stored by ``database.py``. No numerical risk score is
+calculated, and the model never directly performs an operational action.
 """
 
 CLASSIFICATION_ACTIONS = {
@@ -35,15 +38,14 @@ def materially_disputed(detection):
     return str(detection.get("agreement_state") or "").strip().lower() == "disputed"
 
 
-def decide(conn, config, alert, detection, ai_report=None):
+def decide(detection, ai_report=None):
     """Map qualitative evidence to the final Python-controlled response.
 
-    ``conn``, ``config``, and ``alert`` are retained in the signature for
-    compatibility with existing callers. The current policy depends only on
-    model classification plus sensor-dispute state. Low confidence, an explicit
-    forced-review marker, or unresolved sensor disagreement always overrides a
-    model's Safe/Dangerous label to analyst review. This is the final control
-    point between model text and the application's stored action.
+    The policy depends only on model classification plus sensor-dispute state.
+    Low confidence, an explicit forced-review marker, or unresolved sensor
+    disagreement always overrides a model's Safe/Dangerous label to analyst
+    review. This is the final control point between model text and the
+    application's stored action.
     """
     report = ai_report or {}
     classification = normalize_classification(report.get("classification"))

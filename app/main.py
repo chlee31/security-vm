@@ -1,15 +1,16 @@
-"""Command-line entry point and orchestration for the Security VM pipeline.
+"""Provide CLI commands and coordinate the complete Security VM pipeline.
 
-This module is the coordinator, not the owner of every implementation detail.
-Suricata file following, Zeek log following, normalization, persistence,
-correlation, model requests, and dashboard rendering live in focused modules.
-The functions here connect those stages and supervise their worker processes.
+This is the application's main control point. It parses commands such as
+``run-all``, ``ingest``, ``zeek-ingest``, ``ai-worker``, and ``dashboard``;
+loads config.yaml; opens the selected SQLite database; and calls the focused
+modules that perform reading, normalization, correlation, AI requests, and web
+serving. ``run-all`` starts and supervises these jobs as separate processes.
 
 Sensor readers persist and correlate evidence without waiting for network model
 I/O. A separate required AI worker finds durable cases with no report, gathers
 bounded evidence, requests an explanation, stores complete audit proof, and
-applies Python response policy. This separation prevents a slow or unavailable
-model from stopping Suricata/Zeek collection.
+applies Python response policy. This separation lets collection continue while
+model work is queued and makes each worker's responsibility easier to verify.
 """
 
 import argparse
@@ -75,7 +76,6 @@ from app.sensor_fusion import suricata_finding, zeek_detection, zeek_finding
 from app.threat_intel import (
     FETCHERS,
     PRE_AI_PROVIDERS,
-    PROVIDERS,
     ai_provider_status,
     provider_config,
     provider_evidence_for_indicator,
@@ -493,7 +493,7 @@ def assess_detection(conn, config_path, alert, detection, alert_id, detection_id
         },
     )
     # Python retains final control and can force review for disputed sensors.
-    response = decide(conn, runtime_config, alert, detection, ai_report)
+    response = decide(detection, ai_report)
     response["detection_id"] = detection_id
     try:
         # VirusTotal is deliberately after classification and cannot add or
@@ -1270,7 +1270,7 @@ def run_ai_backfill(config_path, limit):
     conn.close()
 
 
-def assessment_inputs_from_row(conn, row):
+def assessment_inputs_from_row(row):
     """Rebuild the canonical alert and detection inputs for a queued case."""
     alert = {
         "suricata_event_id": row.get("suricata_event_id"),
@@ -1346,7 +1346,7 @@ def run_ai_worker(config_path, poll_seconds=1.0, correlation_delay_seconds=5):
                 time.sleep(max(0.1, poll_seconds))
                 continue
             row = rows[0]
-            alert, detection = assessment_inputs_from_row(conn, row)
+            alert, detection = assessment_inputs_from_row(row)
             assess_detection(
                 conn,
                 config_path,

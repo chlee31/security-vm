@@ -1,10 +1,11 @@
-"""Fetch, normalize, cache, and match supported threat-intelligence feeds.
+"""Maintain the local multi-provider threat-intelligence cache used by cases.
 
 Provider-specific parsers turn downloaded IPs, domains, URLs, and hashes into
-the common ``threat_intel_indicators`` table. Case processing queries that
-local cache and sends only sanitized matches and provider status to the AI
-model, not credentials or complete feed responses. VirusTotal helpers remain
-available here, but orchestration reserves live verification for a later stage.
+the common ``threat_intel_indicators`` table. Matching functions receive case
+observables and return exact cached matches plus provider provenance. Case
+processing sends only those sanitized results and provider status to the AI
+model, never credentials or complete downloaded feeds. Live VirusTotal behavior
+is orchestrated separately in ``virustotal.py``.
 """
 
 import csv
@@ -414,7 +415,7 @@ def _get(url, timeout=60):
     return response
 
 
-def _url_indicators(url, source, category, confidence, raw=None):
+def _url_indicators(url, category, confidence, raw=None):
     """Expand one URL into normalized URL, host, and address indicators."""
     items = [{"indicator": url, "indicator_type": "url", "category": category, "confidence": confidence, "raw_data": raw}]
     try:
@@ -484,7 +485,7 @@ def fetch_urlhaus(settings):
     indicators = []
     for row in rows:
         url_value = row.get("url") or row.get("URL") or ""
-        indicators.extend(_url_indicators(url_value, "urlhaus", "malware_delivery", 90, row))
+        indicators.extend(_url_indicators(url_value, "malware_delivery", 90, row))
     return indicators
 
 
@@ -535,7 +536,7 @@ def fetch_openphish(_settings):
     for line in text.splitlines():
         url = line.strip()
         if url and not url.startswith("#"):
-            indicators.extend(_url_indicators(url, "openphish", "phishing", 75))
+            indicators.extend(_url_indicators(url, "phishing", 75))
     return indicators
 
 

@@ -1,11 +1,13 @@
-"""Reliably follow Suricata EVE JSON with persistent inode/offset checkpoints.
+"""Follow Suricata's EVE JSON file without losing or rereading committed data.
 
 Suricata continuously appends newline-delimited JSON and rotates the file. The
-follower records both inode and byte offset so it can distinguish normal growth,
-truncation, and replacement. It yields an acknowledgement object rather than
-advancing immediately: ``main.py`` acknowledges only after SQLite has committed
-the normalized alert and its case links. A crash therefore favors replay, which
-content fingerprints safely deduplicate, over silently losing evidence.
+reader receives the configured EVE path and SQLite connection, restores the
+saved inode and byte offset, and yields one parsed JSON record at a time. It can
+therefore distinguish normal growth, truncation, and file rotation.
+
+The returned record is acknowledged only after ``main.py`` commits its normalized
+alert and case links. A crash therefore favors replay, which content fingerprints
+deduplicate, instead of silently skipping uncommitted evidence.
 """
 
 import json

@@ -121,9 +121,8 @@ function renderSummary(summary) {
       legacyCount += Number(row.count || 0);
       return;
     }
-    const label = modelIdentity;
     grouped.set(key, (grouped.get(key) || 0) + Number(row.count || 0));
-    grouped.set(`${key}:label`, label);
+    grouped.set(`${key}:label`, modelIdentity);
   });
   const activeProfile = summary.active_ai_profile;
   if (activeProfile && !grouped.has(activeProfile.uid)) {
@@ -140,20 +139,20 @@ function renderSummary(summary) {
     <div class="summary-stack">
       ${activeProfile ? `
         <div class="summary-cardline">
-          <strong>${activeProfile.name}</strong>
+          <strong>${escapeHtml(activeProfile.name)}</strong>
           <span>selected</span>
         </div>
-        <small>${activeProfile.uid} · ${activeProfile.provider}:${activeProfile.model}</small>
+        <small>${escapeHtml(activeProfile.uid)} · ${escapeHtml(activeProfile.provider)}:${escapeHtml(activeProfile.model)}</small>
       ` : `<div class="empty">No selected AI profile.</div>`}
       <div class="bar-list compact-bars">
         ${modelRows.map((item) => `
           <div>
             <div class="row tight">
-              <strong>${item.model}</strong>
+              <strong>${escapeHtml(item.model)}</strong>
               <span>${item.count}</span>
             </div>
             <div class="bar"><span style="--value:${(Number(item.count || 0) / modelMax) * 100}%"></span></div>
-            <small>${item.key === "legacy-profile" ? "rows created before AI profiles were enabled" : `profile ${item.key}`}</small>
+            <small>${item.key === "legacy-profile" ? "rows created before AI profiles were enabled" : `profile ${escapeHtml(item.key)}`}</small>
           </div>
         `).join("") || `<div class="empty">No AI reports yet.</div>`}
         ${legacyCount ? `
@@ -162,7 +161,7 @@ function renderSummary(summary) {
               <strong>Legacy AI reports</strong>
               <span>${legacyCount}</span>
             </div>
-            <small>older rows without profile UID; restart ingest for new named rows</small>
+            <small>older rows without profile UID</small>
           </div>
         ` : ""}
       </div>
@@ -188,7 +187,7 @@ function renderSummary(summary) {
         </div>
         <div>
           <strong>Logs</strong>
-          ${zeekLogs.slice(0, 4).map((item) => `
+          ${zeekLogs.slice(0, 10).map((item) => `
             <small>${item.log_type}: ${item.exists ? "ready" : "missing"}</small>
           `).join("") || `<small>No log checks available.</small>`}
         </div>

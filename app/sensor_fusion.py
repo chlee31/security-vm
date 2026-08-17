@@ -1,10 +1,13 @@
-"""Convert Suricata alerts and Zeek notices into common case findings.
+"""Convert normalized Suricata and Zeek records into one common finding shape.
 
-The common shape allows both sensors to initiate or support a case while
-retaining sensor-specific IDs, severity, Community ID, and original evidence.
-It is deliberately a link layer rather than another copy of each source row:
-``alerts`` and ``zeek_events`` remain authoritative, while ``sensor_findings``
-records which of those rows belong to a unified detection.
+The input is one normalized sensor row. The output names its sensor, source-row
+ID, event UID, timestamps, endpoints, finding type/name, severity, confidence,
+and Community ID in the same format regardless of source. Database correlation
+uses that format to decide whether the finding starts or supports a case.
+
+This is a link layer rather than another evidence copy: ``alerts`` and
+``zeek_events`` remain authoritative, while ``sensor_findings`` records which
+source rows belong to each unified ``detection``.
 """
 
 import json

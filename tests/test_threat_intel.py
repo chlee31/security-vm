@@ -228,19 +228,12 @@ class ThreatIntelTests(unittest.TestCase):
         self.assertEqual(dict(usage), {"source": "virustotal", "stage": "post_initial_verification"})
 
     def test_virustotal_verification_does_not_change_the_qualitative_decision(self):
-        alert = {"src_ip": "192.168.11.50", "dest_ip": "8.8.8.8"}
         detection = {"agreement_state": "single_sensor"}
         base = decide(
-            self.conn,
-            {"system": {"mode": "alert_only"}},
-            alert,
             detection,
             {"classification": "Dangerous"},
         )
         verified = decide(
-            self.conn,
-            {"system": {"mode": "alert_only"}},
-            alert,
             detection,
             {
                 "classification": "Dangerous",

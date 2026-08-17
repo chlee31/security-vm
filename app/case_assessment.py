@@ -1,8 +1,11 @@
-"""Rebuild stored case evidence for analyst-requested AI reassessment.
+"""Prepare and rerun AI analysis for an existing stored case.
 
-Unlike initial ingestion, reassessment reads an existing case workspace from
-SQLite, includes prior analyst and VirusTotal evidence when available, records
-a new independent AI audit, and never overwrites the historical assessment.
+The module receives an SQLite connection, the active configuration, and a case
+UID. It reloads the case's Suricata findings, Zeek context, threat intelligence,
+analyst history, and available VirusTotal verification; builds the same bounded
+evidence shape used by initial analysis; calls ``ai_client.py``; and stores a new
+report, audit, response, and review state. Historical assessments remain intact,
+so reassessment adds evidence rather than rewriting the original result.
 """
 
 import json
@@ -291,7 +294,7 @@ def reassess_case(conn, config, case_uid):
             ],
         },
     )
-    response = decide(conn, config, alert, detection, report)
+    response = decide(detection, report)
     response["detection_id"] = detection_id
     response_id = insert_response(conn, response)
     upsert_pending_review(conn, response)

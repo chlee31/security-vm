@@ -143,7 +143,7 @@ class AIExperimentTests(unittest.TestCase):
         }
         with patch("app.ai_comparison._verify_current_digest", return_value=inventory):
             experiment_uid = queue_stability_experiment(
-                self.conn, {}, self.comparison_uid, settings
+                self.conn, self.comparison_uid, settings
             )
         rows = self.conn.execute(
             """

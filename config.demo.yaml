@@ -1,0 +1,119 @@
+system:
+  mode: analysis
+  retention_days: 7
+suricata:
+  eve_json_path: /var/log/suricata/eve.json
+  fast_log_path: /var/log/suricata/fast.log
+  start_position: end
+database:
+  path: security_vm_demo.db
+zeek:
+  enabled: true
+  interface: ens33
+  log_directory: /opt/zeek/logs/current
+  archive_directory: /opt/zeek/logs
+  json_logs: true
+  ingest_notice: true
+  ingest_weird: true
+  context_logs:
+  - conn
+  - dns
+  - http
+  - ssl
+  - files
+  - notice
+  - weird
+  - ssh
+  - x509
+  community_packages:
+  - ncsa/bro-simple-scan
+  - jbaggs/anomalous-dns
+  package_install_enabled: true
+ai_reassessment:
+  enabled: true
+  include_suricata: true
+  include_zeek: true
+  include_threat_intel: true
+  include_asset_context: true
+ai_comparison:
+  profile_uids:
+  - ai-f4e341c6d526
+  - ai-d8669eb59d92
+  - ai-c14af914b8ad
+  - ai-8a3719f43b04
+  sequential: true
+  candidate_count: 5
+ai_experiments:
+  worker_poll_seconds: 1.0
+correlation:
+  policy_version: correlation-v1
+  sensor_time_tolerance_seconds: 10
+  same_sensor_window_seconds: 300
+  zeek_context_window_seconds: 120
+  zeek_context_limit: 100
+  strengths:
+    community_id: 1.0
+    community_id_same_sensor: 0.95
+    zeek_uid: 0.95
+    flow_time: 0.85
+    shared_observable: 0.82
+    same_sensor_behavior: 0.78
+    single_sensor: 0.5
+ai_model:
+  host: http://100.99.223.100:11434
+  model: hf.co/bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF:Q4_K_M
+  provider: nvidia
+  active_profile_uid: ai-b1bb001d6f3b
+  timeout_seconds: 90
+  num_predict: 1024
+  num_ctx: 8192
+  temperature: 1.0
+  seed: 64
+threat_intel:
+  cache_ttl_hours: 24
+  virustotal_enabled: true
+  virustotal_api_key: ''
+  otx_enabled: true
+  otx_api_key: ''
+  providers:
+    otx:
+      enabled: true
+      api_key: ''
+      refresh_hours: 24
+    threatfox:
+      enabled: true
+      api_key: ''
+      refresh_hours: 6
+    urlhaus:
+      enabled: true
+      api_key: ''
+      refresh_hours: 6
+    sslbl:
+      enabled: true
+      api_key: ''
+      refresh_hours: 6
+    spamhaus_drop:
+      enabled: true
+      api_key: ''
+      refresh_hours: 24
+    openphish:
+      enabled: true
+      api_key: ''
+      refresh_hours: 12
+    ipsum:
+      enabled: true
+      api_key: ''
+      refresh_hours: 24
+    feodo:
+      enabled: true
+      api_key: ''
+      refresh_hours: 24
+    virustotal:
+      enabled: true
+      api_key: ''
+      refresh_hours: 24
+assets:
+  internal_interface: ens37
+safelist:
+- 127.0.0.1
+- ::1
