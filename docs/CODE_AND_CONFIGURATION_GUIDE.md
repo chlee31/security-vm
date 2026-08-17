@@ -556,7 +556,6 @@ Important identifiers:
 | `app/ai_activity.py` | Tracks preparing/requesting/completed/failed/cancelled request states | Add operator-visible progress fields |
 | `app/case_assessment.py` | Rebuilds evidence and reassesses an existing case | Change reassessment evidence policy |
 | `app/ai_comparison.py` | Freezes one input, runs model profiles sequentially, records anonymized responses/votes, and executes controlled experiments | Add experimental variants while preserving identical-input proof |
-| `app/evaluation.py` | Historical scenario-evaluation compatibility code | Retired from the current experiment methodology; do not use for new work |
 
 ## How the Prompt Is Built
 

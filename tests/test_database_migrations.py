@@ -20,14 +20,10 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertNotIn("firewall_blocks", tables)
             self.assertNotIn("allowlist", tables)
             self.assertNotIn("notification_events", tables)
-            self.assertTrue(
-                {
-                    "evaluation_scenarios",
-                    "evaluation_case_links",
-                    "evaluation_event_labels",
-                    "evaluation_model_reviews",
-                }.issubset(tables)
-            )
+            self.assertNotIn("evaluation_scenarios", tables)
+            self.assertNotIn("evaluation_case_links", tables)
+            self.assertNotIn("evaluation_event_labels", tables)
+            self.assertNotIn("evaluation_model_reviews", tables)
             alert_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()
             }

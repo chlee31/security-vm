@@ -33,6 +33,92 @@ decisions; this document provides the end-to-end map.
 10. `app/virustotal.py` may verify eligible public IPs after a `Dangerous`
     classification. VirusTotal does not numerically change or lower the result.
 
+## What Happens When a Sensor Finding Arrives
+
+For a Suricata alert, `run_ingest` follows this order:
+
+1. Read one `event_type: alert` EVE record after the saved byte offset.
+2. Normalize the fields needed for searching, correlation, and display.
+3. Insert the normalized fields and complete original JSON into `alerts`.
+4. Find or create a unified row in `detections`, which receives a `CASE-` UID.
+5. Link the alert to that case through `sensor_findings`.
+6. Commit the transaction, then advance the file checkpoint.
+7. Leave the case for the AI worker to discover through a database query.
+
+Zeek uses the same evidence model, but follows several rotating JSON logs. Every
+supported row is written to `zeek_events`. Notice-like rows can create a case;
+connection, DNS, TLS, HTTP, file, SSH, X.509, and weird records can be attached
+as supporting context. The Zeek checkpoint advances only after storage and any
+required case linking succeed.
+
+The AI worker does not rely on an empty placeholder in `ai_reports`. It queries
+for a detection whose ID has no corresponding completed AI report, builds that
+case's evidence, sends it, and stores the result. Once the report exists, the
+same query naturally stops selecting that case. This database-backed queue also
+survives browser and worker restarts.
+
+## Why Suricata and Zeek Status Look Different
+
+The difference is code organization, not sensor importance. Both sensors are
+required by `run-all` and both feed the same case pipeline.
+
+- Suricata is managed as a normal system service. `app/main.py` only needs a
+  short `systemctl is-active/start suricata` prerequisite check. Reading and
+  interpreting its evidence are already separated into
+  `app/suricata_reader.py` and `app/normalizer.py`.
+- ZeekControl manages more application-owned state. Security VM must locate
+  `zeek`, `zeekctl`, and `zkg`, inspect ZeekControl process state, report package
+  configuration, and test access to several log files. That larger operational
+  inventory belongs in `app/zeek_inventory.py` instead of making `main.py` even
+  larger.
+
+In short, the inline Suricata code is only a service-health check. It is not the
+Suricata inventory, parser, or evidence store. Zeek has a dedicated inventory
+module because its runtime checks are materially more complex.
+
+## SQLite Evidence Model
+
+The central relationship is:
+
+```text
+alerts (Suricata) ----\
+                       > sensor_findings ---> detections (CASE)
+zeek_events ----------/                           |
+                                                   +--> ai_reports
+                                                   +--> ai_assessments
+                                                   +--> ai_run_audits
+                                                   +--> reviews / responses
+
+threat_intel_sources / indicators / lookups / usage
+                         |
+                         +-------------------------> case evidence package
+```
+
+The tables deliberately separate evidence from interpretation:
+
+| Table | What it stores | Why it exists |
+|---|---|---|
+| `alerts` | Searchable Suricata fields plus original `raw_json` | Fast correlation and display without losing the authoritative sensor record |
+| `zeek_events` | Log type, UID, Community ID, endpoints, details, and original JSON | One common representation for Zeek's protocol-specific logs |
+| `detections` | The unified investigation case and correlation summary | Gives related findings one stable `CASE-` identity |
+| `sensor_findings` | Links each Suricata or Zeek source row to a case | Supports many findings per case without copying or flattening their source evidence |
+| `ai_reports` | The current normalized explanation used by the case page | Makes the latest readable result quick to retrieve |
+| `ai_assessments` | Historical initial, reassessment, and comparison outputs | Preserves model history instead of overwriting research evidence |
+| `ai_run_audits` | Exact prompt, evidence package, hashes, options, omissions, response, and timing | Proves what Python sent and what the model returned |
+| threat-intelligence tables | Provider state, cached indicators, lookups, and case usage | Separates locally collected reputation evidence from model interpretation |
+| checkpoint tables | File identity, byte offset, and Zeek record progress | Lets ingestion resume without rereading an entire log after restart |
+| `reviews` and `responses` | Analyst feedback and Python-controlled action | Keeps human and application decisions separate from AI text |
+
+Normalized columns answer routine questions efficiently, such as which IP,
+port, protocol, sensor, or timestamp was involved. Original JSON is retained so
+an analyst can verify extraction and inspect fields that were not promoted into
+columns. Stable `SUR-`, `ZEK-`, and `CASE-` identifiers are used in the UI and
+audit exports, while SQLite integer keys maintain reliable internal joins.
+
+Schema upgrades use forward-only migrations. New columns and indexes are added
+without deleting existing rows, which protects evidence collected by earlier
+versions of the prototype.
+
 ## Short Presentation Notes
 
 > Suricata writes many kinds of records to EVE JSON, but the application only
@@ -218,14 +304,14 @@ confidence. Model failure cannot silently classify a case as safe.
 
 | Module | Responsibility |
 |---|---|
-| `app/main.py` | CLI commands, worker orchestration, initial case assessment |
+| `app/main.py` | CLI commands, required-worker orchestration, sensor service checks, and initial case coordination |
 | `app/config.py` | YAML defaults, merge, legacy normalization, persistence |
 | `app/bootstrap.py` | Host prerequisites, interfaces, routing, Zeek setup |
 | `app/suricata_reader.py` | Reliable checkpointed EVE JSON following |
 | `app/normalizer.py` | Suricata normalization and broad behavior labels |
 | `app/zeek_ingest.py` | Required multi-log Zeek ingestion |
 | `app/zeek_normalizer.py` | Zeek normalization and protocol evidence summaries |
-| `app/zeek_inventory.py` | Zeek binary, process, and log-access status |
+| `app/zeek_inventory.py` | Rich Zeek binary, ZeekControl, package, process, and log-access status |
 | `app/sensor_fusion.py` | Common Suricata/Zeek finding representation |
 | `app/correlator.py` | Initial Suricata case record |
 | `app/database.py` | SQLite schema, migrations, evidence, correlation, read models |

@@ -1,10 +1,14 @@
-"""Redact configured credentials before errors or status reach logs and APIs.
+"""Remove secrets from text before it is stored, logged, or returned by an API.
 
 Provider libraries can include request headers or query values in exception
 messages. This module removes both known configured secret values and common
 credential-shaped fields before those messages enter SQLite, terminal output,
 or dashboard responses. It is a display/storage guard, not encryption or a
 replacement for protecting config.yaml permissions.
+
+Callers pass a value and, when available, the loaded configuration. The module
+returns display-safe text; it does not modify the original config or encrypt the
+database.
 """
 
 import re

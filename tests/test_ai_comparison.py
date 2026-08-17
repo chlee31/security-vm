@@ -1,10 +1,15 @@
 import unittest
 from unittest.mock import patch
 
-from app.ai_comparison import CONTROL_OPTIONS, _comparison_lock, run_model_comparison
+from app.ai_comparison import (
+    CONTROL_OPTIONS,
+    _comparison_lock,
+    process_comparison_run,
+    queue_model_comparison,
+)
 from app.database import (
+    ai_comparison_candidate_export_rows,
     ai_comparison_detail,
-    ai_comparison_export_rows,
     ai_comparison_selection_summary,
     create_ai_comparison_run,
     create_ai_profile,
@@ -23,6 +28,28 @@ from app.ai_client import (
     rebuild_prompt_audit,
     summarize_sensor_findings_for_model,
 )
+
+
+def run_model_comparison(conn, config, case_uid, requested_uids=None):
+    """Exercise the same durable queue and worker path used by the app."""
+    queued = queue_model_comparison(
+        conn,
+        config,
+        case_uid,
+        requested_uids,
+        inventory_loader=lambda profiles: {
+            profile["uid"]: {
+                "profile_uid": profile["uid"],
+                "provider": profile["provider"],
+                "model": profile["model"],
+                "digest": None,
+                "size": None,
+                "quantization": None,
+            }
+            for profile in profiles
+        },
+    )
+    return process_comparison_run(conn, config, queued["comparison_uid"])
 
 
 class AIComparisonTests(unittest.TestCase):
@@ -164,19 +191,17 @@ class AIComparisonTests(unittest.TestCase):
             detail["review_outcome"]["winner"]["model_identity"],
             "ollama:two",
         )
-        exported = ai_comparison_export_rows(self.conn)
-        self.assertEqual(exported[0]["case_uid"], "CASE-REOPEN")
-        self.assertEqual(exported[0]["review_status"], "reviewed")
-        self.assertEqual(exported[0]["selected_model_identity"], "ollama:two")
-        self.assertEqual(exported[0]["response_a_elapsed_ms"], 100)
-        self.assertEqual(exported[0]["response_a_elapsed_seconds"], 0.1)
-        self.assertEqual(exported[0]["selected_response_elapsed_ms"], 100)
-        self.assertEqual(exported[0]["selected_response_elapsed_seconds"], 0.1)
-        self.assertEqual(exported[0]["successful_response_total_elapsed_ms"], 300)
-        self.assertEqual(
-            exported[0]["successful_response_average_elapsed_seconds"],
-            0.1,
-        )
+        exported = [
+            row
+            for row in ai_comparison_candidate_export_rows(self.conn)
+            if row["case_uid"] == "CASE-REOPEN"
+        ]
+        self.assertEqual(len(exported), 3)
+        self.assertTrue(all(row["review_selection"] == "B" for row in exported))
+        winner = next(row for row in exported if row["review_outcome"] == "winner")
+        self.assertEqual(winner["model_identity"], "ollama:two")
+        self.assertEqual(winner["elapsed_ms"], 100)
+        self.assertEqual(sum(row["elapsed_ms"] for row in exported), 300)
 
         self.assertTrue(reopen_ai_comparison_review(self.conn, comparison_uid))
         reopened = ai_comparison_detail(self.conn, comparison_uid)
@@ -436,29 +461,21 @@ class AIComparisonTests(unittest.TestCase):
         self.assertTrue(proof["same_generation_options_across_candidates"])
         self.assertTrue(proof["matches_initial_case_prompt"])
         self.assertTrue(proof["matches_initial_case_evidence"])
-        exported = next(
+        exported = [
             row
-            for row in ai_comparison_export_rows(self.conn)
+            for row in ai_comparison_candidate_export_rows(self.conn)
             if row["comparison_uid"] == result["comparison_uid"]
+        ]
+        self.assertEqual(len(exported), 3)
+        self.assertTrue(
+            all(row["prompt_sha256"] == audit["prompt_sha256"] for row in exported)
         )
-        self.assertEqual(exported["initial_prompt_sha256"], audit["prompt_sha256"])
-        self.assertEqual(
-            exported["initial_evidence_sha256"],
-            audit["audit_evidence_sha256"],
+        self.assertTrue(
+            all(
+                row["evidence_sha256"] == audit["audit_evidence_sha256"]
+                for row in exported
+            )
         )
-        self.assertEqual(
-            exported["response_r01_evidence_sha256"],
-            audit["audit_evidence_sha256"],
-        )
-        self.assertTrue(exported["same_prompt_across_candidates"])
-        self.assertTrue(exported["same_evidence_across_candidates"])
-        self.assertTrue(exported["matches_initial_prompt"])
-        self.assertTrue(exported["matches_initial_evidence"])
-        self.assertEqual(
-            exported["comparison_run_hash_type"],
-            "evidence_package_sha256",
-        )
-
     @patch("app.ai_comparison.prepare_case_context")
     @patch("app.ai_comparison.ask_ai_model")
     def test_failed_candidate_retains_profile_provenance(self, mock_ask, mock_prepare):

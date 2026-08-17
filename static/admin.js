@@ -42,7 +42,8 @@ const els = {
 
 let state = { network: {}, aiProfiles: [], activeProfileUid: "", comparisonProfileUids: [], threatIntelProviders: [] };
 const initialTab = window.location.hash.replace("#", "");
-let activeAdminTab = ["settings", "threat-intel", "runtime"].includes(initialTab) ? initialTab : "settings";
+const adminTabs = ["settings", "threat-intel", "runtime", "ai-comparison"];
+let activeAdminTab = adminTabs.includes(initialTab) ? initialTab : "settings";
 let runtimeConsoleTimer = null;
 let runtimeConsolePaused = false;
 
@@ -91,7 +92,7 @@ function setStatus(element, kind, text) {
 }
 
 function setAdminTab(tabName, updateHash = true) {
-  activeAdminTab = ["settings", "threat-intel", "runtime"].includes(tabName) ? tabName : "settings";
+  activeAdminTab = adminTabs.includes(tabName) ? tabName : "settings";
   els.tabButtons.forEach((button) => {
     const selected = button.dataset.adminTabButton === activeAdminTab;
     button.classList.toggle("active", selected);

@@ -1,11 +1,12 @@
-"""Normalize Zeek JSON logs while preserving protocol detail and provenance.
+"""Convert Zeek JSON records into common columns plus protocol-specific detail.
 
 Zeek writes a separate JSON log for each protocol or policy stream.  Common
 network fields are lifted into columns so SQLite can correlate by time, UID,
 Community ID, and endpoints.  Log-specific values such as DNS queries, TLS
-server names, byte counts, certificates, and file hashes remain available as a
-bounded detail map.  The complete original Zeek object is always retained in
-SQLite and is never replaced by this summary.
+server names, byte counts, certificates, and file hashes are selected into a
+bounded detail map used by case evidence and AI prompts. The output is a
+normalized dictionary for ``zeek_events``; the complete original Zeek object is
+also retained in SQLite and is never replaced by this summary.
 """
 
 from datetime import datetime, timezone

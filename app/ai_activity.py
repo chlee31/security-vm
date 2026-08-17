@@ -1,10 +1,11 @@
-"""Publish sanitized AI-request progress without coupling it to model logic.
+"""Record the live progress of AI requests for the Admin console.
 
-The AI client reports phases such as preparing, requesting, completed, failed,
-or cancelled through a callback created here. Each update is written to SQLite
-for the password-protected Admin console. Errors are redacted before storage,
-and observability failures are deliberately best-effort so they cannot change a
-case result or terminate the model request.
+``ai_client.py`` calls the callback created here while it prepares a prompt,
+waits for the model, and finishes or fails. The callback stores a sanitized
+status row in SQLite and also checks whether an administrator requested
+cancellation. It returns progress information only; it does not build prompts,
+choose cases, or decide a case classification. Logging is best-effort so a
+monitoring failure cannot change the model result or stop case processing.
 """
 
 from app.database import (

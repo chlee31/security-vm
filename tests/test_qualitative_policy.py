@@ -106,9 +106,6 @@ class QualitativePolicyTests(unittest.TestCase):
         for classification, action in expected.items():
             with self.subTest(classification=classification):
                 result = decide(
-                    self.conn,
-                    {"system": {"mode": "alert_only"}},
-                    self.alert,
                     self.detection,
                     {"classification": classification},
                 )
@@ -118,9 +115,6 @@ class QualitativePolicyTests(unittest.TestCase):
 
     def test_invalid_classification_defaults_to_human_review(self):
         result = decide(
-            self.conn,
-            {},
-            self.alert,
             self.detection,
             {"classification": "maybe"},
         )
@@ -129,9 +123,6 @@ class QualitativePolicyTests(unittest.TestCase):
 
     def test_material_sensor_dispute_forces_human_review(self):
         result = decide(
-            self.conn,
-            {},
-            self.alert,
             {**self.detection, "agreement_state": "disputed"},
             {"classification": "Safe"},
         )
@@ -142,9 +133,6 @@ class QualitativePolicyTests(unittest.TestCase):
         for classification in ("Safe", "Dangerous", "Human Review Required"):
             with self.subTest(classification=classification):
                 result = decide(
-                    self.conn,
-                    {},
-                    self.alert,
                     self.detection,
                     {"classification": classification, "confidence": "Low"},
                 )

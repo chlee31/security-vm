@@ -1,6 +1,6 @@
-# ExplainIT
+# Security VM
 
-ExplainIT is a research prototype that combines Suricata alerts, Zeek network metadata, cached threat intelligence, and locally hosted AI explanations into investigation cases.
+Security VM is a research prototype that combines Suricata alerts, Zeek network metadata, cached threat intelligence, and locally hosted AI explanations into investigation cases.
 
 For questions or project inquiries, contact **chlee31@myseneca.ca**.
 
@@ -51,8 +51,6 @@ If Community ID was not enabled during bootstrap, run:
 sudo ./scripts/enable_community_id.sh
 ```
 
-This helps set up the Community ID on Suricata and Zeek to be the same. 
-
 ## Start The Prototype
 
 Activate the environment and start every required worker:
@@ -80,10 +78,10 @@ export SECURITY_VM_ADMIN_USER=admin
 read -rsp "Security VM admin password: " SECURITY_VM_ADMIN_PASSWORD
 export SECURITY_VM_ADMIN_PASSWORD
 echo
-python -m app.main run-all 
+python -m app.main run-all --config config.yaml --host 192.168.57.134 --port 8000
 ```
 
-Then open a browser and head over to http://127.0.0.1:8000, unless you have specified the --config, --host, or --port. 
+Then open `http://192.168.57.134:8000`. Replace the address with the Security VM's management IP. Avoid `0.0.0.0` unless the lab network is isolated because it exposes the dashboard on every interface.
 
 ## Confirm It Is Working
 

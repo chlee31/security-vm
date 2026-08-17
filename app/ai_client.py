@@ -1,11 +1,14 @@
-"""Build, send, validate, and audit requests to an Ollama-compatible AI service.
+"""Build, send, validate, and audit one case request to an AI service.
 
 This module is the boundary between Security VM's trusted Python pipeline and an
-external language model. Earlier workers have already converted sensor records
-into a case and joined relevant threat-intelligence and Zeek context. This file
-does not discover alerts or query the database itself. It receives that selected
-case evidence, removes fields that must remain local, bounds its size, turns it
-into one text prompt, and sends one audited HTTP request.
+Ollama-compatible language-model API. Its input is a Python dictionary containing
+one prepared case, its Suricata and Zeek evidence, and sanitized threat-intel
+results. It removes fields that must remain local, bounds repeated evidence,
+serializes the package into prompt text, and sends it to ``POST /api/generate``.
+It returns a normalized report dictionary plus an audit record for SQLite.
+
+This file does not discover alerts, select the next case, or query the database.
+Those jobs belong to the sensor workers, ``main.py``, and ``database.py``.
 
 Python, not the model, controls the evidence and final application behavior.
 The model can explain and classify only the supplied package. Python records the
@@ -21,8 +24,8 @@ High-level request path:
 4. ``parse_model_response`` and ``normalize_report`` convert imperfect model
    output into the application's stable qualitative report format.
 
-No files are uploaded to the model. Sensor rows and enrichment records are read
-locally, converted to bounded JSON text, and embedded in a single prompt.
+No files are uploaded to the model. Locally stored records are converted to
+bounded JSON text and embedded in a single prompt.
 """
 
 import json
@@ -260,11 +263,6 @@ def _compact_ai_evidence(value, key="", path="$", depth=0, omissions=None):
         )
         return value[:MAX_EVIDENCE_STRING_CHARS] + " [truncated by Python]"
     return value
-
-
-def compact_ai_evidence(value, key="", depth=0):
-    """Return bounded evidence when the caller does not need an audit manifest."""
-    return _compact_ai_evidence(value, key=key, depth=depth, omissions=[])
 
 
 def compact_ai_evidence_with_manifest(value, key="", path="$", depth=0):
@@ -628,6 +626,8 @@ Analyze the supplied evidence qualitatively. Do not calculate, infer, or return 
 
 Return only valid JSON with exactly these keys:
 classification, confidence, reason, summary, who, what, when, where, why, how, next_steps, threat_intel_analysis, evidence_review, recommended_action.
+
+In the summary portion always start with "Hail the Emperor" and give your summary.
 
 Allowed values:
 - classification: Safe, Analyst Review Required, Dangerous

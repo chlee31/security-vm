@@ -1,9 +1,10 @@
-"""Create the first case-level record for an ungrouped Suricata alert.
+"""Turn the first normalized Suricata alert into a new case candidate.
 
-This small class does not perform the full Suricata/Zeek join. It converts the
-first alert into the fields required by ``detections``. Database correlation
-later decides whether subsequent sensor findings attach to this case or create
-another one.
+``main.py`` passes this module an already normalized alert and its SQLite alert
+ID. ``Correlator.correlate`` copies the endpoint, protocol, time, behavior label,
+Flow ID, and Community ID into a dictionary suitable for the ``detections``
+table. It does not perform the complete Suricata/Zeek join. Database correlation
+later decides whether another finding joins this case or starts a different one.
 """
 
 from app.normalizer import detection_type_from_alert

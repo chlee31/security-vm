@@ -1,14 +1,15 @@
-"""Run reproducible model comparisons and controlled prompt experiments.
+"""Queue and run reproducible comparisons between configured AI profiles.
 
-Comparison requests freeze one exact initial prompt/evidence snapshot, then send
-it to selected profiles sequentially to avoid loading several large local models
-at once. Candidate identities are hidden behind research labels until review.
-Prompt and evidence hashes prove that candidates received identical input.
+The module receives a stored case UID and selected model-profile UIDs. It freezes
+one exact prompt, evidence snapshot, generation settings, and profile order in
+SQLite, then sends the same input to each model sequentially. Sequential requests
+avoid loading several large local models at once. Results are stored under blind
+labels so an analyst can compare answers before model identities are revealed.
 
 Experiment tasks reuse an analyst-selected baseline and change only documented
 generation settings or evidence masks. Jobs and progress live in SQLite, so a
 browser may close without losing the queue. These research results never alter
-sensor evidence or automatically control an operational case.
+the original sensor evidence or automatically control the case decision.
 """
 
 from copy import deepcopy
@@ -20,7 +21,7 @@ from threading import Lock
 import requests
 
 from app.ai_activity import ai_activity_callback
-from app.ai_client import ask_ai_model, build_prompt_audit, text_sha256
+from app.ai_client import ask_ai_model, build_prompt_audit
 from app.case_assessment import prepare_case_context
 from app.database import (
     ai_comparison_detail,
@@ -392,44 +393,6 @@ def process_next_comparison(conn, config):
     return process_comparison_run(conn, config, row["comparison_uid"]) if row else None
 
 
-def run_model_comparison(conn, config, case_uid, requested_uids=None):
-    """Compatibility helper: queue and process one baseline synchronously."""
-    queued = queue_model_comparison(
-        conn,
-        config,
-        case_uid,
-        requested_uids,
-        inventory_loader=lambda profiles: {
-            profile["uid"]: {
-                "profile_uid": profile["uid"],
-                "provider": profile["provider"],
-                "model": profile["model"],
-            }
-            for profile in profiles
-        },
-    )
-    return process_comparison_run(conn, config, queued["comparison_uid"])
-
-
-def _baseline_candidates(conn, comparison_uid, successful_only=True):
-    """Return candidate responses eligible to become experiment controls."""
-    query = """
-        SELECT candidates.*, runs.case_uid, runs.detection_id,
-               runs.prompt_text AS control_prompt_text,
-               runs.prompt_sha256 AS control_prompt_sha256,
-               runs.evidence_package_json AS control_evidence_package_json,
-               runs.evidence_sha256 AS control_evidence_sha256,
-               runs.prompt_version AS control_prompt_version,
-               runs.model_inventory_json
-        FROM ai_comparison_candidates AS candidates
-        JOIN ai_comparison_runs AS runs ON runs.id = candidates.comparison_run_id
-        WHERE runs.comparison_uid = ?
-    """
-    if successful_only:
-        query += " AND candidates.status = 'complete'"
-    return [dict(row) for row in conn.execute(query, (comparison_uid,)).fetchall()]
-
-
 def _verify_current_digest(profile, expected_digest):
     """Verify that the served model binary matches the queued baseline digest."""
     inventory = capture_model_inventory([profile])[profile["uid"]]
@@ -440,7 +403,7 @@ def _verify_current_digest(profile, expected_digest):
     return inventory
 
 
-def queue_stability_experiment(conn, config, comparison_uid, settings):
+def queue_stability_experiment(conn, comparison_uid, settings):
     """Queue temperature/seed variants against the analyst-selected response."""
     winner = _selected_winner(conn, comparison_uid)
     if not winner:
@@ -531,7 +494,7 @@ def _selected_winner(conn, comparison_uid):
     return dict(row) if row else None
 
 
-def queue_missing_evidence_experiment(conn, config, comparison_uid, variants):
+def queue_missing_evidence_experiment(conn, comparison_uid, variants):
     """Queue evidence-removal variants from an analyst-selected baseline."""
     winner = _selected_winner(conn, comparison_uid)
     if not winner:

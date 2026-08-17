@@ -1,11 +1,14 @@
-"""Locate Zeek tools and describe the health of the required Zeek sensor.
+"""Inspect the installed Zeek runtime for startup checks and dashboard status.
 
-This is more extensive than the inline Suricata service check in ``main.py``.
-Suricata is managed as one systemd service that writes one configured EVE file.
-Zeek deployments may place three tools in different prefixes, use ZeekControl
-state and PID files, load community packages, and write many independently
-rotated logs.  Keeping those discovery and permission checks here prevents the
-launcher and dashboard from duplicating Zeek-specific operating-system logic.
+Given the loaded configuration, this module locates ``zeek``, ``zeekctl``, and
+``zkg``; checks ZeekControl state; reads the configured interface and log
+directory; checks whether every configured context-log file exists; and lists
+community packages. It returns one status dictionary used by ``run-all``, the
+Admin checks, and ``/api/dashboard-summary``.
+
+These checks live separately because Zeek has multiple tools, packages, state
+files, and independently rotated logs. The module reports health only; it does
+not parse or ingest the log contents.
 """
 
 from pathlib import Path

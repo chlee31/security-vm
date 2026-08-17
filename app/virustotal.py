@@ -1,9 +1,10 @@
-"""Perform optional post-AI VirusTotal verification for Dangerous cases.
+"""Verify eligible Dangerous cases with VirusTotal after AI analysis.
 
-VirusTotal is stored as separate corroboration evidence. A clean, unavailable,
-or failed result never lowers the AI/Python classification. It runs only after
-Dangerous model output or an explicit analyst refresh, uses fresh cache entries
-when possible, and never contributes a numerical score.
+The module receives a completed case, chooses only valid public IP observables,
+and uses a fresh SQLite cache entry before making a live API request. It returns
+and stores a separate verification state such as corroborated, not corroborated,
+or unavailable. A clean, unavailable, rate-limited, or failed result never lowers
+the classification, and VirusTotal never contributes a numerical score.
 """
 
 import ipaddress

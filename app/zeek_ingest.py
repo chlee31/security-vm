@@ -1,10 +1,13 @@
-"""Follow required Zeek JSON logs and persist normalized network evidence.
+"""Follow configured Zeek JSON logs and store each new normalized record.
 
-Each configured log has its own durable inode/offset checkpoint because Zeek
-rotates protocol logs independently.  A row is normalized and stored before the
-checkpoint advances, so restarting the worker does not intentionally skip
-unprocessed evidence.  Notice rows may initiate cases; conn, DNS, TLS, HTTP,
-file, SSH, X.509, and weird rows normally provide surrounding case context.
+The worker reads ``zeek.context_logs`` and ``zeek.log_directory`` from the loaded
+configuration. Each log has its own durable inode/offset checkpoint because Zeek
+rotates protocol files independently. Every new JSON line is passed to
+``zeek_normalizer.py`` and inserted into ``zeek_events`` before its checkpoint
+advances, allowing a restart to resume near the last committed byte.
+
+Notice rows may initiate cases. Connection, DNS, TLS, HTTP, file, X.509, weird,
+and other configured protocol rows normally provide surrounding case context.
 """
 
 from pathlib import Path

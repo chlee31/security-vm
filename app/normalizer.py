@@ -1,10 +1,11 @@
-"""Turn Suricata EVE alerts into stable, queryable application records.
+"""Extract the Suricata alert fields needed for storage and correlation.
 
 Suricata's EVE stream contains many event types and deeply nested fields.  The
 case pipeline needs a small, consistent set of fields for correlation and SQL
 queries, so this module accepts only ``event_type=alert`` records and extracts
 their time, endpoints, protocol, signature, severity, Flow ID, and Community
-ID.  It also retains the complete original JSON for later audit.
+ID. The output is a flat Python dictionary inserted into SQLite, while the
+complete original JSON is retained for audit and later inspection.
 
 The behavior labels below are navigation aids, not security verdicts.  They let
 the dashboard group recognizable rule names while unfamiliar signatures remain

@@ -1,4 +1,4 @@
-"""Load, merge, validate, and save Security VM YAML configuration.
+"""Provide one consistent way to read and write application configuration.
 
 ``DEFAULT_CONFIG`` is the documented fallback for every supported setting. A
 user's ``config.yaml`` is recursively merged over this dictionary, so the file
@@ -8,7 +8,9 @@ so ``run-all`` must be restarted after operational changes.
 
 This module does not test interfaces, model reachability, or credentials. Those
 checks belong to bootstrap and runtime components. Keeping file parsing here
-makes every worker interpret the same configuration in the same way.
+makes every worker interpret database paths, sensor paths, model options, and
+provider settings in the same way. Its main output is an ordinary Python
+dictionary consumed by ``main.py``, the workers, and the dashboard.
 """
 
 from pathlib import Path
